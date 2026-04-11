@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if echo \"$CLAUDE_TOOL_INPUT\" | grep -q 'reviewers/'; then npm run index:build 2>/dev/null; fi",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

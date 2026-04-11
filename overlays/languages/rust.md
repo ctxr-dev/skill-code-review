@@ -1,3 +1,16 @@
+---
+tools:
+  - name: cargo-check
+    command: "cargo check --message-format json"
+    purpose: "Rust type checking without building"
+  - name: cargo-clippy
+    command: "cargo clippy --message-format json"
+    purpose: "Rust lint for idiomatic code"
+  - name: cargo-audit
+    command: "cargo audit --json"
+    purpose: "Rust dependency vulnerability scan"
+---
+
 # Rust — Review Overlay
 
 Load this overlay for the **Reliability**, **Performance**, and **Safety** specialists when Rust code is being reviewed.

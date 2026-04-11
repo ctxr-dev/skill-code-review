@@ -41,12 +41,13 @@ This index lists all framework, language, and infrastructure overlays available 
 | [go.md](languages/go.md) | `.go` files | language-quality, all | Error returns checked, context.Context first arg, goroutine lifetime, channels closed by sender, interfaces at consumer |
 | [rust.md](languages/rust.md) | `.rs` files | language-quality, all | No unwrap in prod, ownership correct, minimal unsafe, error types implement Error, iterators over loops |
 | [java-kotlin.md](languages/java-kotlin.md) | `.java`, `.kt` files | language-quality, all | Nullability annotations, try-with-resources/use, streams/sequences, sealed classes, structured concurrency |
+| [scala.md](languages/scala.md) | `.scala`, `.sc` files | language-quality, all | Option over null, sealed ADTs, givens/implicits, effect systems, NonFatal, immutable collections |
 
 ## Infrastructure Overlays
 
 | File | Trigger | Specialists | Summary |
 |------|---------|-------------|---------|
 | [docker.md](infra/docker.md) | `Dockerfile*`, `docker-compose*` | security, performance, initialization-hygiene | Multi-stage builds, non-root user, .dockerignore, layer caching, health checks, secrets not in image, compose security |
-| [github-actions.md](infra/github-actions.md) | `.github/workflows/*.yml` | security, filesystem-safety | Pinned action versions, secrets not in logs, untrusted input in run, permissions least-privilege, OIDC over long-lived secrets |
+| [github-actions.md](infra/github-actions.md) | `.github/workflows/*.yml` | security, hooks-safety | Pinned action versions, secrets not in logs, untrusted input in run, permissions least-privilege, OIDC over long-lived secrets |
 | [terraform.md](infra/terraform.md) | `*.tf` files | security, architecture-design | IAM least privilege, no public exposure defaults, encryption at rest, state backend security, module boundaries |
 | [kubernetes.md](infra/kubernetes.md) | `k8s/`, `kubernetes/`, `helm/` | security, performance, observability | SecurityContext, resource limits, NetworkPolicy, readiness/liveness probes, RBAC, secret management |

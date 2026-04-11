@@ -1,3 +1,10 @@
+---
+tools:
+  - name: django-check
+    command: "python manage.py check --deploy"
+    purpose: "Django deployment readiness check"
+---
+
 # Django — Review Overlay
 
 Load this overlay for the **security**, **api-design**, **performance**, and **data-validation** specialists when `django` is detected in project dependencies.

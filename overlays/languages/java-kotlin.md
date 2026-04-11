@@ -1,3 +1,14 @@
+---
+tools:
+  - name: checkstyle
+    purpose: "Java code style checker"
+  - name: ktlint
+    command: "ktlint --reporter=json"
+    purpose: "Kotlin linter and formatter"
+  - name: spotbugs
+    purpose: "Java static analysis for bug patterns"
+---
+
 # Java / Kotlin — Review Overlay
 
 Load this overlay for the **Type Safety**, **Reliability**, and **Architecture** specialists when Java or Kotlin code is being reviewed.

@@ -1,0 +1,50 @@
+{
+  "name": "@ctxr-dev/skill-code-review",
+  "version": "1.0.0",
+  "description": "Claude Code skill — 18 specialist reviewers with framework-aware overlays for deep, multi-angle code review enforcing SOLID, Clean Code, and engineering best practices.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ctxr-dev/skill-code-review.git"
+  },
+  "homepage": "https://github.com/ctxr-dev/skill-code-review#readme",
+  "bugs": {
+    "url": "https://github.com/ctxr-dev/skill-code-review/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "skill",
+    "code-review",
+    "ai",
+    "agents",
+    "agentskills"
+  ],
+  "files": [
+    "SKILL.md",
+    "code-reviewer.md",
+    "report-format.md",
+    "reviewers/",
+    "overlays/",
+    "README.md",
+    "LICENSE"
+  ],
+  "skills": {
+    "skill-code-review": "."
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "index:build": "node scripts/build-index.js",
+    "validate": "node scripts/validate.js",
+    "lint": "markdownlint-cli2 '**/*.md' '#node_modules'",
+    "lint:fix": "markdownlint-cli2 --fix '**/*.md' '#node_modules'",
+    "prepare": "husky",
+    "new:reviewer": "node scripts/new-reviewer.js",
+    "new:overlay": "node scripts/new-overlay.js"
+  },
+  "devDependencies": {
+    "gray-matter": "^4.0.3",
+    "husky": "^9.1.0",
+    "markdownlint-cli2": "^0.14.0"
+  }
+}

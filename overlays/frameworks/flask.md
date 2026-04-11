@@ -1,6 +1,6 @@
 # Flask — Review Overlay
 
-Load this overlay for the **security**, **architecture-design**, **api-design**, and **testing** specialists when `flask` is detected in Python project dependencies.
+Load this overlay for the **security**, **api-design**, and **performance** specialists when `flask` is detected in Python project dependencies.
 
 ---
 

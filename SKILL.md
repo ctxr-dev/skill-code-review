@@ -1,6 +1,6 @@
 ---
 name: skill-code-review
-description: Use when completing tasks, implementing major features, or before merging to verify work meets requirements. Dispatches up to 16 specialist reviewers with framework-aware overlays for deep, multi-angle code review enforcing SOLID, Clean Code, and engineering best practices.
+description: Use when completing tasks, implementing major features, or before merging to verify work meets requirements. Dispatches up to 18 specialist reviewers with framework-aware overlays for deep, multi-angle code review enforcing SOLID, Clean Code, and engineering best practices.
 ---
 
 # Requesting Code Review
@@ -13,7 +13,7 @@ Dispatch a code review orchestrator that scans the project, auto-detects the tec
 
 ```text
 code-reviewer.md          Orchestrator with embedded Reviewer Index + Deep Scanner
-reviewers/                16 base specialist files (universal checks)
+reviewers/                18 base specialist files (universal checks)
 overlays/
   index.md                Master overlay index (LLM reads first to select)
   frameworks/             17 framework overlays (React, Prisma, Django, etc.)
@@ -30,7 +30,7 @@ overlays/
 5. **Coverage verification** (Step 4) — every file reviewed by at least 2 specialists
 6. **8-gate verdict** (Step 5) — GO / NO-GO / CONDITIONAL with full methodology compliance
 
-## Specialist Team (16 reviewers)
+## Specialist Team (18 reviewers)
 
 ### Always Active (7 universal)
 
@@ -42,9 +42,9 @@ overlays/
 - **initialization-hygiene** — No stubs, feature completeness, startup/shutdown, dead code, wiring, export hygiene
 - **release-readiness** — 8-gate GO/NO-GO aggregator
 
-### Conditionally Active (9 specialists)
+### Conditionally Active (11 specialists)
 
-- **language-quality** — Language idioms and type safety for TS, Python, Go, Rust, Java/Kotlin
+- **language-quality** — Language idioms and type safety for TS, Python, Go, Rust, Java/Kotlin, Scala
 - **concurrency-async** — Race conditions, thread safety, actors/CSP, backpressure, idempotency
 - **performance** — Big-O, hot paths, DB queries, caching, I/O, memory, startup
 - **dependency-supply-chain** — CVEs, license compliance, supply chain integrity, maintainer trust
@@ -53,15 +53,16 @@ overlays/
 - **api-design** — REST/GraphQL/gRPC/SDK contracts, versioning, semver, event schemas
 - **observability** — Structured logging, metrics, tracing, health checks, alerting, audit
 - **cli-quality** — Unix philosophy, signals, I/O discipline, exit codes, verbosity, shell completion
-- **filesystem-safety** — Atomic ops, permissions, symlinks, paths, cross-platform, config parsing
+- **hooks-safety** — Atomic ops, permissions, symlinks, paths, cross-platform, config parsing
+- **readme-quality** — Root README.md structure, accuracy, open-source standards, no redundancy
 
-### Framework Overlays (27 scoped files)
+### Overlays (27 scoped files)
 
-Loaded only when the framework is detected in your project:
+Loaded only when the framework/language/infra is detected in your project:
 
 **Frameworks:** React, Next.js, Express, Fastify, NestJS, Spring, Django, Flask, Prisma, Drizzle, SQLAlchemy, TypeORM, Zod, Pydantic, GraphQL, gRPC, Tailwind
 
-**Languages:** TypeScript, Python, Go, Rust, Java/Kotlin
+**Languages:** TypeScript, Python, Go, Rust, Java/Kotlin, Scala
 
 **Infrastructure:** Docker, GitHub Actions, Terraform, Kubernetes
 
@@ -81,25 +82,33 @@ Loaded only when the framework is detected in your project:
 
 ## How to Request
 
-**1. Get git SHAs:**
+**Basic usage:**
 
-```bash
-BASE_SHA=$(git rev-parse HEAD~1)  # or origin/main
-HEAD_SHA=$(git rev-parse HEAD)
+```text
+/skill-code-review
 ```
 
-**2. Dispatch the orchestrator:**
+The orchestrator auto-detects the base commit, scans the project, selects reviewers, and produces the report.
 
-Use Agent tool to spawn a new subagent with `code-reviewer.md` as the template. Fill these placeholders:
+**With arguments:**
 
-- `{DESCRIPTION}` — What you just built
-- `{PLAN_REFERENCE}` — What it should do (reference docs/plans)
-- `{BASE_SHA}` — Starting commit
-- `{HEAD_SHA}` — Ending commit
+```text
+/skill-code-review help                           # show all arguments
+/skill-code-review full                           # review entire codebase
+/skill-code-review format=json                    # structured JSON output
+/skill-code-review scope-dir=src/api              # only review src/api/
+/skill-code-review scope-reviewer=security        # only security specialist
+/skill-code-review base=origin/main head=HEAD     # explicit commit range
+```
 
-The orchestrator automatically scans the project, selects reviewers, loads overlays, and produces the report.
+See `report-format.md` for the full argument reference, output format examples, and JSON schema.
 
-**3. Act on feedback:**
+**Output formats:**
+
+- **Markdown** (default for users) — beautiful report with tables, verdicts, coverage matrix
+- **JSON/YAML** (default for tools, or `format=json`) — structured data for CI/automation
+
+**Act on feedback:**
 
 - Fix Critical issues immediately
 - Fix Important issues before proceeding

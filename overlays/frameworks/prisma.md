@@ -1,3 +1,13 @@
+---
+tools:
+  - name: prisma-validate
+    command: "npx prisma validate"
+    purpose: "Prisma schema validation"
+  - name: prisma-format
+    command: "npx prisma format --check"
+    purpose: "Prisma schema formatting check"
+---
+
 # Prisma — Review Overlay
 
 Load this overlay for the **security**, **data-validation**, **performance**, and **test-quality** specialists when `prisma` or `@prisma/client` is detected in project dependencies.
@@ -6,7 +16,7 @@ Load this overlay for the **security**, **data-validation**, **performance**, an
 
 ## Security
 
-- [ ] `$queryRaw` and `$executeRaw` always use tagged template literals (`Prisma.sql\`...\``) or `Prisma.raw` with parameterized placeholders — never string concatenation or template interpolation with user input
+- [ ] `$queryRaw` and `$executeRaw` always use tagged template literals (`Prisma.sql\`...\``) or`Prisma.raw` with parameterized placeholders — never string concatenation or template interpolation with user input
 - [ ] Raw query results are treated as untyped and validated against an expected schema before use; Prisma does not type-check raw results at runtime
 - [ ] `findFirst` / `findUnique` results are checked for `null` before access — missing null checks are a frequent source of runtime crashes and potential data leaks through error messages
 

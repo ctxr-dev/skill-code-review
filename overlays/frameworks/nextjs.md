@@ -1,3 +1,10 @@
+---
+tools:
+  - name: next-lint
+    command: "npx next lint --format json"
+    purpose: "Next.js-specific lint rules"
+---
+
 # Next.js — Review Overlay
 
 Load this overlay for the **security**, **performance**, **api-design**, and **architecture-design** specialists when `next` is detected in project dependencies.

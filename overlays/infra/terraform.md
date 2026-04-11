@@ -1,3 +1,13 @@
+---
+tools:
+  - name: tflint
+    command: "tflint --format json"
+    purpose: "Terraform linter for best practices"
+  - name: tfsec
+    command: "tfsec --format json ."
+    purpose: "Terraform security scanner"
+---
+
 # Terraform — Review Overlay
 
 Load this overlay for the **Security**, **Reliability**, and **Architecture** specialists when Terraform (or OpenTofu) code is being reviewed.

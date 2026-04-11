@@ -1,3 +1,10 @@
+---
+tools:
+  - name: eslint-plugin-react-hooks
+    command: "npx eslint --rule 'react-hooks/rules-of-hooks: error'"
+    purpose: "React hooks rules enforcement"
+---
+
 # React — Review Overlay
 
 Load this overlay for the **security**, **performance**, **language-quality**, and **test-quality** specialists when `react` or `react-dom` is detected in project dependencies.

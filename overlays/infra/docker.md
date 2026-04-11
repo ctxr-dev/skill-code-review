@@ -1,3 +1,10 @@
+---
+tools:
+  - name: hadolint
+    command: "hadolint --format json Dockerfile"
+    purpose: "Dockerfile best practices linter"
+---
+
 # Docker — Review Overlay
 
 Load this overlay for the **Security**, **Reliability**, and **Build** specialists when Dockerfiles or Docker Compose files are being reviewed.

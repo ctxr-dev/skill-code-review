@@ -1,0 +1,49 @@
+// Markdownlint config for skill-code-review
+// Tuned for reviewer checklists and overlay tables
+{
+  // Allow long lines — reviewer checklists and tables need them
+  "MD013": false,
+
+  // Allow inline HTML (some formatting in tables)
+  "MD033": false,
+
+  // Allow duplicate headings in different sections (reviewers reuse section names)
+  "MD024": { "siblings_only": true },
+
+  // Allow multiple top-level headings (YAML frontmatter + H1)
+  "MD025": false,
+
+  // Enforce consistent unordered list marker
+  "MD004": { "style": "dash" },
+
+  // Enforce no trailing spaces
+  "MD009": true,
+
+  // Enforce no hard tabs
+  "MD010": true,
+
+  // Enforce blank line around headings
+  "MD022": true,
+
+  // Enforce blank line around lists
+  "MD032": true,
+
+  // Allow emphasis as heading (used in reviewer severity sections)
+  "MD036": false,
+
+  // Allow bare URLs
+  "MD034": false,
+
+  // Allow fenced code blocks without language (generic output/structure examples)
+  "MD040": false,
+
+  // Allow inline code with spaces (triggers in overlay tables like `$queryRaw`)
+  "MD038": false,
+
+  // Allow compact table pipe style (all tables in this project use it)
+  "MD060": false,
+
+  // Ignore node_modules and .git
+  "globs": ["**/*.md"],
+  "ignores": ["node_modules/**", ".git/**"]
+}

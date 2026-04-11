@@ -1,3 +1,13 @@
+---
+tools:
+  - name: go-vet
+    command: "go vet ./..."
+    purpose: "Go static analysis for suspicious constructs"
+  - name: golangci-lint
+    command: "golangci-lint run --out-format json"
+    purpose: "Go meta-linter (vet, staticcheck, errcheck, etc.)"
+---
+
 # Go — Review Overlay
 
 Load this overlay for the **Reliability**, **Concurrency**, and **Maintainability** specialists when Go code is being reviewed.

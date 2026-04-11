@@ -1,201 +1,143 @@
 # Code Review Skill for Claude Code
 
-A production-grade, multi-specialist code review system for [Claude Code](https://claude.ai/code). Dispatches up to 16 specialist AI reviewers in parallel, each deeply focused on a specific quality dimension — from SOLID principles to security, performance, testing, and more.
+[![npm](https://img.shields.io/npm/v/@ctxr-dev/skill-code-review)](https://www.npmjs.com/package/@ctxr-dev/skill-code-review)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Works on any project** — TypeScript, Python, Go, Rust, Java/Kotlin, Ruby, C#. Monorepos, microservices, CLIs, libraries, APIs, full-stack apps. Auto-detects your tech stack and activates only the relevant reviewers.
+Multi-specialist code review system for [Claude Code](https://claude.ai/code). Dispatches up to 18 specialist AI reviewers in parallel, integrates external linters and analyzers, and produces structured reports with a GO / NO-GO verdict.
 
-## Features
+Auto-detects your tech stack (TypeScript, Python, Go, Rust, Java/Kotlin, Scala) and activates only the relevant reviewers, overlays, and tools.
 
-- **16 specialist reviewers** — each focused on one quality dimension, reviewing far deeper than any single reviewer could
-- **Smart routing** — auto-detects languages, frameworks, ORMs, and infrastructure from your project manifests
-- **Token-efficient overlays** — 27 framework/language/infra overlay files loaded only when relevant (React, Next.js, Prisma, Django, Docker, Terraform, etc.)
-- **Index-based architecture** — orchestrator reads a compact index to make routing decisions without loading all reviewer files
-- **Monorepo-aware** — scopes reviewers to affected packages; a change in `apps/api/` doesn't trigger React checks from `apps/web/`
-- **Coverage guarantee** — every file in the diff is reviewed by at least 2 specialists
-- **8-gate release readiness** — GO / NO-GO / CONDITIONAL verdict with full methodology compliance tracking
-- **SOLID enforcement** — SRP, OCP, LSP, ISP, DIP, DRY, KISS, YAGNI checked on every review
-- **Framework-specific checks** — not just generic rules. If you use Prisma, the security reviewer checks for `$queryRaw` injection. If you use Next.js, it checks for SSR data exposure.
+## Quick Start
 
-## Specialist Team
+```bash
+# Install into your project
+npx @ctxr-dev/skills install @ctxr-dev/skill-code-review
+```
 
-### Always Active (7 universal reviewers)
+Then in Claude Code:
 
-| Reviewer | Focus |
-|----------|-------|
-| **clean-code-solid** | SOLID, DRY, KISS, YAGNI, Law of Demeter, POLA, complexity metrics |
-| **architecture-design** | Module boundaries, clean architecture, hexagonal/DDD, coupling/cohesion |
-| **test-quality** | Test pyramid, assertions, boundary values, mutation testing, determinism |
-| **security** | OWASP Top 10, injection, secrets, crypto, sessions, filesystem safety |
-| **error-resilience** | Error design, retry/circuit-breaker, partial failure, defensive programming |
-| **initialization-hygiene** | No stubs, feature completeness, startup/shutdown, dead code, wiring |
-| **release-readiness** | 8-gate GO/NO-GO aggregator |
+```text
+/skill-code-review
+```
 
-### Conditionally Active (9 specialist reviewers)
+## Prerequisites
 
-| Reviewer | Activated When |
-|----------|---------------|
-| **language-quality** | Source code in any supported language (TS, Python, Go, Rust, Java/Kotlin) |
-| **concurrency-async** | Async/await, threads, goroutines, channels, mutexes detected |
-| **performance** | Any code on a hot path, DB queries, caching, or I/O operations |
-| **dependency-supply-chain** | Manifest or lock files changed |
-| **documentation-quality** | Docs changed or public API modified |
-| **data-validation** | Schema validation, config parsing, or input handling code |
-| **api-design** | HTTP routes, GraphQL, gRPC, or public SDK exports |
-| **observability** | Logging, metrics, tracing, or health check code |
-| **cli-quality** | CLI commands, argument parsing, or interactive prompts |
-| **filesystem-safety** | File I/O, symlinks, temp files, or process management |
-
-### Framework Overlays (27 scoped files)
-
-Loaded only when the framework is detected in your project:
-
-**Frameworks:** React, Next.js, Express, Fastify, NestJS, Spring, Django, Flask, Prisma, Drizzle, SQLAlchemy, TypeORM, Zod, Pydantic, GraphQL, gRPC, Tailwind
-
-**Languages:** TypeScript, Python, Go, Rust, Java/Kotlin
-
-**Infrastructure:** Docker, GitHub Actions, Terraform, Kubernetes
+- [Claude Code](https://claude.ai/code) CLI or IDE extension
+- Git repository with commits to review
 
 ## Installation
 
-### Option 1: Manual Installation
-
-Copy the skill directory into your project's `.claude/skills/`:
+### Manual
 
 ```bash
-# Clone the repo
-git clone https://github.com/anthropics/skill-code-review.git /tmp/skill-code-review
-
-# Copy into your project
-cp -r /tmp/skill-code-review/.claude/skills/skill-code-review \
-      .claude/skills/skill-code-review
+git clone https://github.com/ctxr-dev/skill-code-review.git /tmp/skill-code-review
+mkdir -p .claude/skills
+cp -r /tmp/skill-code-review .claude/skills/skill-code-review
 ```
 
-### Option 2: Via npx (recommended)
+### Git Submodule
 
 ```bash
-# Install
-npx @anthropic-ai/skills install skill-code-review
-
-# Update to latest
-npx @anthropic-ai/skills update skill-code-review
-
-# List installed skills
-npx @anthropic-ai/skills list
-```
-
-### Option 3: Git Submodule
-
-```bash
-git submodule add https://github.com/anthropics/skill-code-review.git \
+git submodule add https://github.com/ctxr-dev/skill-code-review.git \
     .claude/skills/skill-code-review
 ```
 
 ## Usage
 
-### In Claude Code
-
-Simply invoke the skill:
-
+```text
+/skill-code-review                                # diff review, auto-detect everything
+/skill-code-review help                           # show all arguments
+/skill-code-review full                           # review entire codebase
+/skill-code-review mode=thorough                  # max depth within detected stack
+/skill-code-review format=json                    # structured JSON output
+/skill-code-review tools=interactive              # ask to install missing linters
+/skill-code-review scope-dir=src/api              # only review src/api/
+/skill-code-review scope-reviewer=security        # only security specialist
+/skill-code-review base=origin/main head=HEAD     # explicit commit range
 ```
-/skill-code-review
-```
 
-The orchestrator will automatically:
-1. Scan your project (languages, frameworks, monorepo structure)
-2. Analyze the git diff
-3. Select and dispatch relevant reviewers in parallel
-4. Collect, deduplicate, and produce a unified report with a GO/NO-GO verdict
+See [report-format.md](report-format.md) for the full argument reference, output examples, and JSON schema.
 
-### With Specific Commits
+### How it works
 
-```
-/skill-code-review base=origin/main head=HEAD
-```
+1. **Scan** — detects languages, frameworks, monorepo structure from manifests
+2. **Tools** — discovers and runs external linters/analyzers (eslint, semgrep, mypy, clippy, etc.)
+3. **Route** — reads `reviewers/index.yaml` to select specialists deterministically
+4. **Overlay** — loads framework-specific checks for detected tech (React, Prisma, Django, Docker, etc.)
+5. **Dispatch** — all selected specialists run in parallel with filtered diffs + tool output
+6. **Verify** — every file reviewed by at least 2 specialists
+7. **Verdict** — 8-gate release readiness: GO / NO-GO / CONDITIONAL
+
+## Reviewers
+
+**7 universal** (always active): clean-code-solid, architecture-design, test-quality, security, error-resilience, initialization-hygiene, release-readiness
+
+**11 conditional** (activated by signals): language-quality, concurrency-async, performance, dependency-supply-chain, documentation-quality, data-validation, api-design, observability, cli-quality, hooks-safety, readme-quality
+
+**27 overlays** (loaded per framework): 17 frameworks, 6 languages, 4 infrastructure
+
+See [SKILL.md](SKILL.md) for full specialist descriptions.
 
 ## Report Format
 
-Every review produces a structured report including:
+Every review produces (markdown or JSON):
 
 - **Release Verdict** — GO / NO-GO / CONDITIONAL
-- **Methodology Compliance** — SOLID principle status table
-- **Issues by Severity** — Critical (blocks merge) → Important (blocks merge) → Minor (advisory)
-- **Specialist Summary** — pass/fail per reviewer with issue counts
-- **Release Readiness Gates** — 8-gate assessment
-- **Coverage Matrix** — which files were reviewed by which specialists
+- **SOLID Compliance** — principle-by-principle status
+- **Issues** — clickable [file:line](file#Lline) links, severity, specialist, impact, fix
+- **Tool Results** — pass/fail/skipped for each external linter/analyzer
+- **Specialist Results** — per-reviewer status with issue counts
+- **Release Gates** — 8-gate assessment
+- **Coverage Matrix** — files × specialists
 
 ## Architecture
 
-```
+```text
 skill-code-review/
-├── SKILL.md                  # Skill metadata and high-level guide
-├── code-reviewer.md          # Orchestrator with embedded index + scanner
-├── README.md                 # This file
-├── LICENSE                   # MIT
-├── reviewers/                # Base reviewer files (universal checks)
-│   ├── clean-code-solid.md   # SOLID, Clean Code, DRY/KISS/YAGNI
-│   ├── architecture-design.md
-│   ├── test-quality.md
+├── SKILL.md                  # Skill metadata and overview
+├── code-reviewer.md          # Orchestrator (reads index for routing)
+├── report-format.md          # Canonical report format + JSON schema + argument spec
+├── reviewers/
+│   ├── index.yaml            # Auto-generated from reviewer frontmatter
+│   ├── clean-code-solid.md   # Each reviewer has YAML frontmatter (tools, audit_surface)
 │   ├── security.md
-│   ├── error-resilience.md
-│   ├── initialization-hygiene.md
-│   ├── release-readiness.md  # 8-gate aggregator
-│   ├── language-quality.md   # Multi-language idioms
-│   ├── concurrency-async.md
-│   ├── performance.md
-│   ├── dependency-supply-chain.md
-│   ├── documentation-quality.md
-│   ├── data-validation.md
-│   ├── api-design.md
-│   ├── observability.md
-│   ├── cli-quality.md
-│   └── hooks-safety.md       # Filesystem & runtime safety
-└── overlays/                 # Framework-specific scoped checks
-    ├── index.md              # Master overlay index (LLM reads first)
-    ├── frameworks/           # 17 framework overlays
-    │   ├── react.md
-    │   ├── nextjs.md
-    │   ├── prisma.md
-    │   └── ...
-    ├── languages/            # 5 language overlays
-    │   ├── typescript.md
-    │   ├── python.md
-    │   └── ...
-    └── infra/                # 4 infrastructure overlays
-        ├── docker.md
-        ├── github-actions.md
-        └── ...
+│   └── ... (18 reviewers)
+└── overlays/
+    ├── index.md              # Overlay routing table
+    ├── frameworks/           # 17 framework overlays (some with tool declarations)
+    ├── languages/            # 6 language overlays (all with tool declarations)
+    └── infra/                # 4 infrastructure overlays (some with tool declarations)
 ```
-
-### How the Index-Based Routing Works
-
-1. **Orchestrator reads the embedded Reviewer Index** (~300 lines of YAML) — knows every reviewer's audit surface, activation signals, and framework applicability without loading any reviewer file
-2. **Deep Project Scanner** runs first — detects languages, frameworks, monorepo structure from manifests
-3. **Deterministic routing** — Index + Project Profile = exact set of reviewers to dispatch. No judgment calls.
-4. **Overlay selection** — reads `overlays/index.md`, loads only overlays matching detected frameworks
-5. **Specialist dispatch** — each reviewer gets: base checklist + relevant overlays + Project Profile + filtered diff
-6. **Coverage verification** — every file reviewed by at least 2 specialists
 
 ## Customization
 
-### Adding a Framework Overlay
+### Add a framework overlay
 
-1. Create `overlays/frameworks/<framework>.md` with framework-specific checks
-2. Add a row to `overlays/index.md` with trigger, specialists, and summary
-3. The orchestrator will automatically pick it up when the framework is detected
+1. `npm run new:overlay -- frameworks <name>`
+2. Fill in the checklist items and optional `tools` frontmatter
+3. Add row to `overlays/index.md`
+4. `npm run validate && npm run lint`
 
-### Adding a Reviewer
+### Add a reviewer
 
-1. Create `reviewers/<name>.md` following the existing template
-2. Add an entry to the Reviewer Index YAML block in `code-reviewer.md`
-3. Update `release-readiness.md` to include the new reviewer in the appropriate gate
+1. `npm run new:reviewer -- <id>`
+2. Fill in frontmatter (tools, audit_surface, activation) and checklist
+3. `npm run index:build && npm run validate && npm run lint`
 
-### Tuning Severity
+### Severity levels
 
-Edit the severity classification table in any reviewer file. The three levels are:
-- **Critical** — Must fix. Blocks merge. (data corruption, security vulnerability, broken contract)
-- **Important** — Should fix. Blocks merge. (SOLID violation, missing tests, poor error handling)
-- **Minor** — Nice to have. Does not block. (naming, style, minor optimization)
+- **Critical** — must fix, blocks merge (security, data loss, correctness)
+- **Important** — should fix, blocks merge (SOLID violation, missing tests)
+- **Minor** — advisory, does not block (naming, style)
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, conventions, and release process.
+
+## Releases
+
+See [GitHub Releases](https://github.com/ctxr-dev/skill-code-review/releases) for changelog.
 
 ## License
 
-MIT License. See [LICENSE](LICENSE).
+[MIT](LICENSE)

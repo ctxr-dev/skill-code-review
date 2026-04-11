@@ -1,3 +1,16 @@
+---
+tools:
+  - name: mypy
+    command: "mypy --output json ."
+    purpose: "Python static type checker"
+  - name: ruff
+    command: "ruff check --output-format json ."
+    purpose: "Fast Python linter (replaces flake8, isort, pyupgrade)"
+  - name: bandit
+    command: "bandit -r . -f json"
+    purpose: "Python security linter"
+---
+
 # Python — Review Overlay
 
 Load this overlay for the **Type Safety**, **Reliability**, and **Maintainability** specialists when Python code is being reviewed.

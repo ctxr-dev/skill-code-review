@@ -1,3 +1,10 @@
+---
+tools:
+  - name: kube-linter
+    command: "kube-linter lint . --format json"
+    purpose: "Kubernetes manifest linter"
+---
+
 # Kubernetes — Review Overlay
 
 Load this overlay for the **Security**, **Reliability**, and **Operations** specialists when Kubernetes manifests or Helm charts are being reviewed.

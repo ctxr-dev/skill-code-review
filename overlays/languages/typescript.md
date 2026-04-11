@@ -1,3 +1,16 @@
+---
+tools:
+  - name: tsc
+    command: "npx tsc --noEmit"
+    purpose: "TypeScript type checking (strict mode violations)"
+  - name: eslint
+    command: "npx eslint --format json ."
+    purpose: "JS/TS linting (configurable rules)"
+  - name: biome
+    command: "npx biome check ."
+    purpose: "Fast JS/TS linter and formatter"
+---
+
 # TypeScript — Review Overlay
 
 Load this overlay for the **Type Safety**, **Security**, and **Maintainability** specialists when TypeScript code is being reviewed.

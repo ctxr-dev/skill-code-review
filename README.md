@@ -157,5 +157,3 @@ See [GitHub Releases](https://github.com/ctxr-dev/skill-code-review/releases) fo
 <img width="1334" height="1035" alt="Screenshot 2026-04-11 at 22 01 39" src="https://github.com/user-attachments/assets/46e06599-211e-479b-a7af-bc80116524c6" />
 
 <img width="1346" height="888" alt="Screenshot 2026-04-11 at 22 02 09" src="https://github.com/user-attachments/assets/47c5507f-b6f6-4be9-a8c4-a4236ff4d6ed" />
-
-

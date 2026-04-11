@@ -42,8 +42,8 @@ function runBuild(reviewersDir) {
 describe("build-index.js", () => {
   describe("against actual project reviewers", () => {
     it("generates index.yaml successfully", () => {
-      const { exitCode, stdout } = runBuild();
-      assert.equal(exitCode, 0);
+      const { exitCode, stdout, stderr } = runBuild();
+      assert.equal(exitCode, 0, `build-index.js exited ${exitCode}.\nstdout: ${stdout}\nstderr: ${stderr}`);
       assert.ok(stdout.includes("Generated"));
       // Don't hard-code count — just verify it's a positive number
       const match = stdout.match(/with (\d+) reviewers/);

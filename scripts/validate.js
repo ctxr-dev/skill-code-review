@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * Thin wrapper — delegates to @ctxr-dev/skills validate.
- * Falls back to local sibling (monorepo dev setup).
+ * Delegates to @ctxr-dev/skills validate.
+ * Requires @ctxr-dev/skills >= 2.1.0 (supports reviewers/index.yaml).
  */
 
 import { execFileSync } from "node:child_process";
@@ -11,21 +11,10 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-let primaryExitCode = 1;
-
 try {
   execFileSync("npx", ["--yes", "@ctxr-dev/skills", "validate", ROOT], {
     stdio: "inherit",
   });
 } catch (e) {
-  primaryExitCode = e.status || 1;
-  try {
-    execFileSync(
-      "node",
-      [join(ROOT, "..", "skills-cli", "src", "cli.js"), "validate", ROOT],
-      { stdio: "inherit" }
-    );
-  } catch {
-    process.exit(primaryExitCode);
-  }
+  process.exit(e.status || 1);
 }

@@ -141,3 +141,21 @@ See [GitHub Releases](https://github.com/ctxr-dev/skill-code-review/releases) fo
 ## License
 
 [MIT](LICENSE)
+
+## Example
+
+### Prompt
+
+> Use code review global skill to review frontend
+
+<img width="1330" height="722" alt="Screenshot 2026-04-11 at 22 00 35" src="https://github.com/user-attachments/assets/e2009b02-3cba-422c-b92c-655901a575ff" />
+
+<img width="1348" height="1189" alt="Screenshot 2026-04-11 at 22 00 59" src="https://github.com/user-attachments/assets/b249d3be-3bde-468c-9cc2-3066af1aff2c" />
+
+<img width="1352" height="890" alt="Screenshot 2026-04-11 at 22 01 22" src="https://github.com/user-attachments/assets/dd350032-3d95-4657-a5cf-01d746ab595b" />
+
+<img width="1334" height="1035" alt="Screenshot 2026-04-11 at 22 01 39" src="https://github.com/user-attachments/assets/46e06599-211e-479b-a7af-bc80116524c6" />
+
+<img width="1346" height="888" alt="Screenshot 2026-04-11 at 22 02 09" src="https://github.com/user-attachments/assets/47c5507f-b6f6-4be9-a8c4-a4236ff4d6ed" />
+
+

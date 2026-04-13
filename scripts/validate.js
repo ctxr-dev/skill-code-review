@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Delegates to @ctxr-dev/skills validate.
- * Requires @ctxr-dev/skills >= 2.1.0 (supports reviewers/index.yaml).
+ * Delegates to @ctxr/kit validate.
  */
 
 import { execFileSync } from "node:child_process";
@@ -12,7 +11,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 try {
-  execFileSync("npx", ["--yes", "@ctxr-dev/skills", "validate", ROOT], {
+  execFileSync("npx", ["--yes", "@ctxr/kit", "validate", ROOT], {
     stdio: "inherit",
   });
 } catch (e) {

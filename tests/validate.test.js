@@ -25,7 +25,7 @@ function runValidate() {
 }
 
 describe("validate.js", () => {
-  it("delegates to @ctxr-dev/skills validate or local fallback", () => {
+  it("delegates to @ctxr/kit validate or local fallback", () => {
     const r = runValidate();
     const output = r.stdout + r.stderr;
     // Should produce validation output from one of the paths

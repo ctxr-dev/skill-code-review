@@ -1,6 +1,6 @@
 # Code Review Skill for Claude Code
 
-[![npm](https://img.shields.io/npm/v/@ctxr-dev/skill-code-review)](https://www.npmjs.com/package/@ctxr-dev/skill-code-review)
+[![npm](https://img.shields.io/npm/v/@ctxr/skill-code-review)](https://www.npmjs.com/package/@ctxr/skill-code-review)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Multi-specialist code review system for [Claude Code](https://claude.ai/code). Dispatches up to 18 specialist AI reviewers in parallel, integrates external linters and analyzers, and produces structured reports with a GO / NO-GO verdict.
@@ -11,7 +11,7 @@ Auto-detects your tech stack (TypeScript, Python, Go, Rust, Java/Kotlin, Scala) 
 
 ```bash
 # Install into your project
-npx @ctxr-dev/skills install @ctxr-dev/skill-code-review
+npx @ctxr/kit install @ctxr/skill-code-review
 ```
 
 Then in Claude Code:

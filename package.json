@@ -1,6 +1,6 @@
 {
   "name": "@ctxr/skill-code-review",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Claude Code skill — 18 specialist reviewers with framework-aware overlays for deep, multi-angle code review enforcing SOLID, Clean Code, and engineering best practices.",
   "type": "module",
   "license": "MIT",

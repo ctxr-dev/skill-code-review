@@ -66,12 +66,14 @@ jobs:
         id: version
         env:
           GITHUB_EVENT_BEFORE: ${{ github.event.before }}
-        # GitHub Actions runs each `run:` step under `bash -e` by
-        # default. We want `pipefail` too so `git show ... | node`
-        # below fails loudly when upstream fails (instead of silently
-        # passing empty input through). `-u` catches unset-variable
-        # typos. The `|| true` on `git show` remains the explicit
-        # opt-out for the one case where absence is intentional.
+        # Set strict shell options explicitly so this step behaves
+        # predictably across environments regardless of Actions'
+        # defaults. `pipefail` makes `git show ... | node` fail
+        # loudly when an upstream command fails (instead of silently
+        # passing empty input through), and `-u` catches
+        # unset-variable typos. The `|| true` on `git show` remains
+        # the explicit opt-out for the one case where absence is
+        # intentional.
         shell: bash
         run: |
           set -euo pipefail

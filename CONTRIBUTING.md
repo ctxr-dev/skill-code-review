@@ -74,9 +74,12 @@ overlays/
 
 ## Releasing
 
-Releases are automated via GitHub Actions:
+Releases are PR-gated; the bot does not push to `main` directly. One dispatch + one PR merge ships the package.
 
-1. Go to Actions → Release workflow → Run workflow
-2. Choose version bump: patch / minor / major
-3. The workflow bumps `package.json`, commits, tags, and pushes
-4. The tag triggers the Publish workflow which publishes to npm
+1. Actions → Release → Run workflow. Branch selector: `main` (any other ref is rejected). Version bump: `patch` / `minor` / `major`.
+2. The workflow bumps `package.json` on a `release/v<version>` branch and opens a release PR.
+3. Review + merge the PR.
+4. `tag-on-main.yml` detects the version change on the merge commit, creates the annotated `v<version>` tag, and pushes it.
+5. The tag push triggers `publish.yml`, which runs `index:build + validate + lint + test`, verifies tag/version agreement, and runs `npm publish --access public --provenance`.
+
+Full operator walkthrough (including troubleshooting for stale/orphan tags, non-main dispatches, and the "Allow GitHub Actions to create and approve pull requests" org-level policy) lives in the [Releasing section of the README](README.md#releasing).

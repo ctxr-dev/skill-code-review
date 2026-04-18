@@ -143,6 +143,7 @@ Releases are PR-gated. Version bumps land on `main` through a review gate like a
 Enable these on the repo before your first release:
 
 - Repository secret `NPM_TOKEN` set to an npm access token with publish rights on the `@ctxr` scope (`npm token create`).
+- **Settings → Actions → General → Workflow permissions**: enable **Allow GitHub Actions to create and approve pull requests** so `release.yml` can open its version-bump PR with `GITHUB_TOKEN`. If the checkbox is greyed out, an organization-level Actions policy is restricting it; ask an org admin to unlock the setting first.
 - (Optional, recommended) GitHub-managed CodeQL default setup: Security → Code security → enable default setup for `javascript-typescript` and `actions`.
 - (Optional) A branch ruleset on `main` requiring PR review + code scanning. The release flow works without it; gates are strictly stricter when enabled.
 
@@ -156,10 +157,12 @@ Enable these on the repo before your first release:
 3. Review the PR (diff is just version fields). Approve + merge.
 4. On merge, `tag-on-main.yml` fires automatically:
    - Detects the version change.
-   - Creates and pushes the annotated `v<version>` tag.
-5. The tag push fires `publish.yml`, which runs `index:build + validate + lint + test`, verifies the tag matches `package.json`, and publishes the package to npm.
+   - Creates and pushes the annotated `v<version>` tag via `GITHUB_TOKEN`.
+5. **Actions → Publish to npm → Run workflow** on the `v<version>` tag. The workflow runs `npm ci + index:build + validate + lint + test`, verifies the tag matches `package.json`, and publishes the package to npm.
 
-From **Run workflow** to **published on npm** is one dispatch + one PR merge.
+> **Why a manual dispatch for step 5?** GitHub's built-in `GITHUB_TOKEN` cannot trigger further workflows (`on: push: tags` won't fire when a workflow pushed the tag). So the tag auto-creation stops at the tag. Publishing is one extra click. To make it fully automatic, swap the push credential in `tag-on-main.yml` for a GitHub App token or fine-grained PAT stored as a repo secret, then the `push: tags` trigger on `publish.yml` will fire and step 5 happens by itself.
+
+From **Run workflow** on Release to **published on npm** is one dispatch + one PR merge + one dispatch (or one dispatch + one PR merge, once a PAT/App-token is wired in).
 
 See [GitHub Releases](https://github.com/ctxr-dev/skill-code-review/releases) for the changelog.
 
@@ -172,8 +175,8 @@ See [GitHub Releases](https://github.com/ctxr-dev/skill-code-review/releases) fo
   git push origin --delete vX.Y.Z
   ```
 
-  Then push an empty commit to `main` (or re-merge anything) to retrigger `tag-on-main`.
-- **`publish.yml` fails on "Verify tag matches package.json"** — tag and `package.json` disagree. Investigate the merge commit; this should not happen under the PR-based flow.
+  Then merge a trivial no-op PR to `main` (or revert-and-re-merge the release PR) to retrigger `tag-on-main`. Direct pushes to `main` may be blocked by branch protection, so the PR path is the reliable retrigger.
+- **`publish.yml` fails on "Verify version matches tag"** — tag and `package.json` disagree. Investigate the merge commit; this should not happen under the PR-based flow.
 - **GitHub Actions is not permitted to create pull requests** — org or enterprise policy blocks the `GITHUB_TOKEN` from opening PRs. Enable **Allow GitHub Actions to create and approve pull requests** at the org level (Settings → Actions → General → Workflow permissions), or ask the enterprise admin to unlock the setting.
 
 ## License

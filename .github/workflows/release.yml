@@ -1,12 +1,20 @@
 name: Release
 
 # Opens a release PR that bumps package.json (and package-lock.json
-# if present) to the next semver. The PR goes through the standard
-# branch-protection gates (Copilot review, code scanning, CODEOWNERS
-# approval, thread resolution) exactly like any other change — the
-# bot does not push directly to main. Once the PR merges, a separate
-# `tag-on-main.yml` workflow creates the matching `v<version>` tag,
-# which in turn fires `publish.yml`.
+# if present) to the next semver. The PR goes through whatever
+# branch-protection rules `main` has configured (review, code
+# scanning, CODEOWNERS, thread resolution) exactly like any other
+# change — the bot does not push directly to main. Once the PR
+# merges, a separate `tag-on-main.yml` workflow creates the
+# matching `v<version>` tag.
+#
+# Publishing does NOT auto-chain: tags pushed with the default
+# `GITHUB_TOKEN` do not trigger `on: push: tags` workflows (GitHub
+# design, to prevent workflow recursion). After the tag lands,
+# dispatch `publish.yml` against the tag via Actions UI (documented
+# in README `## Releasing`). To remove that manual step, swap the
+# tag-push credential in `tag-on-main.yml` for a GitHub App token
+# or fine-grained PAT.
 
 on:
   workflow_dispatch:
@@ -61,7 +69,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
+          # No `cache: npm` here: this job only runs `npm version
+          # --no-git-tag-version --ignore-scripts`, which touches
+          # package.json/package-lock.json but never installs
+          # anything. Caching would add setup overhead with no
+          # install step to benefit from it.
 
       - name: Configure git
         run: |
@@ -122,15 +134,26 @@ jobs:
         run: |
           VERSION="${{ steps.bump.outputs.version }}"
           BRANCH="${{ steps.bump.outputs.branch }}"
-          BODY="Automated release PR created by \`release.yml\`. Bumps package.json (and package-lock.json, if present) to \`v${VERSION}\`.
+          # Assemble the PR body with printf so every paragraph sits
+          # at column 0 in the final string. A previous shape used a
+          # single "..." string split across lines, which preserved
+          # the yaml-script indentation on every continuation line
+          # and made GitHub render the PR body as a <pre> code block.
+          BODY="$(printf '%s\n\n%s\n\n%s' \
+            "Automated release PR created by \`release.yml\`. Bumps package.json (and package-lock.json, if present) to \`v${VERSION}\`." \
+            "Once this PR merges to main, \`tag-on-main.yml\` creates the matching \`v${VERSION}\` tag. After the tag lands, dispatch \`publish.yml\` against \`v${VERSION}\` via Actions to publish the package to npm (see README \`## Releasing\` for why this step is manual)." \
+            "Review the diff for any surprises (package-lock.json regeneration drift, etc.) before approving.")"
 
-          Once this PR merges to main, \`tag-on-main.yml\` creates the matching \`v${VERSION}\` tag, which triggers \`publish.yml\` to publish the package to npm.
-
-          Review the diff for any surprises (package-lock.json regeneration drift, etc.) before approving."
-
-          if gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
-            gh pr edit "$BRANCH" --title "release: v${VERSION}" --body "$BODY"
-            echo "Updated existing release PR for $BRANCH"
+          # `gh pr view "$BRANCH"` matches closed/merged PRs too, so
+          # a previous release attempt that left a closed PR on the
+          # same head branch would cause this step to silently edit
+          # the closed PR and never open a new one — the operator
+          # would see the workflow succeed but have no PR to merge.
+          # Filter explicitly to open PRs for this head branch.
+          OPEN_PR_NUMBER="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+          if [ -n "$OPEN_PR_NUMBER" ]; then
+            gh pr edit "$OPEN_PR_NUMBER" --title "release: v${VERSION}" --body "$BODY"
+            echo "Updated existing open release PR #$OPEN_PR_NUMBER for $BRANCH"
           else
             gh pr create \
               --base main \

@@ -6,8 +6,13 @@ name: Tag release on main
 # Non-release commits are a fast no-op.
 #
 # The paired `release.yml` workflow opens a bump PR; merging that
-# PR triggers this workflow, which then creates the tag, which
-# then triggers `publish.yml` (push: tags: ["v*"]).
+# PR triggers this workflow, which then creates the tag. The tag
+# push does NOT auto-trigger `publish.yml`: the default
+# `GITHUB_TOKEN` cannot fire other workflows (GitHub design, to
+# prevent workflow recursion). Publishing is a separate manual
+# `workflow_dispatch` on the tag, documented in README
+# `## Releasing`. Swap this step's credential for a GitHub App
+# token or PAT to remove the manual step.
 #
 # Why the version-change gate: without it, any non-release commit
 # landing on main after a release would see the existing
@@ -51,16 +56,25 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          # Match the caching used by ci.yml / publish.yml so
-          # cold-start time on every push to main is consistent
-          # across workflows.
-          cache: npm
+          # No `cache: npm` here: this job only uses `node -p` to
+          # read package.json and `git show ... | node` to extract
+          # the previous version. It never runs npm install/ci, so
+          # caching would add setup overhead with no install step
+          # to benefit from it.
 
       - name: Detect whether this push changed the package version
         id: version
         env:
           GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+        # GitHub Actions runs each `run:` step under `bash -e` by
+        # default. We want `pipefail` too so `git show ... | node`
+        # below fails loudly when upstream fails (instead of silently
+        # passing empty input through). `-u` catches unset-variable
+        # typos. The `|| true` on `git show` remains the explicit
+        # opt-out for the one case where absence is intentional.
+        shell: bash
         run: |
+          set -euo pipefail
           CURRENT_VERSION=$(node -p "require('./package.json').version")
           TAG="v${CURRENT_VERSION}"
           echo "version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
@@ -180,7 +194,30 @@ jobs:
           if [ $PUSH_STATUS -eq 0 ]; then
             echo "Created and pushed tag ${TAG}"
           elif echo "$PUSH_OUT" | grep -q "already exists"; then
-            echo "Tag ${TAG} was created concurrently; treating as success."
+            # Someone (or something) created this tag between our
+            # ls-remote check above and this push. "already exists"
+            # alone is not enough to treat as success: the concurrent
+            # creator may have tagged a different commit, in which
+            # case this release is orphaned (publish.yml fires for
+            # their commit, not ours). Re-read the remote tag and
+            # compare to HEAD before declaring success.
+            HEAD_SHA=$(git rev-parse HEAD)
+            VERIFY_OUT=$(git ls-remote --tags origin \
+              "refs/tags/${TAG}" \
+              "refs/tags/${TAG}^{}" \
+              2>/dev/null || true)
+            VERIFY_SHA=$(echo "$VERIFY_OUT" | awk '/\^\{\}$/ {print $1}')
+            if [ -z "$VERIFY_SHA" ]; then
+              VERIFY_SHA=$(echo "$VERIFY_OUT" | awk '{print $1; exit}')
+            fi
+            if [ "$VERIFY_SHA" = "$HEAD_SHA" ]; then
+              echo "Tag ${TAG} was created concurrently at HEAD ($HEAD_SHA); treating as success."
+            else
+              echo "::error::Tag ${TAG} was created concurrently but points at ${VERIFY_SHA:-<unknown>}, not HEAD ${HEAD_SHA}."
+              echo "::error::Another actor tagged a different commit. This release is orphaned. Delete the stale tag and re-run:"
+              echo "::error::  git push origin --delete ${TAG}"
+              exit 1
+            fi
           else
             exit $PUSH_STATUS
           fi

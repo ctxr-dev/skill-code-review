@@ -132,11 +132,49 @@ skill-code-review/
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, conventions, and release process.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and conventions.
 
-## Releases
+## Releasing
 
-See [GitHub Releases](https://github.com/ctxr-dev/skill-code-review/releases) for changelog.
+Releases are PR-gated. Version bumps land on `main` through a review gate like any other change; only the tag push is automated.
+
+### One-time setup
+
+Enable these on the repo before your first release:
+
+- Repository secret `NPM_TOKEN` set to an npm access token with publish rights on the `@ctxr` scope (`npm token create`).
+- (Optional, recommended) GitHub-managed CodeQL default setup: Security → Code security → enable default setup for `javascript-typescript` and `actions`.
+- (Optional) A branch ruleset on `main` requiring PR review + code scanning. The release flow works without it; gates are strictly stricter when enabled.
+
+### Cutting a release
+
+1. **Actions → Release → Run workflow**.
+   - Branch selector: `main` (the workflow refuses any other ref).
+   - Version bump: `patch` / `minor` / `major`.
+   - Click **Run workflow**.
+2. The workflow bumps `package.json` on a fresh `release/v<version>` branch and opens a PR to `main` titled `release: v<version>`.
+3. Review the PR (diff is just version fields). Approve + merge.
+4. On merge, `tag-on-main.yml` fires automatically:
+   - Detects the version change.
+   - Creates and pushes the annotated `v<version>` tag.
+5. The tag push fires `publish.yml`, which runs `index:build + validate + lint + test`, verifies the tag matches `package.json`, and publishes the package to npm.
+
+From **Run workflow** to **published on npm** is one dispatch + one PR merge.
+
+See [GitHub Releases](https://github.com/ctxr-dev/skill-code-review/releases) for the changelog.
+
+### Troubleshooting
+
+- **Release workflow fails with "dispatched from non-main ref"** — you selected a feature branch in the Actions UI. Re-dispatch with `main`.
+- **`tag-on-main` fails with "Tag vX.Y.Z exists but points at …"** — a stale/orphan tag from a prior failed release. Delete and re-run:
+
+  ```bash
+  git push origin --delete vX.Y.Z
+  ```
+
+  Then push an empty commit to `main` (or re-merge anything) to retrigger `tag-on-main`.
+- **`publish.yml` fails on "Verify tag matches package.json"** — tag and `package.json` disagree. Investigate the merge commit; this should not happen under the PR-based flow.
+- **GitHub Actions is not permitted to create pull requests** — org or enterprise policy blocks the `GITHUB_TOKEN` from opening PRs. Enable **Allow GitHub Actions to create and approve pull requests** at the org level (Settings → Actions → General → Workflow permissions), or ask the enterprise admin to unlock the setting.
 
 ## License
 

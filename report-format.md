@@ -304,22 +304,22 @@ When `format=json` or auto-detected as tool context, produce this exact structur
 - `verdict`: exactly one of `GO`, `NO-GO`, `CONDITIONAL`
 - `summary.description`: string
 - `summary.files_changed`: integer
-- `summary.specialists_dispatched`: integer
-- `summary.specialists_total`: integer (always 18)
+- `summary.specialists_dispatched`: integer (count of activated leaves from `reviewers.wiki/`)
+- `summary.specialists_total`: integer (count of leaves in the wiki — currently ~476; query at runtime, do not hard-code)
 - `summary.mode`: `diff` or `full`
 - `summary.scope`: all fields `null` when no scope filters; array of strings when filtered
 - `summary.scope` field mapping from arguments: `scope-dir` → `dirs`, `scope-lang` → `langs`, `scope-framework` → `frameworks`, `scope-reviewer` → `reviewers`, `scope-severity` → `severity_filter`, `scope-gate` → `gates_filter`
 - `issues[].severity`: exactly one of `critical`, `important`, `minor` (lowercase)
 - `issues[].line`: integer or `null` if not applicable
 - `issues[].principle`: string or `null`
-- `strengths[].specialist`: string (reviewer ID)
+- `strengths[].specialist`: string (leaf id from `reviewers.wiki/` — kebab-case, matches the leaf's `id:` frontmatter field)
 - `specialists[].status`: exactly one of `pass`, `fail` (lowercase)
 - `specialists[].critical`, `.important`, `.minor`: integer (non-negative)
 - `gates[].status`: exactly one of `PASS`, `FAIL`, `N/A` (uppercase)
 - `tool_results[].status`: exactly one of `pass`, `fail`, `skipped` (lowercase)
 - `tool_results[].reason`: string, present only when status is `skipped`
 - `tool_results[].findings`: integer or `null`
-- `tool_results[].specialist`: string (reviewer ID that declared this tool)
+- `tool_results[].specialist`: string (leaf id from `reviewers.wiki/` that declared this tool)
 - All arrays may be empty but must be present (no omission)
 
 ### YAML Output

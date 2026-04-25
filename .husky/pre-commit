@@ -1,1 +1,1 @@
-npm run index:build && npm run validate && npm run lint
+npm run validate:src && npm run lint

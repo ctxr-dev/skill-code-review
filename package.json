@@ -1,7 +1,7 @@
 {
   "name": "@ctxr/skill-code-review",
   "version": "1.0.6",
-  "description": "Claude Code skill — 18 specialist reviewers with framework-aware overlays for deep, multi-angle code review enforcing SOLID, Clean Code, and engineering best practices.",
+  "description": "Claude Code skill — wiki-organised corpus of ~476 specialist reviewer leaves selected by semantic tree descent against the diff, aggregated into an 8-gate GO/NO-GO release verdict.",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -23,9 +23,9 @@
   "files": [
     "SKILL.md",
     "code-reviewer.md",
+    "release-readiness.md",
     "report-format.md",
-    "reviewers/",
-    "overlays/",
+    "reviewers.wiki/",
     "README.md",
     "LICENSE"
   ],
@@ -34,14 +34,15 @@
     "target": "folder"
   },
   "scripts": {
-    "test": "node --test tests/*.test.js",
-    "index:build": "node scripts/build-index.js",
-    "validate": "node scripts/validate.js",
+    "test": "node --test tests/unit/*.test.js",
+    "test:src": "node --test tests/unit/*.test.js",
+    "index:build:src": "node scripts/build-index-src.mjs",
+    "validate:body-shape": "node scripts/validate-body-shape.mjs",
+    "validate:dimensions": "node scripts/validate-dimensions.mjs",
+    "validate:src": "npm run index:build:src && npm run validate:body-shape && npm run validate:dimensions",
     "lint": "markdownlint-cli2 '**/*.md' '#node_modules'",
     "lint:fix": "markdownlint-cli2 --fix '**/*.md' '#node_modules'",
-    "prepare": "husky",
-    "new:reviewer": "node scripts/new-reviewer.js",
-    "new:overlay": "node scripts/new-overlay.js"
+    "prepare": "husky"
   },
   "devDependencies": {
     "gray-matter": "^4.0.3",

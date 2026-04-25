@@ -6,8 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if echo \"$CLAUDE_TOOL_INPUT\" | grep -q 'reviewers/'; then npm run index:build 2>/dev/null; fi",
-            "timeout": 10
+            "command": "if echo \"$CLAUDE_TOOL_INPUT\" | grep -q 'reviewers.src/'; then npm run validate:src 2>/dev/null; fi",
+            "timeout": 30
           }
         ]
       }

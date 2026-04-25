@@ -10,66 +10,97 @@ This installs dev dependencies and sets up the pre-commit hook via Husky.
 
 ## Development Workflow
 
-### Adding a New Reviewer
+### Adding a Reviewer (or language / framework)
 
-```bash
-npm run new:reviewer -- <reviewer-id>
-```
+The corpus lives in two layers: hand-authored sources at `reviewers.src/`, and the wiki-organised tree at `reviewers.wiki/` produced by [`skill-llm-wiki`](https://github.com/ctxr-dev/skill-llm-wiki). Authors only touch the source layer; the wiki layer is regenerated from sources.
 
-This scaffolds `reviewers/<id>.md` with the correct template. After filling it in:
+1. Author `reviewers.src/<id>.md` with the v2 frontmatter:
 
-1. Add the reviewer to the embedded index in `code-reviewer.md` (the `- id:` YAML block)
-2. Run `npm run validate` to verify consistency
+   ```yaml
+   id: <kebab-case>            # must match filename
+   type: primary | overlay | universal
+   focus: <one-line description>
+   covers:                     # 3–15 granular bullets, used for similarity clustering
+     - "..."
+   dimensions:                 # ≥ 1 of: architecture, correctness, documentation, performance, readability, security, tests
+     - "..."
+   audit_surface:              # what this reviewer audits
+     - "..."
+   languages: [<list> | all]
+   tags: [<topical tags>]
+   activation:                 # routing signals
+     file_globs: ["**/*.py"]
+     keyword_matches: [...]
+     structural_signals: [...]
+     escalation_from: [<reviewer-ids>]
+   tools:                      # optional external linters / SAST / etc.
+     - {name: ..., command: ..., purpose: ...}
+   ```
 
-### Adding a New Overlay
+2. Run the source validators:
 
-```bash
-npm run new:overlay -- <category> <name>
-```
+   ```bash
+   npm run validate:src        # frontmatter + body shape + dimensions taxonomy
+   npm run test:src            # unit tests covering the parser/validators
+   ```
 
-Categories: `frameworks`, `languages`, `infra`. After filling it in:
+3. Rebuild the wiki via `skill-llm-wiki` (sibling project):
 
-1. Add a row to `overlays/index.md` under the correct section
-2. Run `npm run validate` to verify consistency
+   ```bash
+   node /path/to/skill-llm-wiki/scripts/cli.mjs build /path/to/skill-code-review/reviewers.src \
+     --quality-mode deterministic --fanout-target 6 --max-depth 5 --soft-dag-parents --accept-dirty
+   ```
+
+4. Validate the rebuilt wiki:
+
+   ```bash
+   node /path/to/skill-llm-wiki/scripts/cli.mjs validate /path/to/skill-code-review/reviewers.src.wiki
+   ```
+
+5. Move the produced `reviewers.src.wiki/` over the existing `reviewers.wiki/`, commit both `reviewers.src/` source change and the rebuilt `reviewers.wiki/`.
+
+The wiki layer handles clustering, slug generation, soft-DAG parents, balance enforcement, and root containment — no manual placement under a subcategory is needed.
+
+### Updating Phase C framework detection
+
+Adding a framework that the orchestrator doesn't yet recognise from manifests requires updating the Phase C table in [`code-reviewer.md`](code-reviewer.md). The table maps dependency names to semantic categories so the Project Profile carries the right signal into Step 1's tree descent.
 
 ### Validation
 
 ```bash
-npm run validate    # structural checks
-npm run lint        # markdown lint
-npm run lint:fix    # auto-fix markdown issues
+npm run validate:src   # source-corpus validators (parse + body + dimensions)
+npm run test:src       # validator unit tests
+npm run lint           # markdown lint
+npm run lint:fix       # auto-fix markdown issues
 ```
 
-The pre-commit hook runs both automatically.
+The pre-commit hook runs `validate:src + lint`.
 
-#### What the Validator Checks
+#### What the Source Validators Check
 
-- **SKILL.md frontmatter** — `name` and `description` fields present
-- **Reviewer index** — every `- id:` in `code-reviewer.md` has a matching file in `reviewers/`, and vice versa
-- **Overlay index** — every file in `overlays/index.md` exists on disk, and every overlay file is listed
-- **Cross-references** — all relative markdown links resolve to existing files
-- **Required files** — SKILL.md, code-reviewer.md, README.md, LICENSE, overlays/index.md
-- **Line count** — warns if any reviewer exceeds 500 lines (token budget)
+- **Schema** — every required frontmatter field present, valid types, valid enum values
+- **Body shape** — H1 title, required H2 sections per type, tier-cap line counts (soft-warn on overruns)
+- **Dimensions taxonomy** — every reviewer declares ≥ 1 dimension from the 7-axis closed vocabulary
 
 ## File Structure
 
 ```
-SKILL.md                  Skill metadata (frontmatter + overview)
-code-reviewer.md          Orchestrator with embedded Reviewer Index
-reviewers/                Specialist reviewer files (one per concern)
-overlays/
-  index.md                Master overlay routing table
-  frameworks/             Framework-specific checks
-  languages/              Language-specific checks
-  infra/                  Infrastructure-specific checks
+SKILL.md                  Skill metadata (frontmatter + architecture overview)
+code-reviewer.md          Orchestrator (scans, descends the wiki, dispatches)
+release-readiness.md      8-gate scorecard (dimension-predicate binding)
+report-format.md          Canonical report format + JSON schema + argument spec
+reviewers.src/            Source corpus (gitignored)
+reviewers.wiki/           Wiki-organised corpus — source of truth in repo
+  index.md                Root index — entries[] of subcategories
+  <subcat>/index.md       Subcategory index — entries[] of leaves
+  <subcat>/<leaf>.md      Specialist reviewer
 ```
 
 ## Conventions
 
 - **Reviewer files** must have an H1 title as the first heading
-- **Overlay files** must be registered in `overlays/index.md`
-- **Reviewer IDs** use kebab-case matching the filename (e.g., `clean-code-solid` → `clean-code-solid.md`)
-- Keep reviewers under 500 lines for token efficiency
+- **Reviewer IDs** use kebab-case matching the filename (e.g., `sec-owasp-a01-broken-access-control` → `sec-owasp-a01-broken-access-control.md`)
+- Tier caps from `scripts/lib/reviewer-schema.mjs` give per-type body length budgets — soft-warn on overrun, never hard-block
 - Use consistent severity levels: Critical, Important, Minor
 
 ## Releasing

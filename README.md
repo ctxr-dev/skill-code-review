@@ -3,9 +3,9 @@
 [![npm](https://img.shields.io/npm/v/@ctxr/skill-code-review)](https://www.npmjs.com/package/@ctxr/skill-code-review)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Multi-specialist code review system for [Claude Code](https://claude.ai/code). Dispatches up to 18 specialist AI reviewers in parallel, integrates external linters and analyzers, and produces structured reports with a GO / NO-GO verdict.
+Multi-specialist code review system for [Claude Code](https://claude.ai/code). Selects specialists from a wiki-organised corpus (~476 leaves under ~59 subcategories), runs the relevant ones in parallel, integrates external linters and analyzers, and produces structured reports with a GO / NO-GO verdict.
 
-Auto-detects your tech stack (TypeScript, Python, Go, Rust, Java/Kotlin, Scala) and activates only the relevant reviewers, overlays, and tools.
+Auto-detects your tech stack (Python, JS, TS, Swift, Go, Rust, Java, Kotlin, Scala, C#, Ruby, PHP, Dart, C, C++, Objective-C, shell, SQL, R, Lua) and activates only the relevant specialists from the wiki corpus.
 
 ## Quick Start
 
@@ -52,7 +52,8 @@ git submodule add https://github.com/ctxr-dev/skill-code-review.git \
 /skill-code-review format=json                    # structured JSON output
 /skill-code-review tools=interactive              # ask to install missing linters
 /skill-code-review scope-dir=src/api              # only review src/api/
-/skill-code-review scope-reviewer=security        # only security specialist
+/skill-code-review scope-reviewer=sec-owasp-a01   # force-activate a specific leaf id
+/skill-code-review max-reviewers=15               # tighter token budget (default 30)
 /skill-code-review base=origin/main head=HEAD     # explicit commit range
 ```
 
@@ -60,23 +61,24 @@ See [report-format.md](report-format.md) for the full argument reference, output
 
 ### How it works
 
-1. **Scan** — detects languages, frameworks, monorepo structure from manifests
-2. **Tools** — discovers and runs external linters/analyzers (eslint, semgrep, mypy, clippy, etc.)
-3. **Route** — reads `reviewers/index.yaml` to select specialists deterministically
-4. **Overlay** — loads framework-specific checks for detected tech (React, Prisma, Django, Docker, etc.)
-5. **Dispatch** — all selected specialists run in parallel with filtered diffs + tool output
-6. **Verify** — every file reviewed by at least 2 specialists
-7. **Verdict** — 8-gate release readiness: GO / NO-GO / CONDITIONAL
+1. **Scan** — detects languages, frameworks, monorepo structure from manifests.
+2. **Descend the wiki** — reads `reviewers.wiki/index.md` and walks into subcategories whose `focus` is relevant to the diff + Project Profile.
+3. **Activate leaves** — at leaf level, evaluates each candidate's `activation:` block (file globs, structural signals, escalation) and picks specialists; bounded at `max-reviewers` (default 30).
+4. **Tools** — collects each activated leaf's declared external linters/analyzers, deduplicates, runs the available ones.
+5. **Dispatch** — every selected specialist runs in parallel with the leaf body + filtered diff + Project Profile + tool output.
+6. **Verify** — every file in the diff reviewed by at least 2 specialists.
+7. **Verdict** — 8-gate release readiness aggregated by `dimensions[]` + `tags[]` predicate: GO / NO-GO / CONDITIONAL.
 
-## Reviewers
+## Corpus
 
-**7 universal** (always active): clean-code-solid, architecture-design, test-quality, security, error-resilience, initialization-hygiene, release-readiness
+Specialists live in [`reviewers.wiki/`](reviewers.wiki/index.md) — a wiki-organised corpus of ~476 leaves under ~59 top-level subcategories, built from `reviewers.src/` via `skill-llm-wiki` (deterministic mode, fan-out target 6, max depth 5). Coverage spans:
 
-**11 conditional** (activated by signals): language-quality, concurrency-async, performance, dependency-supply-chain, documentation-quality, data-validation, api-design, observability, cli-quality, hooks-safety, readme-quality
+- **Languages** — every supported language as a `lang-<name>.md` leaf.
+- **Frameworks** — `fw-*.md` leaves for the frameworks named in the [Phase C detection table](code-reviewer.md).
+- **Concerns** — security (decomposed across OWASP categories), correctness, tests, performance, architecture, readability, documentation, observability, CLI, API, domain footguns.
+- **Patterns / anti-patterns / DDD / clean-architecture / hexagonal / microservices** — each as their own leaf.
 
-**27 overlays** (loaded per framework): 17 frameworks, 6 languages, 4 infrastructure
-
-See [SKILL.md](SKILL.md) for full specialist descriptions.
+See [SKILL.md](SKILL.md) for the full architecture summary.
 
 ## Report Format
 
@@ -94,35 +96,40 @@ Every review produces (markdown or JSON):
 
 ```text
 skill-code-review/
-├── SKILL.md                  # Skill metadata and overview
-├── code-reviewer.md          # Orchestrator (reads index for routing)
+├── SKILL.md                  # Skill metadata and architecture overview
+├── code-reviewer.md          # Orchestrator: scans, descends the wiki, dispatches specialists
+├── release-readiness.md      # 8-gate scorecard, dimension-predicate binding
 ├── report-format.md          # Canonical report format + JSON schema + argument spec
-├── reviewers/
-│   ├── index.yaml            # Auto-generated from reviewer frontmatter
-│   ├── clean-code-solid.md   # Each reviewer has YAML frontmatter (tools, audit_surface)
-│   ├── security.md
-│   └── ... (18 reviewers)
-└── overlays/
-    ├── index.md              # Overlay routing table
-    ├── frameworks/           # 17 framework overlays (some with tool declarations)
-    ├── languages/            # 6 language overlays (all with tool declarations)
-    └── infra/                # 4 infrastructure overlays (some with tool declarations)
+├── reviewers.src/            # Source corpus (gitignored; wiki is source of truth in repo)
+└── reviewers.wiki/
+    ├── index.md              # Root index — entries[] of subcategories
+    ├── <subcat>/
+    │   ├── index.md          # Subcategory index — entries[] of leaves
+    │   ├── <leaf>.md         # Specialist (frontmatter + body checklist)
+    │   └── ...
+    └── ... (~59 subcategories, ~476 leaves total)
 ```
 
 ## Customization
 
-### Add a framework overlay
-
-1. `npm run new:overlay -- frameworks <name>`
-2. Fill in the checklist items and optional `tools` frontmatter
-3. Add row to `overlays/index.md`
-4. `npm run validate && npm run lint`
-
 ### Add a reviewer
 
-1. `npm run new:reviewer -- <id>`
-2. Fill in frontmatter (tools, audit_surface, activation) and checklist
-3. `npm run index:build && npm run validate && npm run lint`
+1. Author a new source file in `reviewers.src/<id>.md` with the v2 frontmatter (`id`, `type`, `focus`, `covers[]`, `dimensions[]`, `audit_surface[]`, `activation`, `tools[]`, `tags[]`).
+2. Run the validators: `npm run validate:src` (parses + body shape + dimensions taxonomy).
+3. Rebuild the wiki via `skill-llm-wiki`:
+
+   ```bash
+   node /path/to/skill-llm-wiki/scripts/cli.mjs build /path/to/skill-code-review/reviewers.src \
+     --quality-mode deterministic --fanout-target 6 --max-depth 5 --soft-dag-parents --accept-dirty
+   ```
+
+4. Move the produced `reviewers.src.wiki/` over the existing `reviewers.wiki/`, validate the result, commit.
+
+The wiki layer takes care of clustering, slug generation, soft-DAG parents, and balance — no manual placement under a subcategory is needed.
+
+### Add a language or framework
+
+Same procedure as a reviewer — the language/framework is just a `lang-<name>.md` or `fw-<name>.md` leaf in `reviewers.src/`. Update Phase C of [`code-reviewer.md`](code-reviewer.md) if the framework is new and the dependency-name detection needs to know about it.
 
 ### Severity levels
 

@@ -1,70 +1,45 @@
 ---
 name: skill-code-review
-description: Use when completing tasks, implementing major features, or before merging to verify work meets requirements. Dispatches up to 18 specialist reviewers with framework-aware overlays for deep, multi-angle code review enforcing SOLID, Clean Code, and engineering best practices.
+description: Use when completing tasks, implementing major features, or before merging to verify work meets requirements. Dispatches specialised reviewers selected from a wiki-organised corpus (~476 leaves) by semantic tree descent against the diff, then aggregates findings into an 8-gate GO/NO-GO release verdict.
 ---
 
 # Requesting Code Review
 
-Dispatch a code review orchestrator that scans the project, auto-detects the tech stack, routes to relevant specialists using an embedded index, loads framework-specific overlays, dispatches all selected specialists in parallel, verifies coverage, and produces a unified report with a GO/NO-GO release verdict.
+Dispatch a code review orchestrator that scans the project, auto-detects the tech stack, descends `reviewers.wiki/` to select specialists semantically based on the diff and Project Profile, dispatches them in parallel, verifies coverage, and produces a unified report with a GO/NO-GO release verdict.
 
-**Core principles:** SOLID, Clean Code, DRY, KISS, YAGNI enforced on every review. Only relevant reviewers and overlays loaded — token-efficient by design.
+**Core principles:** SOLID, Clean Code, DRY, KISS, YAGNI, security, correctness, tests, architecture, performance, readability, documentation — covered by the corpus's 7-axis dimensions taxonomy. Only relevant leaves loaded — token-efficient by design.
 
 ## Architecture
 
 ```text
-code-reviewer.md          Orchestrator with embedded Reviewer Index + Deep Scanner
-reviewers/                18 base specialist files (universal checks)
-overlays/
-  index.md                Master overlay index (LLM reads first to select)
-  frameworks/             17 framework overlays (React, Prisma, Django, etc.)
-  languages/              5 language overlays (TS, Python, Go, Rust, Java/Kotlin)
-  infra/                  4 infrastructure overlays (Docker, GH Actions, Terraform, K8s)
+code-reviewer.md          Orchestrator: scans the project, descends the wiki, dispatches specialists in parallel
+reviewers.wiki/           Wiki-organised corpus of ~476 specialist leaves under ~59 top-level subcategories
+  index.md                Root index — entries[] lists subcategories with id + file + focus + tags
+  <subcat>/index.md       Subcategory index — entries[] of leaves (or sub-subcategory indices)
+  <subcat>/<leaf>.md      Specialist leaf — frontmatter (id, focus, dimensions, covers, activation, tools) + body
+release-readiness.md      8-gate scorecard; gate-to-leaf binding by dimensions[] + tags[] predicate
+report-format.md          Argument reference, markdown report shape, JSON schema
 ```
 
 ### How It Works
 
-1. **Deep Project Scanner** (Step 0) — scans manifests, detects languages/frameworks/monorepo structure, produces a Project Profile
-2. **Index-based routing** (Step 1) — reads the embedded Reviewer Index (~300 lines YAML) to select specialists deterministically based on the Profile + diff
-3. **Overlay selection** — reads `overlays/index.md`, loads ONLY overlays matching detected frameworks (e.g., Prisma detected → load `overlays/frameworks/prisma.md`)
-4. **Parallel dispatch** (Step 2) — each specialist gets: base checklist + relevant overlays + Project Profile + filtered diff
-5. **Coverage verification** (Step 4) — every file reviewed by at least 2 specialists
-6. **8-gate verdict** (Step 5) — GO / NO-GO / CONDITIONAL with full methodology compliance
+1. **Deep Project Scanner** (Step 0) — scans manifests, detects languages/frameworks/monorepo structure, produces a Project Profile.
+2. **Wiki tree descent** (Step 1) — reads `reviewers.wiki/index.md`, descends only into subcategories whose `focus` is relevant to the Profile + diff. At leaf level, evaluates `activation:` (file globs, structural signals, escalation) for the final dispatch decision.
+3. **Token-budget cap** — bounds total activated leaves at 30 by default; configurable via `max-reviewers=N`.
+4. **Parallel dispatch** (Step 2) — each specialist gets: leaf body + Project Profile + filtered diff + tool-discovery output.
+5. **Coverage verification** (Step 4) — every file in the diff covered by at least 2 specialists.
+6. **8-gate verdict** (Step 5) — gates aggregate findings by `dimensions[]` + `tags[]` predicate; produces GO / NO-GO / CONDITIONAL.
 
-## Specialist Team (18 reviewers)
+## Corpus
 
-### Always Active (7 universal)
+The corpus lives at `reviewers.wiki/` and was built from `reviewers.src/` via `skill-llm-wiki` (deterministic mode, fan-out target 6, max depth 5, soft-DAG parents). It covers:
 
-- **clean-code-solid** — SOLID, DRY, KISS, YAGNI, Law of Demeter, POLA, Fail Fast, cyclomatic/cognitive complexity
-- **architecture-design** — Clean architecture, hexagonal/DDD, module boundaries, coupling/cohesion, architecture erosion
-- **test-quality** — Test pyramid, assertion quality, boundary values, mutation testing, test smells, determinism
-- **security** — OWASP Top 10, injection, secrets, crypto, sessions, filesystem safety, serialization
-- **error-resilience** — Error hierarchy, retry/circuit-breaker, fallback, partial failure, saga, defensive programming
-- **initialization-hygiene** — No stubs, feature completeness, startup/shutdown, dead code, wiring, export hygiene
-- **release-readiness** — 8-gate GO/NO-GO aggregator
+- **Languages** — Python, JS, TS, Swift, Go, Rust, Java, Kotlin, Scala, C#, Ruby, PHP, Dart, C, C++, Objective-C, shell, SQL, R, Lua. Each as a `lang-<name>.md` leaf.
+- **Frameworks** — every framework in Phase C of `code-reviewer.md`'s detection table (web, ORM, test, UI, validation, auth, state, GraphQL, gRPC, …) as `fw-*.md` leaves.
+- **Concerns** — security (decomposed by OWASP / dimension), correctness, tests, performance, architecture, readability, documentation, observability, CLI/API, domain-specific footguns.
+- **Anti-patterns + design patterns + DDD + clean-architecture / hexagonal / microservices** as their own leaves.
 
-### Conditionally Active (11 specialists)
-
-- **language-quality** — Language idioms and type safety for TS, Python, Go, Rust, Java/Kotlin, Scala
-- **concurrency-async** — Race conditions, thread safety, actors/CSP, backpressure, idempotency
-- **performance** — Big-O, hot paths, DB queries, caching, I/O, memory, startup
-- **dependency-supply-chain** — CVEs, license compliance, supply chain integrity, maintainer trust
-- **documentation-quality** — README, API docs, ADRs, changelogs, config docs, diagram currency
-- **data-validation** — Input validation, schema enforcement, config management, env handling
-- **api-design** — REST/GraphQL/gRPC/SDK contracts, versioning, semver, event schemas
-- **observability** — Structured logging, metrics, tracing, health checks, alerting, audit
-- **cli-quality** — Unix philosophy, signals, I/O discipline, exit codes, verbosity, shell completion
-- **hooks-safety** — Atomic ops, permissions, symlinks, paths, cross-platform, config parsing
-- **readme-quality** — Root README.md structure, accuracy, open-source standards, no redundancy
-
-### Overlays (27 scoped files)
-
-Loaded only when the framework/language/infra is detected in your project:
-
-**Frameworks:** React, Next.js, Express, Fastify, NestJS, Spring, Django, Flask, Prisma, Drizzle, SQLAlchemy, TypeORM, Zod, Pydantic, GraphQL, gRPC, Tailwind
-
-**Languages:** TypeScript, Python, Go, Rust, Java/Kotlin, Scala
-
-**Infrastructure:** Docker, GitHub Actions, Terraform, Kubernetes
+Leaves carry rich frontmatter: `id`, `type`, `focus`, `covers[]`, `dimensions[]` (7-axis), `audit_surface[]`, `activation` (file_globs / keyword_matches / structural_signals / escalation_from), `tools[]`, `tags[]`, `languages`. The orchestrator routes off `focus` and `dimensions`/`tags`; specialists themselves use the body checklist.
 
 ## When to Request Review
 
@@ -88,24 +63,25 @@ Loaded only when the framework/language/infra is detected in your project:
 /skill-code-review
 ```
 
-The orchestrator auto-detects the base commit, scans the project, selects reviewers, and produces the report.
+The orchestrator auto-detects the base commit, scans the project, descends the wiki, and produces the report.
 
 **With arguments:**
 
 ```text
-/skill-code-review help                           # show all arguments
-/skill-code-review full                           # review entire codebase
-/skill-code-review format=json                    # structured JSON output
-/skill-code-review scope-dir=src/api              # only review src/api/
-/skill-code-review scope-reviewer=security        # only security specialist
-/skill-code-review base=origin/main head=HEAD     # explicit commit range
+/skill-code-review help                              # show all arguments
+/skill-code-review full                              # review entire codebase
+/skill-code-review format=json                       # structured JSON output
+/skill-code-review scope-dir=src/api                 # only review src/api/
+/skill-code-review scope-reviewer=sec-owasp-a01      # force-activate a specific leaf
+/skill-code-review max-reviewers=15                  # tighter token budget
+/skill-code-review base=origin/main head=HEAD        # explicit commit range
 ```
 
 See `report-format.md` for the full argument reference, output format examples, and JSON schema.
 
 **Output formats:**
 
-- **Markdown** (default for users) — beautiful report with tables, verdicts, coverage matrix
+- **Markdown** (default for users) — full report with tables, verdicts, coverage matrix
 - **JSON/YAML** (default for tools, or `format=json`) — structured data for CI/automation
 
 **Act on feedback:**
@@ -131,5 +107,5 @@ See `report-format.md` for the full argument reference, output format examples, 
 - Request clarification
 
 See orchestrator: `code-reviewer.md`
-See reviewers: `reviewers/`
-See overlays: `overlays/index.md`
+See corpus: `reviewers.wiki/index.md`
+See gates: `release-readiness.md`

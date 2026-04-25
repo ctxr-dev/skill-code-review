@@ -44,9 +44,9 @@ When `full` is set, the orchestrator uses `git ls-files` (filtered by scope-dir 
 
 When `mode=thorough`:
 
-- Smart routing still applies — only reviewers relevant to the detected stack are dispatched
-- ALL tools declared by activated reviewers and loaded overlays are enabled
-- Conditional reviewers activate on weaker signals (tangential file matches)
+- Smart routing still applies — only reviewer leaves relevant to the detected stack are dispatched
+- ALL tools declared by activated leaves are enabled
+- Leaves activate on weaker signals (tangential file matches, partial focus overlap)
 - All severity levels reported (scope-severity ignored)
 - Tool mode auto-selected: `interactive` when user is present, `silent` in CI/piped contexts
 - Sets `full` automatically if no base/head specified
@@ -59,7 +59,7 @@ Use for critical releases, security audits, or new project onboarding.
 - `tools=interactive`: For each missing tool, ask the user if they want to install it. Offer platform-appropriate methods (the AI determines install options at runtime — brew, npm, pip, cargo, etc.). If user declines, skip.
 - `tools=skip`: Don't run any external tools. Pure AI checklist review only.
 
-Tools are declared in reviewer and overlay frontmatter. The orchestrator collects all tools from activated reviewers and loaded overlays, deduplicates by name, checks availability, and runs them against scoped files.
+Tools are declared in each reviewer leaf's frontmatter (`tools:` array). The orchestrator collects all tools from activated leaves, deduplicates by name, checks availability, and runs them against scoped files.
 
 ### Format Auto-Detection
 
@@ -88,7 +88,7 @@ This is the canonical example. Match this structure exactly when producing markd
 | **Files** | 8 files changed |
 | **Stack** | TypeScript, React, Prisma |
 | **Mode** | diff (base auto-detected: origin/main) |
-| **Specialists** | 12 of 18 dispatched |
+| **Specialists** | 12 of 476 dispatched |
 
 ## SOLID Compliance
 
@@ -205,7 +205,7 @@ When `format=json` or auto-detected as tool context, produce this exact structur
     "files_changed": 8,
     "stack": ["TypeScript", "React", "Prisma"],
     "specialists_dispatched": 12,
-    "specialists_total": 18,
+    "specialists_total": 476,
     "scope": {
       "dirs": null,
       "langs": null,

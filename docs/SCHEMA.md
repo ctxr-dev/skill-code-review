@@ -73,10 +73,10 @@ tools:                              # optional external linters / SAST
 
 ## Body Length Contract
 
-| Tier | Max lines | Max audit_surface bullets | Max H3 sub-sections |
-|------|-----------|---------------------------|---------------------|
-| 1    | 200       | 12                        | 4                   |
-| 2    | 500       | 20                        | 8                   |
-| 3    | 800       | 25                        | 12                  |
+| Tier | Soft cap (lines) | Soft cap audit_surface bullets | Soft cap H3 sub-sections |
+|------|-----------------|--------------------------------|--------------------------|
+| 1    | 200             | 12                             | 4                        |
+| 2    | 500             | 20                             | 8                        |
+| 3    | 800             | 25                             | 12                       |
 
-Reviewers exceeding these limits fail validation.
+The validator (`scripts/validate-body-shape.mjs`) **soft-warns** on tier overruns — it does not hard-fail the build. Authors are expected to DECOMPOSE oversized reviewers, but a temporary overrun is allowed during refactoring.

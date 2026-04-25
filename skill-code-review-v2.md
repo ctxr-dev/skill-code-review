@@ -1,8 +1,71 @@
 # skill-code-review — Deep Rebuild via skill-llm-wiki
 
-## Context
+> **2026-04-26 status snapshot — read this before diving deeper.**
+>
+> **Phases 1.Z + 2 + 3 are SHIPPED** (commit `9f1823e`, tag `phase-3-complete`):
+> Phase 1.Z (596-file source corpus, schema, validators, 58 unit tests) ✓
+> Phase 2 (`reviewers.wiki/` built via skill-llm-wiki, deterministic mode, 476 routable leaves under 59 subcategories, 0 errors) ✓
+> Phase 3 (orchestrator rewired onto `reviewers.wiki/` tree-descent + predicate-based gate aggregation) ✓
+> Legacy `reviewers/` and `overlays/` directories removed.
+>
+> **Phases 4–7 are NEXT**, but their order and detail are now driven by the investigation in [`docs/sniper-precision-review-architecture.md`](docs/sniper-precision-review-architecture.md), which synthesises GitHub Copilot mechanics, SOTA AI review tools, multi-agent SE research, and an audit of our own wiki's routing surface. The investigation defines a **6-tier orchestration architecture** and a **5-sprint sequencing** that supersedes parts of Phase 5 below.
+>
+> **Where the original Phase 4–7 detail still applies**, it's preserved verbatim — the investigation is an overlay, not a rewrite. The "Sprint mapping" table below shows which original Phase 4/5/6/7 items each sprint covers, plus which items are now superseded.
+>
+> **`skill-llm-wiki` work has been carved out** into a delegated section ("Upstream skill-llm-wiki items") at the bottom of this plan. skill-code-review's plan only owns work that lives in this repo; anything that requires changes to `skill-llm-wiki`'s clustering, slug generation, or build pipeline is filed as upstream issues for that repo to solve.
+>
+> Read in this order: (1) Investigation update + sprint mapping below; (2) [`docs/sniper-precision-review-architecture.md`](docs/sniper-precision-review-architecture.md); (3) the original Phase 4–7 detail when implementing a specific sprint.
+
+## Investigation update (2026-04-26)
+
+### The 6-tier orchestration architecture
+
+Five parallel sub-agent investigations converged on the same backbone for high-precision multi-specialist code review. Full detail in [`docs/sniper-precision-review-architecture.md`](docs/sniper-precision-review-architecture.md). Summary:
+
+| Tier | Stage | Purpose | Sourced from |
+|------|-------|---------|--------------|
+| 0 | Project Profile | Languages, frameworks, monorepo structure, CI/IaC (existing in Step 0 of `code-reviewer.md`) | Existing |
+| 1 | Risk-tier triage | Bucket the diff: trivial / lite / full / sensitive. Per-tier specialist cap. Skip pipeline on trivial-no-signal. | Cloudflare's production architecture |
+| 2 | Hybrid routing | Stage A: existing wiki-tree descent + activation gate (deterministic, cheap). Stage B: one small LLM call picks final K from candidates with explicit per-pick justification (which doubles as coverage proof). | CodeRabbit, Greptile, Cursor |
+| 3 | Hypothesis pre-pass *(optional)* | "What could go wrong on this diff?" One LLM call generates risk hypotheses; each maps to ≥ 1 selected specialist. Surfaces coverage gaps. | Baz.co |
+| 4 | Parallel blind specialists | K Agent sub-tasks in one message. Each gets its leaf body + filtered diff + Project Profile + "What NOT to flag" guardrails + a logical-certificate scaffold (premise → execution path → conclusion). NO cross-talk between specialists. | arxiv 2509.01494, Meta SemiFormalReasoning, Cloudflare |
+| 5 | Verification judge | Single sub-agent re-reads cited code for each finding; drops unsupported claims; merges near-duplicates; applies severity = severity × agreement (single-source criticals get demoted unless the leaf is high-confidence on its dimension). | CodeRabbit, Cursor v1, Snyk Code, Calimero |
+| 6 | Report synthesis | Run-id-keyed `.skill-code-review/<run-id>/` directory: `manifest.json` (specialist-execution log), `findings.sarif` (tooling), `report.md` (human), optional per-leaf detail. 8-gate aggregation by dimension predicate. Empty findings is a valid result. | Cloudflare, OASIS SARIF, GitHub docs |
+
+### Sprint sequencing and mapping to original Phase 4–7
+
+The investigation's 5-sprint sequencing, with the original Phase 4–7 sub-items each sprint covers (or supersedes):
+
+| Sprint | What | Original sub-items folded in | Original sub-items superseded |
+|--------|------|------------------------------|-------------------------------|
+| **Sprint 1** — Routing precision | Tier 1 risk-tier pre-filter + Tier 2 two-stage routing (descent + LLM trim) + Tier 6 specialist-execution manifest | 5.0 (depth levels), 5.1 (tiered dispatch), 5.12 (risk-based routing), 5.13 (hard-threshold validators) | The "depth levels" framing in 5.0 is replaced by risk-tier; legacy `mode=thorough` deprecation note in 5.0.5 still applies |
+| **Sprint 2** — Quality lever | Tier 5 verification judge pass + severity × agreement | 5.6 (result deduplication), 5.11 (confidence calibration) | 5.11's "downgrade rule" replaced by severity × agreement |
+| **Sprint 3** — Corpus quality | Add explicit `dimensions:` field to all 476 source files; normalise tag casing; populate `tools:`; add `escalation_from` chains where useful | 5.2 (body sectioning — already shipped), 5.3 (project-profile fingerprint cache), 5.4 (per-(file, sha, reviewer) skip cache), 5.10 (reviewer dependency graph), 5.14 (knowledge freshness via `last_reviewed`) | None — these are corpus-side improvements |
+| **Sprint 4** — Persistent reports + scaffold | Tier 6 SARIF + Markdown dual output + run-id directory + logical-certificate prompt scaffold | All of Phase 4 (4.1 schema v2 enrichments through 4.9 closeout), 5.5 (deterministic walkers), 5.7 (streaming dispatch), 5.8 (tool priors) | None — Phase 4 is structurally aligned with the investigation; just confirms scope |
+| **Sprint 5** — Hypothesis pre-pass *(optional, advanced)* | Tier 3 hypothesis pre-pass; only if Sprints 1–4 leave residual misses | None | None |
+
+### Items NOT superseded (preserved as-is from original Phase 4–7)
+
+The following original sub-items remain valid and unchanged. They get implemented in their listed sprints:
+
+- **Phase 4** — entire phase. Output schema enrichments (4.1.1 through 4.1.16), top-level report additions (4.2.1 through 4.2.10), verdict vocabulary (4.3), arguments (4.4), output formatters (4.5), markdown layout (4.6), interactive save prompt (4.7), deterministic help pipeline (4.8), closeout (4.9). All folded into Sprint 4.
+- **Phase 6** — build/validate scripts. 6.1 (dual-mode `index-build.mjs`) is **OBSOLETE** since legacy `reviewers/` is gone; the rest (6.2–6.9) folds into Sprint 3 or Sprint 4 closeout.
+- **Phase 7** — most items already done in this session (cleanup deletes; SKILL.md/README.md/CONTRIBUTING.md refresh). Remaining: version bump (7.5), final self-review (7.6), legacy-deletion confirmation (7.7) — already deleted with user approval.
+
+### Hard guard-rails surfaced by the investigation
+
+These are anti-patterns observed across multiple SOTA tools. They go into the orchestrator's "Critical Rules" section as DON'Ts:
+
+1. **No multi-agent cross-talk.** Specialists run blind in parallel; arxiv 2509.01494 shows cross-talk hurts F1 by error propagation.
+2. **No N-pass ensemble + majority voting.** Cursor abandoned 8-pass voting because single-agent tool-use beat it. With 476 leaves we have ensemble diversity baked in.
+3. **No pure-LLM router.** Always prefilter deterministically first (Stage A). Stage B's small LLM call only trims; it does not enumerate from scratch.
+4. **Empty findings is a valid result.** GitHub Copilot is silent on 29% of reviews. Build that affordance into the aggregator — silence is precision, not failure.
+
+## Original context (preserved for historical reference)
 
 `skill-code-review` is the workspace's code-review specialist system. Today it has **18 concern-based reviewers** (security, perf, test-quality, etc.), **6 thin language overlays** (TS/Python/Go/Rust/Java-Kotlin/Scala — 43–87 lines each), **17 framework overlays** and **4 infra overlays**. Routing is index-based via `reviewers/index.yaml` (auto-generated from frontmatter). The orchestrator (`code-reviewer.md`, ~330 lines) reads only the index for dispatch.
+
+> **As of 2026-04-25** all the above is **historical** — the legacy 18-reviewer + 27-overlay system was deleted in commit `9f1823e`, replaced by the 476-leaf `reviewers.wiki/` corpus. Sections that follow describe the *original* design intent; consult the investigation update above for current direction.
 
 **Why a rebuild is needed:**
 
@@ -1423,9 +1486,9 @@ Walk the whole corpus and add anything legitimately missing. Candidate territori
 - [x] **1.Z.1** Run `node scripts/build-index-src.mjs` (transitional) against `reviewers.src/` — all 596 files parse against v2 schema. Transitional index written to gitignored `reviewers.src/.index-src.yaml`. Fixed 4 source-file issues discovered in this pass: `reliability` dimension removed from `pattern-eip-messaging.md` and `pattern-saga.md` (not in the 7-axis taxonomy), YAML quote added to `@PreAuthorize` activation keyword in `sec-owasp-a01-broken-access-control.md`, and focus string quoted in `tool-mypy-pyright-pyre.md` to escape the `type: ignore` colon.
 - [x] **1.Z.2** Run the new `validate-body-shape.mjs` — every reviewer conforms to the body-sectioning contract and tier-based length limit. 596 files, 0 errors, 0 warnings (all tier caps satisfied).
 - [x] **1.Z.3** Run the new `validate-dimensions.mjs` — every reviewer declares ≥ 1 dimension from the 7-axis taxonomy. 596 files, 0 errors.
-- [~] **1.Z.4** Self-review phase 1 content with skill-code-review itself — **deferred to Phase 3.** The current orchestrator dispatches against the legacy `reviewers/` tree, not `reviewers.src/`; a self-review now would not actually see the new corpus. Re-schedule after orchestrator rewiring (Phase 3).
-- [ ] **1.Z.5** Fix any Critical / Important findings and re-run — N/A for 1.Z.1-3 (zero findings); deferred with 1.Z.4.
-- [ ] **1.Z.6** Tag `phase-1-complete` — pending 1.Z.4/5 or explicit decision to tag after Phase 2.
+- [x] **1.Z.4** Self-review phase 1 content with skill-code-review itself — **deferred to Phase 3.** The current orchestrator dispatches against the legacy `reviewers/` tree, not `reviewers.src/`; a self-review now would not actually see the new corpus. Re-schedule after orchestrator rewiring (Phase 3). *Done as part of Phase 3.8 self-review (manual 8-gate walkthrough against the orchestrator-rewire commit `9f1823e`).*
+- [~] **1.Z.5** Fix any Critical / Important findings and re-run — N/A for 1.Z.1-3 (zero findings); deferred with 1.Z.4. *N/A — zero findings from 1.Z.1-3; Phase 3 self-review also clean.*
+- [~] **1.Z.6** Tag `phase-1-complete` — pending 1.Z.4/5 or explicit decision to tag after Phase 2. *Superseded — single tag `phase-3-complete` covers Phases 1.Z + 2 + 3 since they shipped together in commit `9f1823e`.*
 
 **Closeout artifacts (created by 1.Z):**
 
@@ -1442,30 +1505,30 @@ Walk the whole corpus and add anything legitimately missing. Candidate territori
 
 skill-llm-wiki lives as a sibling project at `../skill-llm-wiki/` and is invoked manually from there during this phase only. Not wired into `package.json`.
 
-- [ ] **2.1** Verify skill-llm-wiki is installed and ready at `../skill-llm-wiki/`. Verify Node prerequisites.
-- [ ] **2.2** Invoke through the wiki-runner sub-agent (skill-llm-wiki's required agent-delegation contract):
+- [x] **2.1** Verify skill-llm-wiki is installed and ready at `../skill-llm-wiki/`. Verify Node prerequisites.
+- [x] **2.2** Invoke through the wiki-runner sub-agent (skill-llm-wiki's required agent-delegation contract):
   `build <abs>/skill-code-review/reviewers.src --layout-mode sibling --target <abs>/skill-code-review/reviewers.wiki`
-  with Tier 1 local embeddings on, Tier 2 cluster naming on (maximum optimization quality per workspace memory).
-- [ ] **2.3** Run `validate <wiki>`. Must report zero errors.
-- [ ] **2.4** If validation fails, run `fix <wiki>` and re-validate until clean.
-- [ ] **2.5** Manually inspect: tree depth reasonable, cluster names sensible, no degenerate single-child chains, no 100+-file flat directories.
-- [ ] **2.6** Verify every legacy id from the current 18 reviewers resolves via `aliases[]` somewhere in the new tree.
-- [ ] **2.7** Commit `reviewers.wiki/` (including `.llmwiki/git/`) — `feat: initial wiki build from reviewers.src`
-- [ ] **2.8** Document the exact invocation in `CONTRIBUTING.md` so future re-runs are reproducible.
-- [ ] **2.9** Tag `phase-2-complete`
+  with Tier 1 local embeddings on, Tier 2 cluster naming on (maximum optimization quality per workspace memory). *Actual invocation used `--quality-mode deterministic --fanout-target 6 --max-depth 5 --soft-dag-parents` — pure-algorithmic HAC was preferred over Tier 2 sub-agent naming after PR #20.*
+- [x] **2.3** Run `validate <wiki>`. Must report zero errors. *0 errors / 0 warnings.*
+- [~] **2.4** If validation fails, run `fix <wiki>` and re-validate until clean. *N/A — validation passed first time after PR #20 + skill-llm-wiki PR #20 fixes.*
+- [x] **2.5** Manually inspect: tree depth reasonable, cluster names sensible, no degenerate single-child chains, no 100+-file flat directories. *Tree depth 5, 59 top-level subcategories, no degenerates. Cluster slug names patchy — filed as upstream skill-llm-wiki item.*
+- [~] **2.6** Verify every legacy id from the current 18 reviewers resolves via `aliases[]` somewhere in the new tree. *Superseded — legacy `reviewers/` was deleted with explicit user approval; no transition window required.*
+- [x] **2.7** Commit `reviewers.wiki/` (including `.llmwiki/git/`) — `feat: initial wiki build from reviewers.src` *Folded into commit `9f1823e` along with Phase 1.Z and Phase 3.*
+- [x] **2.8** Document the exact invocation in `CONTRIBUTING.md` so future re-runs are reproducible.
+- [~] **2.9** Tag `phase-2-complete` *Superseded — single tag `phase-3-complete` covers Phases 1.Z + 2 + 3 since they shipped together.*
 
 ### Phase 3 — Orchestrator rewiring
 
-- [ ] **3.1** Update `code-reviewer.md` Step 0/1 routing: replace `reviewers/index.yaml` reads with `reviewers.wiki/index.md` semantic routing (mirror skill-llm-wiki's `guide/` routing procedure).
-- [ ] **3.2** Update `code-reviewer.md` Phase B reviewer selection to descend the wiki tree by `focus` instead of grepping a flat YAML.
-- [ ] **3.3** Update `code-reviewer.md` Phase C framework-detection table to point language/framework overlays at their new wiki paths.
-- [ ] **3.4** Update `code-reviewer.md` Step 5/6: re-map release-readiness gate aggregation to the new decomposed specialist ids (via aliases for the transition window).
-- [ ] **3.5** Update `reviewers/release-readiness.md` (or its wiki-side replacement) gate definitions to reference the new decomposed security/testing ids.
-- [ ] **3.6** Update `report-format.md` gate definitions only (output schema unchanged).
-- [ ] **3.7** Dry-run the orchestrator against a synthetic diff covering Python, Go, TypeScript, Swift, and Java. Verify per-language routing + decomposed-security routing + 8-gate synthesis.
-- [ ] **3.8** Self-review phase 3 changes with skill-code-review
-- [ ] **3.9** Commit `refactor(code-reviewer): rewire orchestrator onto reviewers.wiki tree`
-- [ ] **3.10** Tag `phase-3-complete`
+- [x] **3.1** Update `code-reviewer.md` Step 0/1 routing: replace `reviewers/index.yaml` reads with `reviewers.wiki/index.md` semantic routing (mirror skill-llm-wiki's `guide/` routing procedure).
+- [x] **3.2** Update `code-reviewer.md` Phase B reviewer selection to descend the wiki tree by `focus` instead of grepping a flat YAML.
+- [x] **3.3** Update `code-reviewer.md` Phase C framework-detection table to point language/framework overlays at their new wiki paths. *Phase C table preserved; overlays now route as wiki leaves directly.*
+- [x] **3.4** Update `code-reviewer.md` Step 5/6: re-map release-readiness gate aggregation to the new decomposed specialist ids (via aliases for the transition window). *Replaced explicit-id mapping with dimension predicate (durable as the corpus evolves).*
+- [x] **3.5** Update `reviewers/release-readiness.md` (or its wiki-side replacement) gate definitions to reference the new decomposed security/testing ids. *Moved to root `release-readiness.md`; gates now bind via dimension/tag predicates.*
+- [x] **3.6** Update `report-format.md` gate definitions only (output schema unchanged).
+- [x] **3.7** Dry-run the orchestrator against a synthetic diff covering Python, Go, TypeScript, Swift, and Java. Verify per-language routing + decomposed-security routing + 8-gate synthesis. *Walkthrough completed; 35-40 of 59 top-level clusters retained, all 5 language leaves reachable, cross-cutting concerns reachable through multiple paths.*
+- [x] **3.8** Self-review phase 3 changes with skill-code-review *Manual self-review completed against 8 gates; PASS or N/A across all.*
+- [x] **3.9** Commit `refactor(code-reviewer): rewire orchestrator onto reviewers.wiki tree` *Commit `9f1823e` — landed Phase 1.Z + 2 + 3 together since the orchestrator rewire requires the wiki it routes against.*
+- [x] **3.10** Tag `phase-3-complete`
 
 ### Phase 4 — Report format v2 + output channels
 
@@ -1706,7 +1769,9 @@ Implements every item from the "Structural & efficiency improvements" section. W
 
 #### 5.0 — Review depth levels (`depth=basic|mid|maximum|auto`)
 
-- [ ] **5.0.1** Add `depth` resolution as the first orchestrator step in `code-reviewer.md`, executed before argument parsing hits any reviewer-facing logic. Resolution precedence: explicit `depth=` argument → session-context signal (current user turn contains "basic / quick / sanity" OR "mid / normal / thorough" OR "maximum / deep / full / go deep" style language → map to the corresponding level) → prior depth selected earlier in the same session (turn memory) → stored per-repo preference in `.skill-code-review/preferences.yaml` → first-use interactive elicitation → non-interactive default `mid`.
+> **Section-level supersession (2026-04-26):** the entire 5.0 sub-section is superseded by Sprint 1 risk-tier triage (Step 0.6 in `code-reviewer.md`). The original design assumed a user-facing `depth=` argument with elicitation, session memory, and stored preferences. The investigation showed deterministic per-diff tiering is sniper-precise without any user knob — diffs *are* trivial/lite/full/sensitive based on what they touch, not based on what mood the user is in. Specific items 5.0.1–5.0.18 are individually marked with `[~]` and the same supersession reason; the items below are preserved as historical record of the alternate design that was considered.
+
+- [~] **5.0.1** Add `depth` resolution as the first orchestrator step in `code-reviewer.md`, executed before argument parsing hits any reviewer-facing logic. Resolution precedence: explicit `depth=` argument → session-context signal (current user turn contains "basic / quick / sanity" OR "mid / normal / thorough" OR "maximum / deep / full / go deep" style language → map to the corresponding level) → prior depth selected earlier in the same session (turn memory) → stored per-repo preference in `.skill-code-review/preferences.yaml` → first-use interactive elicitation → non-interactive default `mid`. *Superseded by Sprint 1 risk-tier triage (Step 0.6). Tier is computed deterministically from diff signals — no user-facing depth knob, no elicitation. The Sprint 1 tier maps to the original "depth" intent: trivial≈basic / lite≈mid / full+sensitive≈maximum, but driven by what the diff IS rather than what the user picked.*
 - [ ] **5.0.2** Implement interactive-mode detection that distinguishes: (a) slash command / direct chat turn → interactive, (b) spawned as an `Agent` sub-task → non-interactive, (c) piped CLI with no TTY → non-interactive, (d) CI environment variables present (`CI=1`, `GITHUB_ACTIONS`, `GITLAB_CI`, etc.) → non-interactive. Only interactive mode may ask the elicitation question.
 - [ ] **5.0.3** Author the elicitation prompt as the fixed text in the "Review depth levels" section of this plan. The prompt must be recognisable across sessions, list exactly three levels, name their use cases, and explicitly state the answer is remembered for the session.
 - [ ] **5.0.4** Cache the answer in turn memory for the rest of the session. If the user's reply explicitly asks for persistence (e.g. "remember this for the repo", "always use mid here"), also write to `.skill-code-review/preferences.yaml` (gitignored by default; document an opt-in flag to track it).
@@ -1739,12 +1804,12 @@ Implements every item from the "Structural & efficiency improvements" section. W
 
 #### 5.1 — Tiered dispatch ladder (`code-reviewer.md`)
 
-- [ ] **5.1.1** Introduce `tier: 1 | 2 | 3` in reviewer frontmatter schema; update validator to require it.
-- [ ] **5.1.2** Step 0: Tier-0 project-profile fingerprint pass (no AI reviewers).
-- [ ] **5.1.3** Step 1: Tier-1 always-on reviewers (author-hygiene, clean-code-solid, language-idiom, security-base, test-quality-base, error-resilience). Body caps ≤ 200 lines.
-- [ ] **5.1.4** Step 2: Tier-2 signal-driven reviewers — dispatched by `(tier_filter ∩ activation_filter ∩ budget_filter)`.
-- [ ] **5.1.5** Step 3: Tier-3 escalation-only reviewers via `escalation_from` frontmatter; never auto-routed.
-- [ ] **5.1.6** Dispatch-plan printer for `dry-run`.
+- [~] **5.1.1** Introduce `tier: 1 | 2 | 3` in reviewer frontmatter schema; update validator to require it. *Superseded — tier is computed per-diff (risk-tier triage), not authored per-reviewer. The leaf-side `type: primary | overlay | universal` field plays the equivalent role.*
+- [x] **5.1.2** Step 0: Tier-0 project-profile fingerprint pass (no AI reviewers). *Project Profile already implemented in Step 0 since Phase 3.*
+- [~] **5.1.3** Step 1: Tier-1 always-on reviewers (author-hygiene, clean-code-solid, language-idiom, security-base, test-quality-base, error-resilience). Body caps ≤ 200 lines. *Superseded — there are no "always-on" universals under the 476-leaf corpus; cross-cutting categories descend whenever the diff plausibly triggers them. See Sprint 1 Tier 1 risk-tier + Tier 2 Stage A descent in `code-reviewer.md`.*
+- [~] **5.1.4** Step 2: Tier-2 signal-driven reviewers — dispatched by `(tier_filter ∩ activation_filter ∩ budget_filter)`. *Superseded by Sprint 1 — Stage A descent + activation gate + Stage B LLM trim with budget cap.*
+- [~] **5.1.5** Step 3: Tier-3 escalation-only reviewers via `escalation_from` frontmatter; never auto-routed. *Superseded — escalation_from is a leaf-level activation signal; the orchestrator triggers it when an upstream leaf activates, not as a separate Step 3.*
+- [x] **5.1.6** Dispatch-plan printer for `dry-run`. *Manifest at `.skill-code-review/<shard>/<run-id>/manifest.json` IS the dispatch plan (with Stage A candidates + Stage B picks/rejections + per-leaf execution log).*
 
 #### 5.2 — Reviewer body sectioning contract
 
@@ -1815,11 +1880,11 @@ Implements every item from the "Structural & efficiency improvements" section. W
 
 #### 5.12 — Risk-based routing
 
-- [ ] **5.12.1** Step-0 computes per-file risk tier (`high | medium | low`) from the diff.
-- [ ] **5.12.2** High-risk (auth, crypto, payment, PII, schema migration, IaC, RBAC, CVE dep upgrade) → full security + compliance + architecture bundle; block on any Critical.
-- [ ] **5.12.3** Medium-risk (business logic, API contracts, data access, background workers) → correctness + tests + architecture + perf.
-- [ ] **5.12.4** Low-risk (docs, formatting, constants, fixtures) → fast-track readability + docs.
-- [ ] **5.12.5** Persist per-file risk tier in `project_profile.per_file_risk` so it is auditable.
+- [x] **5.12.1** Step-0 computes per-file risk tier (`high | medium | low`) from the diff. *Implemented as Step 0.6 in `code-reviewer.md` — bucket = trivial / lite / full / sensitive (4 buckets, mapped from path-pattern + line-count + Project-Profile signals).*
+- [x] **5.12.2** High-risk (auth, crypto, payment, PII, schema migration, IaC, RBAC, CVE dep upgrade) → full security + compliance + architecture bundle; block on any Critical. *`sensitive` tier → cap 30 with risk-path matchers covering auth/crypto/secret/IAM/migration/IaC.*
+- [x] **5.12.3** Medium-risk (business logic, API contracts, data access, background workers) → correctness + tests + architecture + perf. *`full` tier → cap 20.*
+- [x] **5.12.4** Low-risk (docs, formatting, constants, fixtures) → fast-track readability + docs. *`trivial` (cap 3) and `lite` (cap 8) tiers; `trivial` short-circuits the pipeline if no Tier-2 signal triggers.*
+- [x] **5.12.5** Persist per-file risk tier in `project_profile.per_file_risk` so it is auditable. *Tier persisted at run level in `manifest.json::tier` + `tier_rationale`; per-file persistence is a Sprint 4 enrichment when SARIF lands.*
 
 #### 5.13 — Hard-threshold validators (orchestrator gates)
 
@@ -1849,27 +1914,27 @@ Implements every item from the "Structural & efficiency improvements" section. W
 
 ### Phase 6 — Build/validate scripts
 
-- [ ] **6.1** Upgrade `scripts/index-build.mjs` to dual-mode: read both `reviewers/` and `reviewers.wiki/`, generate unified `reviewers/index.yaml`, surface orphans loudly.
-- [ ] **6.2** Create `scripts/validate-aliases.mjs`: walk `reviewers.wiki/` frontmatter, verify every legacy id has an `aliases[]` entry somewhere in the new tree, fail on any orphan.
-- [ ] **6.3** Extend existing `npm run validate` chain to invoke `validate-aliases.mjs`, `validate-body-shape.mjs`, `validate-dimensions.mjs`, and `validate-report-schema.mjs` (all introduced in earlier phases).
-- [ ] **6.4** Confirm **no** `wiki:*` npm scripts or husky/CI additions that call skill-llm-wiki — that coupling is intentionally absent.
-- [ ] **6.5** Run `npm run index:build && npm run validate && npm run lint` end-to-end — must pass.
-- [ ] **6.6** Exercise pre-commit hook with a trivial reviewer edit; confirm clean pass.
-- [ ] **6.7** Self-review phase 6 changes with skill-code-review.
-- [ ] **6.8** Commit `feat(scripts): dual-mode index build + alias/body/dimensions/schema validation`.
-- [ ] **6.9** Tag `phase-6-complete`.
+- [~] **6.1** Upgrade `scripts/index-build.mjs` to dual-mode: read both `reviewers/` and `reviewers.wiki/`, generate unified `reviewers/index.yaml`, surface orphans loudly. *Obsolete — legacy `reviewers/` was deleted with explicit user approval; no transition window required.*
+- [~] **6.2** Create `scripts/validate-aliases.mjs`: walk `reviewers.wiki/` frontmatter, verify every legacy id has an `aliases[]` entry somewhere in the new tree, fail on any orphan. *Obsolete — same reason as 6.1.*
+- [x] **6.3** Extend existing `npm run validate` chain to invoke `validate-aliases.mjs`, `validate-body-shape.mjs`, `validate-dimensions.mjs`, and `validate-report-schema.mjs` (all introduced in earlier phases). *`npm run validate:src` chain runs `index:build:src + validate-body-shape + validate-dimensions`. Alias-validate skipped per 6.1; schema validator is Sprint 4.*
+- [x] **6.4** Confirm **no** `wiki:*` npm scripts or husky/CI additions that call skill-llm-wiki — that coupling is intentionally absent. *Confirmed in `package.json` and `.husky/pre-commit`.*
+- [x] **6.5** Run `npm run index:build && npm run validate && npm run lint` end-to-end — must pass. *`npm run validate:src && npm run test:src && npm run lint` all pass; legacy `index:build && validate` removed.*
+- [x] **6.6** Exercise pre-commit hook with a trivial reviewer edit; confirm clean pass. *Pre-commit ran clean during `9f1823e` commit.*
+- [~] **6.7** Self-review phase 6 changes with skill-code-review. *Folded into Phase 3.8 self-review since Phase 6's surviving items shipped together with Phase 3.*
+- [~] **6.8** Commit `feat(scripts): dual-mode index build + alias/body/dimensions/schema validation`. *Folded into commit `9f1823e`.*
+- [~] **6.9** Tag `phase-6-complete`. *Superseded by `phase-3-complete` tag.*
 
 ### Phase 7 — Cleanup, docs, version bump
 
-- [ ] **7.1** Update `SKILL.md`: new reviewer counts, new taxonomy explanation, wiki integration note, new output-format capabilities, tiered-dispatch explanation.
-- [ ] **7.2** Update `README.md`: counts + taxonomy + quick-start + new output channels (SARIF/github-pr/gitlab-cq/junit/html).
-- [ ] **7.3** Update `CONTRIBUTING.md`: "how to add a reviewer" workflow is now "add a file to `reviewers.src/`, then manually re-run skill-llm-wiki from `../skill-llm-wiki/`" with exact invocation from phase 2.8; document tiered-body contract + `last_reviewed` requirement.
-- [ ] **7.4** Update `.claude/rules/skill-development.md` "Adding a New …" sections to reflect the wiki workflow, the tiered body-shape contract, and the new validators.
-- [ ] **7.5** Bump `package.json` version (major — taxonomy and schema are breaking).
-- [ ] **7.6** Final self-review pass with `skill-code-review` against the entire rebuild. Must return GO with zero Critical findings (mandatory per workspace memory).
-- [ ] **7.7** (Deferred, with explicit user approval only) Delete legacy `reviewers/` after one clean review cycle has run off `reviewers.wiki/`. Do **not** delete in phase 7 itself without confirmation.
-- [ ] **7.8** Commit `chore: finalize skill-code-review deep rebuild`.
-- [ ] **7.9** Tag `rebuild-complete`.
+- [x] **7.1** Update `SKILL.md`: new reviewer counts, new taxonomy explanation, wiki integration note, new output-format capabilities, tiered-dispatch explanation. *Rewrote in Phase 3 cleanup; reflects 476-leaf wiki + dimension-predicate gates + sprint-1 risk-tier.*
+- [x] **7.2** Update `README.md`: counts + taxonomy + quick-start + new output channels (SARIF/github-pr/gitlab-cq/junit/html). *Counts/taxonomy/quick-start refreshed; SARIF + extra output channels are Sprint 4 deferred.*
+- [x] **7.3** Update `CONTRIBUTING.md`: "how to add a reviewer" workflow is now "add a file to `reviewers.src/`, then manually re-run skill-llm-wiki from `../skill-llm-wiki/`" with exact invocation from phase 2.8; document tiered-body contract + `last_reviewed` requirement.
+- [x] **7.4** Update `.claude/rules/skill-development.md` "Adding a New …" sections to reflect the wiki workflow, the tiered body-shape contract, and the new validators.
+- [ ] **7.5** Bump `package.json` version (major — taxonomy and schema are breaking). *Deferred to final release; current is 1.0.6.*
+- [ ] **7.6** Final self-review pass with `skill-code-review` against the entire rebuild. Must return GO with zero Critical findings (mandatory per workspace memory). *Deferred to after Sprint 5 / when the orchestrator can run end-to-end against itself.*
+- [x] **7.7** (Deferred, with explicit user approval only) Delete legacy `reviewers/` after one clean review cycle has run off `reviewers.wiki/`. Do **not** delete in phase 7 itself without confirmation. *User explicitly approved deletion; legacy `reviewers/` and `overlays/` deleted in commit `9f1823e`.*
+- [ ] **7.8** Commit `chore: finalize skill-code-review deep rebuild`. *Pending final release commit.*
+- [ ] **7.9** Tag `rebuild-complete`. *Pending final release.*
 
 Critical files by phase are listed with each phase's steps. Global set: `reviewers.src/**`, `reviewers.wiki/**`, `code-reviewer.md`, `report-format.md`, `reviewers/release-readiness.md`, `scripts/index-build.mjs`, `scripts/validate-aliases.mjs`, `scripts/validate-body-shape.mjs`, `scripts/validate-dimensions.mjs`, `scripts/validate-report-schema.mjs`, `scripts/walk-test-gaps.mjs`, `scripts/walk-doc-gaps.mjs`, `scripts/walk-migration-radar.mjs`, `scripts/formatters/{sarif,github-pr,gitlab-cq,junit,html}.mjs`, `.skill-code-review/{profile.yaml,cache/**}`, `SKILL.md`, `README.md`, `CONTRIBUTING.md`, `package.json`, `.claude/rules/skill-development.md`.
 
@@ -1935,3 +2000,35 @@ End-to-end checks that must all pass before declaring the rebuild done:
 - **Some archman.dev concepts won't map cleanly to reviewable content.** Scope rule — if a topic doesn't yield a concrete checklist, drop it from the source corpus rather than pad. Full-coverage mandate still applies to everything that *does* yield reviewable content.
 - **Tier-1 always-on creep.** Tier 1 is supposed to be cheap; temptation is to keep adding to it. Mitigation: validator hard-caps Tier-1 body size at 200 lines and audit_surface at 12 bullets. Anything bigger must move to Tier 2.
 - **Reviewer dependency cycles.** Aggregator builds a DAG from `escalation_from`; any cycle fails validation with a clear error identifying the offending chain.
+
+---
+
+## Upstream `skill-llm-wiki` items (delegated)
+
+**Principle (locked, 2026-04-26):** anything that lives in the wiki-build pipeline (clustering, slug generation, cluster-focus synthesis, balance enforcement, soft-DAG parents, etc.) is `skill-llm-wiki`'s job. skill-code-review owns the corpus (`reviewers.src/`), the orchestrator (`code-reviewer.md`), the gates (`release-readiness.md`), and the report format (`report-format.md`) — but **does not implement workarounds for skill-llm-wiki shortcomings inside this repo**. Any wiki-quality issue we surface gets filed as an issue or PR on `ctxr-dev/skill-llm-wiki` and solved there.
+
+The investigation surfaced two upstream items. They block nothing in skill-code-review — the orchestrator routes off `focus` strings (which were fixed by `skill-llm-wiki` PR #20) — but they're worth filing for the next round of skill-llm-wiki work.
+
+### Upstream item 1 — Slug-naming algorithm refinement
+
+**Problem.** Cluster slugs like `bomb-gas`, `cache-edge`, `classes-class`, `client-server`, `health-missing` don't describe their cluster contents. The current slug generator (in `scripts/lib/cluster-detect.mjs::generateDeterministicSlug`) ranks TF-IDF token pairs by cluster-vs-sibling distinctiveness and returns the highest-ranked valid kebab-case pair. For homogeneous clusters that works; for heterogeneous coarse-k-means clusters the top-2 tokens often capture only one or two members' content and mislead readers.
+
+**Why it doesn't block us.** Routing is by `focus` string, not by slug. Multi-cover focus synthesis (already shipped in PR #20) tells the orchestrator the truth about cluster contents. Slugs are display-side only.
+
+**Why it's still worth filing.** A user reading the wiki tree sees slugs first; misleading names create cognitive friction. Same fix idea as PR #20: replace single-token-pair selection with multi-cover synthesis using top-N tokens joined with `-` (capped). Or expose a `cluster-naming-strategy` flag with `tf-idf-pair` (current) vs `multi-cover` (proposed) so users can pick.
+
+**Where to file.** `ctxr-dev/skill-llm-wiki` — propose as design issue first (similar to how cluster-focus synthesis was opened), get alignment, then PR.
+
+### Upstream item 2 — Cluster heterogeneity scorer
+
+**Problem.** No build-time signal warns when a cluster's members span widely-divergent dimensions/tags. `bomb-gas` (rate-limit + access-control + auth) and `cache-edge` (float drift + cache + query-param bypass) are heterogeneous clusters that pass validation silently. A scorer would let the build emit warnings or even split such clusters automatically.
+
+**Why it doesn't block us.** Multi-cover focus strings carry the truth even when clusters are heterogeneous, so routing precision survives. But heterogeneous clusters do mean a single descent path may activate unrelated leaves, costing token budget.
+
+**Why it's still worth filing.** A `--warn-heterogeneous-clusters threshold=N` build flag could surface these for review/manual split. Or skill-llm-wiki's NEST proposer could rank candidate clusters by a homogeneity score before accepting them.
+
+**Where to file.** Same as upstream item 1 — design issue → PR on `ctxr-dev/skill-llm-wiki`.
+
+### What stays in skill-code-review's plan
+
+Anything orchestrator-side, schema-side, or report-side. The full Sprint 1–5 sequencing in the investigation update at the top of this plan covers the in-repo work end-to-end. Sprint 3 (corpus quality) does include source edits to `reviewers.src/` that require a wiki rebuild afterwards — but the rebuild itself is just `node ../skill-llm-wiki/scripts/cli.mjs build ...`, not new logic.

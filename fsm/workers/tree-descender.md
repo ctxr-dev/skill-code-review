@@ -54,8 +54,8 @@ Fields:
 ## Constraints
 
 - Use semantic judgement on `focus` strings — do NOT keyword-grep them.
-- Do NOT read leaf `.md` body files. The parent index's focus + the leaf's frontmatter is the only routing signal you need.
-- Do NOT exceed reading subcategory `index.md` files (and the root `reviewers.wiki/index.md`). Reading leaves is forbidden.
+- Allowed reads: the root `reviewers.wiki/index.md`, every retained subcategory `index.md`, and **leaf frontmatter only** (the YAML block at the top of a leaf `.md`) when needed to evaluate the `activation:` block.
+- Do NOT read leaf `.md` body content. The parent index's focus + the leaf's frontmatter is the only routing signal you need; the body is reserved for the specialist worker that gets dispatched later.
 - Return ONLY the JSON object.
 
 ## Validation will reject

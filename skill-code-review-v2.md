@@ -15,7 +15,14 @@
 > **Sources of truth:**
 >
 > 1. [`docs/sniper-precision-review-architecture.md`](docs/sniper-precision-review-architecture.md) — investigation that defines the 6-tier architecture and the sprint backbone.
-> 2. `../fsm/docs/orchestration-design.md` — the FSM package's design substrate. Plus `../fsm/docs/cli-reference.md`, `../fsm/docs/state-yaml-reference.md`, `../fsm/docs/worker-contract.md`, `../fsm/docs/storage-layout.md`.
+> 2. The FSM package's docs (canonical, browseable on GitHub):
+>    - [`orchestration-design.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/orchestration-design.md) — design substrate
+>    - [`cli-reference.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/cli-reference.md)
+>    - [`state-yaml-reference.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/state-yaml-reference.md)
+>    - [`worker-contract.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/worker-contract.md)
+>    - [`storage-layout.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/storage-layout.md)
+>
+>    *(For local sibling-repo checkouts these live at `../fsm/docs/*`.)*
 > 3. The Sprint mapping table below — which Phase 4/5/6/7 sub-items each sprint covers.
 >
 > **`skill-llm-wiki` work is carved out** into the "Upstream skill-llm-wiki items" section at the bottom of this plan. Anything that requires changes to skill-llm-wiki's clustering, slug generation, or build pipeline is filed there as upstream issues for that repo to solve. skill-code-review never implements wiki-build workarounds inside this repo.

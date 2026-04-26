@@ -67,22 +67,39 @@ Adding a framework that the orchestrator doesn't yet recognise from manifests re
 
 ### FSM authoring
 
-The orchestrator's flow is defined as a finite-state-machine YAML at [`fsm/code-reviewer.fsm.yaml`](fsm/code-reviewer.fsm.yaml). The engine that consumes this YAML lives in the standalone [`@ctxr/fsm`](https://github.com/ctxr-dev/fsm) package (sibling repo at `../fsm/`), wired here via `file:../fsm` in `package.json`. The FSM design substrate, CLI reference, state-YAML schema, worker contract, and storage-layout reference all live in `../fsm/docs/`.
+The orchestrator's flow is defined as a finite-state-machine YAML at [`fsm/code-reviewer.fsm.yaml`](fsm/code-reviewer.fsm.yaml). The engine that consumes this YAML lives in the standalone [`@ctxr/fsm`](https://github.com/ctxr-dev/fsm) package, wired here via `file:../fsm` in `package.json` for active development.
+
+The FSM design substrate, CLI reference, state-YAML schema, worker contract, and storage-layout reference all live in the FSM package's `docs/` directory:
+
+- [`orchestration-design.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/orchestration-design.md)
+- [`cli-reference.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/cli-reference.md)
+- [`state-yaml-reference.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/state-yaml-reference.md)
+- [`worker-contract.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/worker-contract.md)
+- [`storage-layout.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/storage-layout.md)
+
+`package.json` references `@ctxr/fsm` via `git+https://github.com/ctxr-dev/fsm.git#<commit>`, so `npm install` resolves directly from GitHub — no sibling checkout required. During active dev iteration the dep is pinned to a specific commit SHA on the FSM package's `main`; bump that SHA in `package.json` when you want to pull in newer FSM behaviour.
+
+For local engine hacking against a sibling checkout, you can override the dep temporarily with `npm install --save ../fsm` (which writes `file:../fsm` into `package.json`); revert before committing to keep the upstream-resolvable form on the branch.
 
 `.fsmrc.json` at the repo root tells the FSM CLIs where the FSM YAML and storage root live:
 
 ```json
 {
-  "fsm_path": "fsm/code-reviewer.fsm.yaml",
-  "storage_root": ".skill-code-review"
+  "fsms": [
+    {
+      "name": "code-reviewer",
+      "fsm_path": "fsm/code-reviewer.fsm.yaml",
+      "storage_root": ".skill-code-review"
+    }
+  ]
 }
 ```
 
 **To add a new state:**
 
-1. Append a new entry to `fsm/code-reviewer.fsm.yaml` `fsm.states[]`. Required fields: `id` (snake_case), `purpose`, `preconditions[]`, `outputs[]`, `transitions[]`. See [`../fsm/docs/state-yaml-reference.md`](../fsm/docs/state-yaml-reference.md) for the full schema.
+1. Append a new entry to `fsm/code-reviewer.fsm.yaml` `fsm.states[]`. Required fields: `id` (snake_case), `purpose`, `preconditions[]`, `outputs[]`, `transitions[]`. See [`state-yaml-reference.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/state-yaml-reference.md) for the full schema.
 2. If the state dispatches a worker, declare a `worker:` block with `role`, `prompt_template` (path relative to the FSM YAML's directory — typically `workers/<role>.md`), `inputs[]` (must reference outputs of upstream states, or `args` for the entry state), and `response_schema` (a valid JSON Schema). Inline states (no LLM call required) omit the `worker:` block.
-3. Author the worker prompt template at `fsm/workers/<role>.md`. See [`../fsm/docs/worker-contract.md`](../fsm/docs/worker-contract.md) for conventions.
+3. Author the worker prompt template at `fsm/workers/<role>.md`. See [`worker-contract.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/worker-contract.md) for conventions.
 4. Run `npm run validate:fsm` — the package's static validator catches missing prompt templates, undefined transition targets, unreachable states, missing terminal states, malformed `response_schema`, and input/output flow gaps.
 
 **Validators wired into `npm run validate:src`:**

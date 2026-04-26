@@ -3,9 +3,8 @@ fsm:
   version: 1
   entry: scan_project
 
-  # 15 states total: 11 happy-path (matching code-reviewer.md Steps 1-11)
-  # plus 4 edge-case states (short_circuit_exit, stage_a_empty,
-  # worker_fault, terminal).
+  # 14 states total: 11 happy-path (matching code-reviewer.md Steps 1-11)
+  # plus 3 edge-case states (short_circuit_exit, stage_a_empty, terminal).
   #
   # Worker-driven states have a `worker:` block declaring role,
   # prompt template, inputs, and JSON-Schema response contract.
@@ -72,11 +71,19 @@ fsm:
         - "diff_stats exists in run state"
       # Inline state: no worker. The FSM Orchestrator applies the
       # tier rules from code-reviewer.md Step 2 deterministically.
+      #
+      # `scope_overrides_present` is a derived boolean: true iff any of
+      # the orchestrator's args restrict scope (scope-dir / scope-lang /
+      # scope-framework / scope-reviewer / scope-severity / scope-gate).
+      # Computing it as an explicit output keeps the transition predicate
+      # readable (predicate identifiers must be snake_case; args from
+      # report-format.md are kebab-case).
       outputs:
         - tier
         - cap
         - tier_rationale
         - risk_signals
+        - scope_overrides_present
       post_validations:
         - "tier is one of {trivial, lite, full, sensitive}"
         - "cap is an integer in [3, 50]"
@@ -84,7 +91,7 @@ fsm:
         - to: short_circuit_exit
           when:
             kind: deterministic
-            expression: "tier == 'trivial' AND len(risk_signals) == 0 AND empty(args.scope_overrides)"
+            expression: "tier == 'trivial' AND len(risk_signals) == 0 AND NOT scope_overrides_present"
         - to: tree_descend
           when: always
 
@@ -406,10 +413,9 @@ fsm:
 
     # Final state. The FSM Orchestrator returns to Main Session.
     # Faults (schema validation failures, worker errors) are handled by the
-    # `fsm-commit` script writing a fault trace + setting manifest.status =
-    # 'faulted' + halting; no dedicated fault state is needed at the FSM
-    # level. See docs/fsm-orchestration-proposal.md "Worker response
-    # contracts" for the retry-then-fault contract.
+    # @ctxr/fsm `fsm-commit` script writing a fault trace + setting
+    # manifest.status = 'faulted' + releasing the lock; no dedicated fault
+    # state is needed at the FSM level.
     - id: terminal
       purpose: "End of FSM. The FSM Orchestrator's job is done."
       preconditions: []

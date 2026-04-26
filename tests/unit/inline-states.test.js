@@ -243,15 +243,57 @@ test("synthesize-release-readiness: any FAIL → NO-GO", async () => {
   assert.equal(gate6.blocker_count, 1);
 });
 
-test("synthesize-release-readiness: coverage gaps → CONDITIONAL when no FAILs", async () => {
+test("synthesize-release-readiness: coverage_rule_violated → NO-GO (B4 hard rule)", async () => {
   const out = await synthesizeReleaseReadiness({
     env: {
       findings: [],
       picked_leaves: [{ id: "lang-typescript", dimensions: ["correctness"] }],
       coverage_gaps: ["x.ts"],
+      coverage_rule_violated: true,
     },
   });
-  assert.equal(out.verdict, "CONDITIONAL");
+  assert.equal(out.verdict, "NO-GO");
+});
+
+test("synthesize-release-readiness: coverage gaps without rule_violated still GO (defensive)", async () => {
+  // Defensive: if some upstream is on soft-mode, gaps without the hard flag
+  // pass. Today verify-coverage always sets the flag iff gaps exist, so this
+  // path is reachable only via custom env (or future soft-mode).
+  const out = await synthesizeReleaseReadiness({
+    env: {
+      findings: [],
+      picked_leaves: [{ id: "lang-typescript", dimensions: ["correctness"] }],
+      coverage_gaps: ["x.ts"],
+      coverage_rule_violated: false,
+    },
+  });
+  assert.equal(out.verdict, "GO");
+});
+
+test("verify-coverage: coverage_rescues lift a 1-leaf scenario back to PASS", async () => {
+  const out = await verifyCoverage({
+    env: {
+      findings: [],
+      picked_leaves: [{ id: "leaf-a" }],
+      coverage_rescues: [{ file: "x.ts", rescued_leaf: "leaf-b", reason: "rescue" }],
+      changed_paths: ["x.ts"],
+    },
+  });
+  assert.equal(out.coverage_rule_violated, false);
+  assert.deepEqual(out.coverage_gaps, []);
+});
+
+test("verify-coverage: coverage_rule_violated true when gaps remain after rescues", async () => {
+  const out = await verifyCoverage({
+    env: {
+      findings: [],
+      picked_leaves: [{ id: "leaf-a" }],
+      coverage_rescues: [],
+      changed_paths: ["x.ts", "y.ts"],
+    },
+  });
+  assert.equal(out.coverage_rule_violated, true);
+  assert.deepEqual(out.coverage_gaps, ["x.ts", "y.ts"]);
 });
 
 test("short-circuit-exit + stage-a-empty: shape parity for downstream report rendering", async () => {

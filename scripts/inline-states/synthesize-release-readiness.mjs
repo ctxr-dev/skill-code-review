@@ -132,14 +132,15 @@ export default async function synthesizeReleaseReadiness({ env }) {
   });
 
   const anyFail = gates.some((g) => g.status === "FAIL");
-  let verdict;
-  if (anyFail) {
-    verdict = "NO-GO";
-  } else if (coverageGaps.length > 0) {
-    verdict = "CONDITIONAL";
-  } else {
-    verdict = "GO";
-  }
+  const coverageRuleViolated = Boolean(env.coverage_rule_violated);
+
+  // B4 hard enforcement: coverage rule violation is a NO-GO by default. The
+  // soft-mode downgrade (CONDITIONAL instead) lands when @ctxr/fsm#4 ships
+  // run modes; until then we fail-closed because the alternative is silently
+  // shipping reviews where files weren't double-covered. CONDITIONAL on the
+  // happy path is reserved for the `stage_a_empty` edge state (no candidates
+  // produced at all on a non-trivial diff).
+  const verdict = anyFail || coverageRuleViolated ? "NO-GO" : "GO";
 
   return { gates, verdict };
 }

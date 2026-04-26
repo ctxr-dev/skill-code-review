@@ -21,14 +21,11 @@ jobs:
 
       - run: npm ci
 
-      - name: Build reviewer index
-        run: npm run index:build
-
-      - name: Structural validation
-        run: npm run validate
+      - name: Source validation (index + body-shape + dimensions + FSM)
+        run: npm run validate:src
 
       - name: Markdown lint
         run: npm run lint
 
       - name: Tests
-        run: npm test
+        run: npm run test:src

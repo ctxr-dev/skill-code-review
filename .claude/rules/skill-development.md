@@ -41,7 +41,7 @@ The procedure is the same for any leaf type — language reviewers are `lang-<na
 
 5. Commit the source change AND the rebuilt wiki together. The wiki is the source of truth in the repo.
 
-If adding a framework that the orchestrator doesn't yet recognise from manifests, also update Phase C of `code-reviewer.md` (the dependency-name → category table) so the Project Profile carries the right signal into Step 1's tree descent.
+If adding a framework that the orchestrator doesn't yet recognise from manifests, also update the Framework Classification section of `code-reviewer.md` (the dependency-name → category table) so the Project Profile carries the right signal into Step 3 (Tree Descent).
 
 ## Conventions
 

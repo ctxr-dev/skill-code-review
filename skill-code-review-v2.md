@@ -2,19 +2,23 @@
 
 > **2026-04-26 status snapshot — read this before diving deeper.**
 >
-> **Phases 1.Z + 2 + 3 are SHIPPED** (commit `9f1823e`, tag `phase-3-complete`):
-> Phase 1.Z (596-file source corpus, schema, validators, 58 unit tests) ✓
-> Phase 2 (`reviewers.wiki/` built via skill-llm-wiki, deterministic mode, 476 routable leaves under 59 subcategories, 0 errors) ✓
-> Phase 3 (orchestrator rewired onto `reviewers.wiki/` tree-descent + predicate-based gate aggregation) ✓
-> Legacy `reviewers/` and `overlays/` directories removed.
+> **Shipped:**
+> Phase 1.Z (596-file source corpus, schema, validators, 58 unit tests) ✓ commit `9f1823e`, tag `phase-3-complete`
+> Phase 2 (`reviewers.wiki/` built via skill-llm-wiki, deterministic mode, 476 routable leaves under 59 subcategories, 0 errors) ✓ commit `9f1823e`
+> Phase 3 (orchestrator rewired onto `reviewers.wiki/` tree-descent + predicate-based gate aggregation) ✓ commit `9f1823e`
+> Sprint 1 (risk-tier triage + two-stage routing + sharded manifest) ✓ commit `4b54db5`, tag `sprint-1-complete`
 >
-> **Phases 4–7 are NEXT**, but their order and detail are now driven by the investigation in [`docs/sniper-precision-review-architecture.md`](docs/sniper-precision-review-architecture.md), which synthesises GitHub Copilot mechanics, SOTA AI review tools, multi-agent SE research, and an audit of our own wiki's routing surface. The investigation defines a **6-tier orchestration architecture** and a **5-sprint sequencing** that supersedes parts of Phase 5 below.
+> **Next (P0): Sprint A — FSM substrate.** Author the orchestrator finite-state-machine YAML + static validator + structured-emit protocol. Detail in [`docs/fsm-orchestration-proposal.md`](docs/fsm-orchestration-proposal.md). Sprint B (live trace + soft-validate) ships immediately after as the second P0. Both are foundation for every later sprint.
 >
-> **Where the original Phase 4–7 detail still applies**, it's preserved verbatim — the investigation is an overlay, not a rewrite. The "Sprint mapping" table below shows which original Phase 4/5/6/7 items each sprint covers, plus which items are now superseded.
+> **Then (P1+):** Sprint 2 (verification judge), Sprint C (strict trace + child FSMs), Sprint 3 (corpus quality), Sprint 4 (persistent reports + scaffold). Sprint D (YAML/prose collapse) and Sprint 5 (hypothesis pre-pass) are P3 — polish or optional.
 >
-> **`skill-llm-wiki` work has been carved out** into a delegated section ("Upstream skill-llm-wiki items") at the bottom of this plan. skill-code-review's plan only owns work that lives in this repo; anything that requires changes to `skill-llm-wiki`'s clustering, slug generation, or build pipeline is filed as upstream issues for that repo to solve.
+> **Sources of truth:**
 >
-> Read in this order: (1) Investigation update + sprint mapping below; (2) [`docs/sniper-precision-review-architecture.md`](docs/sniper-precision-review-architecture.md); (3) the original Phase 4–7 detail when implementing a specific sprint.
+> 1. [`docs/sniper-precision-review-architecture.md`](docs/sniper-precision-review-architecture.md) — investigation that defines the 6-tier architecture and the sprint backbone.
+> 2. [`docs/fsm-orchestration-proposal.md`](docs/fsm-orchestration-proposal.md) — Sprint A's design.
+> 3. The Sprint mapping table below — which Phase 4/5/6/7 sub-items each sprint covers.
+>
+> **`skill-llm-wiki` work is carved out** into the "Upstream skill-llm-wiki items" section at the bottom of this plan. Anything that requires changes to skill-llm-wiki's clustering, slug generation, or build pipeline is filed there as upstream issues for that repo to solve. skill-code-review never implements wiki-build workarounds inside this repo.
 
 ## Investigation update (2026-04-26)
 
@@ -34,15 +38,21 @@ Five parallel sub-agent investigations converged on the same backbone for high-p
 
 ### Sprint sequencing and mapping to original Phase 4–7
 
-The investigation's 5-sprint sequencing, with the original Phase 4–7 sub-items each sprint covers (or supersedes):
+| Sprint | Priority | What | Original sub-items folded in |
+|--------|----------|------|------------------------------|
+| **Sprint A** — FSM substrate | **P0** | Author orchestrator FSM YAML + schema + static validator + structured-emit protocol. See `docs/fsm-orchestration-proposal.md`. Substrate for every later sprint. | None — this is new foundation |
+| **Sprint 1** — Routing precision (shipped 2026-04-26, commit `4b54db5`, tag `sprint-1-complete`) | P1 | Risk-tier triage + two-stage routing + sharded manifest | 5.0, 5.1, 5.12, 5.13 |
+| **Sprint B** — Live trace + soft-validate | P0 | `validate-trace.mjs` script; trace capture in manifest; warn-only on protocol violation. Preserves a per-run audit of which states fired with which preconditions. | None — depends on Sprint A |
+| **Sprint 2** — Quality lever | P1 | Verification judge pass + severity × agreement | 5.6, 5.11 |
+| **Sprint C** — Strict trace + child FSMs | P1 | Trace-validate violations downgrade verdict; specialists + judge get child FSMs | None — depends on Sprint A and Sprint B |
+| **Sprint 3** — Corpus quality | P2 | Explicit `dimensions:` field to all source files; tag casing; populate `tools:`; `escalation_from` chains | 5.2, 5.3, 5.4, 5.10, 5.14 |
+| **Sprint 4** — Persistent reports + scaffold | P2 | SARIF + Markdown dual output; logical-certificate prompt scaffold | Phase 4 entire (4.1 through 4.9), 5.5, 5.7, 5.8 |
+| **Sprint D** — YAML/prose collapse | P3 | Generator script: prose sections of `code-reviewer.md` regenerated from FSM YAML; YAML becomes single source of truth | None — depends on Sprint A through Sprint 4 |
+| **Sprint 5** — Hypothesis pre-pass | P3 (optional) | Tier 3 hypothesis pre-pass — only if Sprints 1–4 leave residual misses | None |
 
-| Sprint | What | Original sub-items folded in | Original sub-items superseded |
-|--------|------|------------------------------|-------------------------------|
-| **Sprint 1** — Routing precision | Tier 1 risk-tier pre-filter + Tier 2 two-stage routing (descent + LLM trim) + Tier 6 specialist-execution manifest | 5.0 (depth levels), 5.1 (tiered dispatch), 5.12 (risk-based routing), 5.13 (hard-threshold validators) | The "depth levels" framing in 5.0 is replaced by risk-tier; legacy `mode=thorough` deprecation note in 5.0.5 still applies |
-| **Sprint 2** — Quality lever | Tier 5 verification judge pass + severity × agreement | 5.6 (result deduplication), 5.11 (confidence calibration) | 5.11's "downgrade rule" replaced by severity × agreement |
-| **Sprint 3** — Corpus quality | Add explicit `dimensions:` field to all 476 source files; normalise tag casing; populate `tools:`; add `escalation_from` chains where useful | 5.2 (body sectioning — already shipped), 5.3 (project-profile fingerprint cache), 5.4 (per-(file, sha, reviewer) skip cache), 5.10 (reviewer dependency graph), 5.14 (knowledge freshness via `last_reviewed`) | None — these are corpus-side improvements |
-| **Sprint 4** — Persistent reports + scaffold | Tier 6 SARIF + Markdown dual output + run-id directory + logical-certificate prompt scaffold | All of Phase 4 (4.1 schema v2 enrichments through 4.9 closeout), 5.5 (deterministic walkers), 5.7 (streaming dispatch), 5.8 (tool priors) | None — Phase 4 is structurally aligned with the investigation; just confirms scope |
-| **Sprint 5** — Hypothesis pre-pass *(optional, advanced)* | Tier 3 hypothesis pre-pass; only if Sprints 1–4 leave residual misses | None | None |
+**Priority key.** P0 is shippable next; nothing else gates on this finishing. P1 is shippable after the P0s land in any order. P2 is corpus / report enrichment; valuable but not blocking. P3 is optional or polish.
+
+**Why FSM is P0.** Drift in long iterations is structural (the orchestrator can skip steps, reorder, miss decision branches, hallucinate states). The deeper the orchestrator gets — Sprint 2's verification judge, Sprint 3's larger corpus, Sprint 4's report enrichments — the more drift surface there is. Shipping FSM first means every later sprint inherits the structured-emit protocol from day one, instead of being retrofitted.
 
 ### Items NOT superseded (preserved as-is from original Phase 4–7)
 

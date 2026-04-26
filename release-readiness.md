@@ -33,9 +33,9 @@ When specialist findings reference these standards, defer to the standard's late
 
 ## Input
 
-You receive the findings from every dispatched specialist leaf in `reviewers.wiki/`. The orchestrator's Step 1 routing produces an activated set bounded by token budget (default 30, configurable via `max-reviewers=N`). Not every leaf is dispatched on every review — only those whose tree-descent path retained them. Evaluate findings against the gates below, marking a gate as N/A when no activated leaf satisfies its predicate.
+You receive the findings from every dispatched specialist leaf in `reviewers.wiki/`. The orchestrator dispatches a subset of leaves bounded by the run's tier cap (3 / 8 / 20 / 30, override via `max-reviewers=N`, clamped to `[3, 50]`). Evaluate findings against the gates below, marking a gate as N/A when no dispatched leaf satisfies its predicate.
 
-Gate-to-leaf binding is **predicate-based on each leaf's `dimensions:` and `tags:`**. The 7-axis dimensions taxonomy (`architecture`, `correctness`, `documentation`, `performance`, `readability`, `security`, `tests`) covers all gates; tags fill in domain specificity (CLI/API/observability) and methodology callouts (SOLID/DRY/KISS/YAGNI). A single leaf may feed multiple gates — e.g. a security-correctness leaf with both dimensions contributes to gates 3 AND 6.
+Gate-to-leaf binding is predicate-based on each leaf's `dimensions:` and `tags:`. The 7-axis dimensions taxonomy (`architecture`, `correctness`, `documentation`, `performance`, `readability`, `security`, `tests`) covers all gates; tags fill in domain specificity (CLI / API / observability) and methodology callouts (SOLID / DRY / KISS / YAGNI). A single leaf may feed multiple gates — a security-correctness leaf with both dimensions contributes to gates 3 AND 6.
 
 ## 8-Gate Release Readiness Assessment
 

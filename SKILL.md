@@ -7,7 +7,7 @@ description: Use when completing tasks, implementing major features, or before m
 
 Dispatch a code review orchestrator that scans the project, auto-detects the tech stack, descends `reviewers.wiki/` to select specialists semantically based on the diff and Project Profile, dispatches them in parallel, verifies coverage, and produces a unified report with a GO/NO-GO release verdict.
 
-**Core principles:** SOLID, Clean Code, DRY, KISS, YAGNI, security, correctness, tests, architecture, performance, readability, documentation — covered by the corpus's 7-axis dimensions taxonomy. Only relevant leaves loaded — token-efficient by design.
+**Core principles:** SOLID, Clean Code, DRY, KISS, YAGNI, security, correctness, tests, architecture, performance, readability, documentation — covered by the corpus's 7-axis dimensions taxonomy. Only leaves relevant to the diff are loaded — token-efficient by design.
 
 ## Architecture
 
@@ -23,16 +23,23 @@ report-format.md          Argument reference, markdown report shape, JSON schema
 
 ### How It Works
 
-1. **Deep Project Scanner** (Step 0) — scans manifests, detects languages/frameworks/monorepo structure, produces a Project Profile.
-2. **Wiki tree descent** (Step 1) — reads `reviewers.wiki/index.md`, descends only into subcategories whose `focus` is relevant to the Profile + diff. At leaf level, evaluates `activation:` (file globs, structural signals, escalation) for the final dispatch decision.
-3. **Token-budget cap** — bounds total activated leaves at 30 by default; configurable via `max-reviewers=N`.
-4. **Parallel dispatch** (Step 2) — each specialist gets: leaf body + Project Profile + filtered diff + tool-discovery output.
-5. **Coverage verification** (Step 4) — every file in the diff covered by at least 2 specialists.
-6. **8-gate verdict** (Step 5) — gates aggregate findings by `dimensions[]` + `tags[]` predicate; produces GO / NO-GO / CONDITIONAL.
+The orchestrator runs eleven sequential steps. See `code-reviewer.md` for the full specification. Headline mechanics:
+
+1. **Deep Project Scan** — detects languages, frameworks, monorepo structure; produces a Project Profile.
+2. **Risk-Tier Triage** — buckets the diff into trivial / lite / full / sensitive; sets the specialist cap (3 / 8 / 20 / 30); short-circuits trivial diffs with no risk signal.
+3. **Tree Descent** — walks `reviewers.wiki/` deterministically, gathers candidate leaves whose `activation:` matches the diff or whose parent subcategory's `focus` is relevant.
+4. **LLM Trim** — picks K = cap leaves from the candidates with one-sentence justifications per pick. Justifications are the audit trail.
+5. **Tool Discovery** — collects external linters/SAST declared by picked leaves; runs available ones; feeds output into specialist prompts.
+6. **Parallel Dispatch** — every picked leaf runs as a sub-agent in parallel, blind to other specialists, receiving leaf body + Project Profile + filtered diff + tool output.
+7. **Collect Findings** — gathers all specialist outputs, deduplicates `(file, line, normalised_title)`, categorises by severity.
+8. **Verify Coverage** — every diff file must be reviewed by ≥ 2 specialists.
+9. **Synthesize Release Readiness** — 8 gates aggregate findings via dimension/tag predicates; produces GO / CONDITIONAL / NO-GO.
+10. **Write Run Directory** — sharded `.skill-code-review/<shard>/<run-id>/` directory with `manifest.json`, `report.md`, `report.json`. The manifest is the coverage proof.
+11. **Stdout / Return Value** — prints the report in the chosen format, appends a pointer to the manifest.
 
 ## Corpus
 
-The corpus lives at `reviewers.wiki/` and was built from `reviewers.src/` via `skill-llm-wiki` (deterministic mode, fan-out target 6, max depth 5, soft-DAG parents). It covers:
+The corpus lives at `reviewers.wiki/`. Sources at `reviewers.src/` are passed through `skill-llm-wiki` (deterministic mode, fan-out target 6, max depth 5, soft-DAG parents) to produce the wiki. It covers:
 
 - **Languages** — Python, JS, TS, Swift, Go, Rust, Java, Kotlin, Scala, C#, Ruby, PHP, Dart, C, C++, Objective-C, shell, SQL, R, Lua. Each as a `lang-<name>.md` leaf.
 - **Frameworks** — every framework in Phase C of `code-reviewer.md`'s detection table (web, ORM, test, UI, validation, auth, state, GraphQL, gRPC, …) as `fw-*.md` leaves.

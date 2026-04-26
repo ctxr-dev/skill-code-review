@@ -61,13 +61,19 @@ See [report-format.md](report-format.md) for the full argument reference, output
 
 ### How it works
 
-1. **Scan** — detects languages, frameworks, monorepo structure from manifests.
-2. **Descend the wiki** — reads `reviewers.wiki/index.md` and walks into subcategories whose `focus` is relevant to the diff + Project Profile.
-3. **Activate leaves** — at leaf level, evaluates each candidate's `activation:` block (file globs, structural signals, escalation) and picks specialists; bounded at `max-reviewers` (default 30).
-4. **Tools** — collects each activated leaf's declared external linters/analyzers, deduplicates, runs the available ones.
-5. **Dispatch** — every selected specialist runs in parallel with the leaf body + filtered diff + Project Profile + tool output.
-6. **Verify** — every file in the diff reviewed by at least 2 specialists.
-7. **Verdict** — 8-gate release readiness aggregated by `dimensions[]` + `tags[]` predicate: GO / NO-GO / CONDITIONAL.
+The orchestrator runs eleven sequential steps:
+
+1. **Deep Project Scan** — detects languages, frameworks, monorepo structure from manifests.
+2. **Risk-Tier Triage** — buckets the diff into trivial / lite / full / sensitive; caps specialist count at 3 / 8 / 20 / 30; short-circuits trivial diffs with no risk signal.
+3. **Tree Descent** — deterministic walk of `reviewers.wiki/`; gathers candidate leaves by `focus` + `activation:`.
+4. **LLM Trim** — picks the final K = cap leaves from candidates with one-sentence justifications. Justifications become the audit trail in the manifest.
+5. **Tool Discovery** — collects external linters from picked leaves' `tools:` arrays and runs available ones.
+6. **Parallel Dispatch** — every picked leaf runs as a blind sub-agent in parallel.
+7. **Collect Findings** — deduplicates and categorises by severity.
+8. **Verify Coverage** — every diff file reviewed by ≥ 2 specialists.
+9. **Synthesize Release Readiness** — 8 gates aggregate findings via dimension/tag predicates.
+10. **Write Run Directory** — sharded `.skill-code-review/<shard>/<run-id>/` with `manifest.json` + `report.md` + `report.json`.
+11. **Stdout / Return Value** — prints the report in the chosen format.
 
 ## Corpus
 

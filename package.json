@@ -48,7 +48,7 @@
     "prepare": "husky"
   },
   "dependencies": {
-    "@ctxr/fsm": "git+https://github.com/ctxr-dev/fsm.git#721d79e"
+    "@ctxr/fsm": "git+https://github.com/ctxr-dev/fsm.git#main"
   },
   "devDependencies": {
     "gray-matter": "^4.0.3",

@@ -77,9 +77,20 @@ The FSM design substrate, CLI reference, state-YAML schema, worker contract, and
 - [`worker-contract.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/worker-contract.md)
 - [`storage-layout.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/storage-layout.md)
 
-`package.json` references `@ctxr/fsm` via `git+https://github.com/ctxr-dev/fsm.git#<commit>`, so `npm install` resolves directly from GitHub — no sibling checkout required. During active dev iteration the dep is pinned to a specific commit SHA on the FSM package's `main`; bump that SHA in `package.json` when you want to pull in newer FSM behaviour.
+`package.json` references `@ctxr/fsm` via `git+https://github.com/ctxr-dev/fsm.git#main`, so `npm install` always resolves from the latest `main` of the FSM package — no sibling checkout required, no manual SHA bump needed. Note: npm caches git deps by URL, so to force a refresh after FSM `main` advances, run `npm install @ctxr/fsm --force` (or delete `node_modules/@ctxr/fsm` + re-install).
 
-For local engine hacking against a sibling checkout, you can override the dep temporarily with `npm install --save ../fsm` (which writes `file:../fsm` into `package.json`); revert before committing to keep the upstream-resolvable form on the branch.
+**For local engine hacking** against a sibling checkout at `../fsm`, override the dep temporarily:
+
+```bash
+npm install --save file:../fsm   # writes "@ctxr/fsm": "file:../fsm" into package.json
+# ... iterate locally; changes in ../fsm are picked up immediately
+```
+
+Revert to the upstream-resolvable form before committing:
+
+```bash
+npm install --save "@ctxr/fsm@git+https://github.com/ctxr-dev/fsm.git#main"
+```
 
 `.fsmrc.json` at the repo root tells the FSM CLIs where the FSM YAML and storage root live:
 

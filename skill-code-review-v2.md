@@ -15,7 +15,7 @@
 > **Sources of truth:**
 >
 > 1. [`docs/sniper-precision-review-architecture.md`](docs/sniper-precision-review-architecture.md) — investigation that defines the 6-tier architecture and the sprint backbone.
-> 2. The FSM package's docs (canonical, browseable on GitHub):
+> 2. The FSM package's docs (canonical, browsable on GitHub):
 >    - [`orchestration-design.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/orchestration-design.md) — design substrate
 >    - [`cli-reference.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/cli-reference.md)
 >    - [`state-yaml-reference.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/state-yaml-reference.md)

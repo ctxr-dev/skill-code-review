@@ -28,9 +28,17 @@ import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
+import { loadConfig, resolveSettings, runEnv } from "@ctxr/fsm";
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "..");
 const INLINE_STATES_DIR = resolve(__dirname, "inline-states");
+
+function resolveStorageRoot() {
+  const config = loadConfig({ cwd: REPO_ROOT });
+  const settings = resolveSettings(config, { fsmName: "code-reviewer" });
+  return resolve(REPO_ROOT, settings.storage_root);
+}
 
 function parseArgs(argv) {
   const args = {};
@@ -126,8 +134,9 @@ function parseFsmCliResult(result, label) {
 
 // Load and invoke a deterministic inline-state handler from
 // scripts/inline-states/<state-id>.mjs. Each handler exports a default async
-// function `(brief) => outputs`.
-async function dispatchInlineState(brief) {
+// function `({ brief, env }) => outputs`. The env is the cumulative output
+// of all prior states in the run (read via @ctxr/fsm's runEnv).
+async function dispatchInlineState(brief, runId) {
   const modulePath = join(INLINE_STATES_DIR, `${brief.state}.mjs`);
   if (!existsSync(modulePath)) {
     return {
@@ -144,11 +153,13 @@ async function dispatchInlineState(brief) {
   if (typeof mod.default !== "function") {
     return {
       ok: false,
-      error: `${modulePath} must export a default async function (brief) => outputs.`,
+      error: `${modulePath} must export a default async function ({brief, env}) => outputs.`,
     };
   }
   try {
-    const outputs = await mod.default(brief);
+    const storageRoot = resolveStorageRoot();
+    const env = runEnv(runId, { storageRoot });
+    const outputs = await mod.default({ brief, env });
     return { ok: true, outputs };
   } catch (err) {
     return { ok: false, error: `Inline handler threw: ${err.message}` };
@@ -171,7 +182,7 @@ async function loop(brief, runId) {
     if (current.has_worker) {
       return { status: "awaiting_worker", run_id: runId, brief: current };
     }
-    const dispatch = await dispatchInlineState(current);
+    const dispatch = await dispatchInlineState(current, runId);
     if (!dispatch.ok) {
       return {
         status: "fault",

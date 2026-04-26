@@ -45,8 +45,10 @@
     "prepare": "husky"
   },
   "devDependencies": {
+    "ajv": "^8.20.0",
     "gray-matter": "^4.0.3",
     "husky": "^9.1.0",
-    "markdownlint-cli2": "^0.14.0"
+    "markdownlint-cli2": "^0.14.0",
+    "yaml": "^2.8.3"
   }
 }

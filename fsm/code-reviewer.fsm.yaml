@@ -160,7 +160,7 @@ fsm:
           - stage_a_candidates
         response_schema:
           type: object
-          required: [picked_leaves, rejected_leaves]
+          required: [picked_leaves, rejected_leaves, coverage_rescues]
           properties:
             picked_leaves:
               type: array

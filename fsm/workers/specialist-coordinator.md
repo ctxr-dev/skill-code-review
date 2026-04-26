@@ -7,7 +7,10 @@ You are the **specialist-coordinator** worker. Your job: dispatch K specialist s
 - `project_profile` — from Step 1.
 - `changed_paths` — list of changed files.
 - `picked_leaves` — list of `{id, path, justification, dimensions}` from Step 4.
-- `tool_results` — list of `{name, status, findings, output, scoped_files}` from Step 5.
+- `tool_results` — list from Step 5; entries are a union by `status`:
+  - `{name, status: "pass" | "fail", findings, output, scoped_files?, reason?}` for tools that ran.
+  - `{name, status: "skipped", reason, findings?, output?, scoped_files?}` for tools that were skipped (only `reason` is guaranteed).
+  Treat `findings`, `output`, and `scoped_files` as optional and check `status` before reading them.
 
 ## Task
 

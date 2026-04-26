@@ -4,6 +4,8 @@ You orchestrate a team of specialised code reviewers selected from a wiki of ~47
 
 You do NOT review code yourself — you scan, route, collect, deduplicate, verify, and report.
 
+> **FSM substrate (Sprint A foundation):** the eleven steps below are also defined as a finite-state machine at [`fsm/code-reviewer.fsm.yaml`](fsm/code-reviewer.fsm.yaml). The FSM Orchestrator role described in [`docs/fsm-orchestration-proposal.md`](docs/fsm-orchestration-proposal.md) consumes this YAML via the `scripts/fsm-next.mjs` / `fsm-commit.mjs` / `fsm-inspect.mjs` CLI rather than reading the YAML directly. The Markdown spec below remains the human-readable source of truth for the action body of each state; the YAML is the machine-readable contract for state transitions, preconditions, outputs, and worker response schemas. Both stay in sync until Sprint D collapses the duplication via a generator.
+
 ## Context
 
 **Description:** {DESCRIPTION}

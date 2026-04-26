@@ -1,0 +1,242 @@
+#!/usr/bin/env node
+// run-review.mjs — orchestrator-driver runner for skill-code-review (Sprint B B1).
+//
+// Drives the FSM at fsm/code-reviewer.fsm.yaml through the @ctxr/fsm engine:
+// - calls `fsm-next` to get a state brief,
+// - for inline states (no `worker:`) dispatches to scripts/inline-states/<state-id>.mjs,
+// - for worker states pauses and emits a structured brief for the caller (Main Session
+//   Claude) to dispatch the worker via the Agent tool,
+// - calls `fsm-commit` with the captured outputs,
+// - loops until the FSM reaches the `terminal` state.
+//
+// Two invocation modes:
+//   node scripts/run-review.mjs --start --base <sha> --head <sha> [--args-file <path>]
+//   node scripts/run-review.mjs --continue --run-id <id> --outputs-file <path>
+//
+// Output (JSON, one object on stdout per call):
+//   { status: "awaiting_worker", run_id, brief }   — caller dispatches worker
+//   { status: "terminal",        run_id, verdict, run_dir_path }
+//   { status: "fault",           run_id, fault: { state, reason, details } }
+//
+// This is the SKELETON. Inline-state modules under scripts/inline-states/ are
+// implemented in Sprint B B2; until they exist, hitting an inline state without
+// a registered handler raises a clear "B2 pending" error.
+
+import { spawnSync } from "node:child_process";
+import { readFileSync, writeFileSync, mkdtempSync, existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(__dirname, "..");
+const INLINE_STATES_DIR = resolve(__dirname, "inline-states");
+
+function parseArgs(argv) {
+  const args = {};
+  for (let i = 2; i < argv.length; i++) {
+    const a = argv[i];
+    if (!a.startsWith("--")) continue;
+    const key = a.slice(2);
+    const next = argv[i + 1];
+    if (next === undefined || next.startsWith("--")) {
+      args[key] = true;
+      continue;
+    }
+    args[key] = next;
+    i++;
+  }
+  return args;
+}
+
+function emit(payload) {
+  process.stdout.write(JSON.stringify(payload) + "\n");
+}
+
+function fail(message, extra = {}) {
+  emit({ status: "error", message, ...extra });
+  process.exit(1);
+}
+
+// Locate the @ctxr/fsm CLIs through the local node_modules. Hard-fail if the
+// dep isn't installed — the runner cannot work without it.
+function fsmBin(name) {
+  const candidate = join(REPO_ROOT, "node_modules", ".bin", name);
+  if (!existsSync(candidate)) {
+    fail(
+      `@ctxr/fsm CLI not found: ${candidate}. Run \`npm install\` to fetch the dep.`,
+    );
+  }
+  return candidate;
+}
+
+function runFsmNextStart({ baseSha, headSha, argsBag }) {
+  const argsFile = join(mkdtempSync(join(tmpdir(), "run-review-")), "args.json");
+  writeFileSync(argsFile, JSON.stringify(argsBag ?? {}));
+  const result = spawnSync(
+    fsmBin("fsm-next"),
+    [
+      "--new-run",
+      "--repo",
+      "skill-code-review",
+      "--base-sha",
+      baseSha,
+      "--head-sha",
+      headSha,
+      "--args-file",
+      argsFile,
+    ],
+    { encoding: "utf8" },
+  );
+  return parseFsmCliResult(result, "fsm-next --new-run");
+}
+
+function runFsmCommit({ runId, outputs }) {
+  const outputsFile = join(
+    mkdtempSync(join(tmpdir(), "run-review-")),
+    "outputs.json",
+  );
+  writeFileSync(outputsFile, JSON.stringify(outputs ?? {}));
+  const result = spawnSync(
+    fsmBin("fsm-commit"),
+    ["--run-id", runId, "--outputs-file", outputsFile],
+    { encoding: "utf8" },
+  );
+  return parseFsmCliResult(result, "fsm-commit");
+}
+
+function parseFsmCliResult(result, label) {
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      error: result.stderr?.trim() || `${label} exited ${result.status}`,
+      raw: result.stdout,
+    };
+  }
+  try {
+    return { ok: true, payload: JSON.parse(result.stdout) };
+  } catch (err) {
+    return {
+      ok: false,
+      error: `${label} returned non-JSON stdout: ${err.message}`,
+      raw: result.stdout,
+    };
+  }
+}
+
+// Load and invoke a deterministic inline-state handler from
+// scripts/inline-states/<state-id>.mjs. Each handler exports a default async
+// function `(brief) => outputs`.
+async function dispatchInlineState(brief) {
+  const modulePath = join(INLINE_STATES_DIR, `${brief.state}.mjs`);
+  if (!existsSync(modulePath)) {
+    return {
+      ok: false,
+      error:
+        `Inline-state handler not found: ${modulePath}. ` +
+        `This state is declared inline in fsm/code-reviewer.fsm.yaml but the ` +
+        `Node module that computes its outputs has not been authored yet ` +
+        `(Sprint B B2). Either author the handler or convert the state to a ` +
+        `worker state in the FSM YAML.`,
+    };
+  }
+  const mod = await import(modulePath);
+  if (typeof mod.default !== "function") {
+    return {
+      ok: false,
+      error: `${modulePath} must export a default async function (brief) => outputs.`,
+    };
+  }
+  try {
+    const outputs = await mod.default(brief);
+    return { ok: true, outputs };
+  } catch (err) {
+    return { ok: false, error: `Inline handler threw: ${err.message}` };
+  }
+}
+
+// Drive the loop from a starting brief: walk inline states, pause on workers,
+// stop on terminal. Returns the final status payload to emit.
+async function loop(brief, runId) {
+  let current = brief;
+  while (true) {
+    if (current.status === "terminal") {
+      return {
+        status: "terminal",
+        run_id: runId,
+        verdict: current.verdict,
+        run_dir_path: current.run_dir_path,
+      };
+    }
+    if (current.has_worker) {
+      return { status: "awaiting_worker", run_id: runId, brief: current };
+    }
+    const dispatch = await dispatchInlineState(current);
+    if (!dispatch.ok) {
+      return {
+        status: "fault",
+        run_id: runId,
+        fault: { state: current.state, reason: dispatch.error },
+      };
+    }
+    const commit = runFsmCommit({ runId, outputs: dispatch.outputs });
+    if (!commit.ok) {
+      return {
+        status: "fault",
+        run_id: runId,
+        fault: {
+          state: current.state,
+          reason: `fsm-commit failed: ${commit.error}`,
+          details: commit.raw,
+        },
+      };
+    }
+    current = commit.payload;
+  }
+}
+
+async function main() {
+  const args = parseArgs(process.argv);
+
+  if (args.start) {
+    const baseSha = args.base ?? args["base-sha"];
+    const headSha = args.head ?? args["head-sha"];
+    if (!baseSha || !headSha) {
+      fail("--start requires --base <sha> and --head <sha>");
+    }
+    let argsBag = {};
+    if (args["args-file"]) {
+      argsBag = JSON.parse(readFileSync(args["args-file"], "utf8"));
+    }
+    const start = runFsmNextStart({ baseSha, headSha, argsBag });
+    if (!start.ok) {
+      fail(`fsm-next --new-run failed: ${start.error}`, { raw: start.raw });
+    }
+    const brief = start.payload;
+    emit(await loop(brief, brief.run_id));
+    return;
+  }
+
+  if (args.continue) {
+    const runId = args["run-id"];
+    const outputsFile = args["outputs-file"];
+    if (!runId || !outputsFile) {
+      fail("--continue requires --run-id <id> and --outputs-file <path>");
+    }
+    const outputs = JSON.parse(readFileSync(outputsFile, "utf8"));
+    const commit = runFsmCommit({ runId, outputs });
+    if (!commit.ok) {
+      fail(`fsm-commit failed: ${commit.error}`, { raw: commit.raw });
+    }
+    emit(await loop(commit.payload, runId));
+    return;
+  }
+
+  fail(
+    "Usage:\n" +
+      "  run-review.mjs --start --base <sha> --head <sha> [--args-file <path>]\n" +
+      "  run-review.mjs --continue --run-id <id> --outputs-file <path>",
+  );
+}
+
+main().catch((err) => fail(`unhandled error: ${err.stack || err.message}`));

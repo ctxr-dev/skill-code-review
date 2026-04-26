@@ -40,7 +40,7 @@ Five parallel sub-agent investigations converged on the same backbone for high-p
 
 | Sprint | Priority | What | Original sub-items folded in |
 |--------|----------|------|------------------------------|
-| **Sprint A** — FSM substrate | **P0** | Author orchestrator FSM YAML + schema + static validator + structured-emit protocol. See `docs/fsm-orchestration-proposal.md`. Substrate for every later sprint. | None — this is new foundation |
+| **Sprint A** — FSM substrate | **P0** | Author orchestrator FSM YAML + schema + static validator + file-only state storage (`manifest.json` + sequential `fsm-trace/*.yaml` + `lock.json` per run; date-sharded paths; no database). See `docs/fsm-orchestration-proposal.md`. Substrate for every later sprint. | None — this is new foundation |
 | **Sprint 1** — Routing precision (shipped 2026-04-26, commit `4b54db5`, tag `sprint-1-complete`) | P1 | Risk-tier triage + two-stage routing + sharded manifest | 5.0, 5.1, 5.12, 5.13 |
 | **Sprint B** — Live trace + soft-validate | P0 | `validate-trace.mjs` script; trace capture in manifest; warn-only on protocol violation. Preserves a per-run audit of which states fired with which preconditions. | None — depends on Sprint A |
 | **Sprint 2** — Quality lever | P1 | Verification judge pass + severity × agreement | 5.6, 5.11 |
@@ -1489,7 +1489,7 @@ Walk the whole corpus and add anything legitimately missing. Candidate territori
 - [x] **1.39.14** Analytics event schema discipline
 - [x] **1.39.15** Any other topic Claude recognises as legitimately load-bearing — the point of this pass is maximum coverage, stop only when nothing more comes to mind
   - Added 11 reviewers: `game-engines-unity-unreal-godot`, `graphics-shaders-webgl-webgpu`, `embedded-firmware-rtos`, `xr-arkit-arcore-webxr-openxr`, `jupyter-notebook-reproducibility`, `cli-tui-ux-design`, `browser-extensions-mv3`, `binary-serialization-protobuf-avro-flatbuffers-msgpack-thrift`, `os-packaging-homebrew-apt-snap-flatpak-winget-appimage`, `i18n-l10n-architecture`, `incident-response-postmortem-chaos-drill`
-- [ ] **1.39.C** Commit `feat(reviewers.src): gap-fill reviewers`
+- [x] **1.39.C** Commit `feat(reviewers.src): gap-fill reviewers` *Folded into commit `9f1823e` along with the rest of Phase 1.Z + 2 + 3.*
 
 #### 1.Z — Phase 1 closeout
 
@@ -1782,35 +1782,35 @@ Implements every item from the "Structural & efficiency improvements" section. W
 > **Section-level supersession (2026-04-26):** the entire 5.0 sub-section is superseded by Sprint 1 risk-tier triage (Step 0.6 in `code-reviewer.md`). The original design assumed a user-facing `depth=` argument with elicitation, session memory, and stored preferences. The investigation showed deterministic per-diff tiering is sniper-precise without any user knob — diffs *are* trivial/lite/full/sensitive based on what they touch, not based on what mood the user is in. Specific items 5.0.1–5.0.18 are individually marked with `[~]` and the same supersession reason; the items below are preserved as historical record of the alternate design that was considered.
 
 - [~] **5.0.1** Add `depth` resolution as the first orchestrator step in `code-reviewer.md`, executed before argument parsing hits any reviewer-facing logic. Resolution precedence: explicit `depth=` argument → session-context signal (current user turn contains "basic / quick / sanity" OR "mid / normal / thorough" OR "maximum / deep / full / go deep" style language → map to the corresponding level) → prior depth selected earlier in the same session (turn memory) → stored per-repo preference in `.skill-code-review/preferences.yaml` → first-use interactive elicitation → non-interactive default `mid`. *Superseded by Sprint 1 risk-tier triage (Step 0.6). Tier is computed deterministically from diff signals — no user-facing depth knob, no elicitation. The Sprint 1 tier maps to the original "depth" intent: trivial≈basic / lite≈mid / full+sensitive≈maximum, but driven by what the diff IS rather than what the user picked.*
-- [ ] **5.0.2** Implement interactive-mode detection that distinguishes: (a) slash command / direct chat turn → interactive, (b) spawned as an `Agent` sub-task → non-interactive, (c) piped CLI with no TTY → non-interactive, (d) CI environment variables present (`CI=1`, `GITHUB_ACTIONS`, `GITLAB_CI`, etc.) → non-interactive. Only interactive mode may ask the elicitation question.
-- [ ] **5.0.3** Author the elicitation prompt as the fixed text in the "Review depth levels" section of this plan. The prompt must be recognisable across sessions, list exactly three levels, name their use cases, and explicitly state the answer is remembered for the session.
-- [ ] **5.0.4** Cache the answer in turn memory for the rest of the session. If the user's reply explicitly asks for persistence (e.g. "remember this for the repo", "always use mid here"), also write to `.skill-code-review/preferences.yaml` (gitignored by default; document an opt-in flag to track it).
-- [ ] **5.0.5** Translate legacy `mode=thorough` → `depth=maximum` during argument parsing. Emit a one-line deprecation notice in the dispatch-plan printer so users see the new canonical name; do not break existing automation.
-- [ ] **5.0.6** Implement the `depth=basic` dispatch path:
+- [~] **5.0.2** Implement interactive-mode detection that distinguishes: (a) slash command / direct chat turn → interactive, (b) spawned as an `Agent` sub-task → non-interactive, (c) piped CLI with no TTY → non-interactive, (d) CI environment variables present (`CI=1`, `GITHUB_ACTIONS`, `GITLAB_CI`, etc.) → non-interactive. Only interactive mode may ask the elicitation question.
+- [~] **5.0.3** Author the elicitation prompt as the fixed text in the "Review depth levels" section of this plan. The prompt must be recognisable across sessions, list exactly three levels, name their use cases, and explicitly state the answer is remembered for the session.
+- [~] **5.0.4** Cache the answer in turn memory for the rest of the session. If the user's reply explicitly asks for persistence (e.g. "remember this for the repo", "always use mid here"), also write to `.skill-code-review/preferences.yaml` (gitignored by default; document an opt-in flag to track it).
+- [~] **5.0.5** Translate legacy `mode=thorough` → `depth=maximum` during argument parsing. Emit a one-line deprecation notice in the dispatch-plan printer so users see the new canonical name; do not break existing automation.
+- [~] **5.0.6** Implement the `depth=basic` dispatch path:
   - Activation filter restricted to `tier: 1` reviewers + the author-hygiene gate + Tier-2 reviewers whose activation signal is unambiguous (explicit file glob match, not heuristic signals).
   - Inline-servicing check: if `activated.length ≤ 5` AND `diff_loc ≤ 100` AND main session's remaining budget is sufficient, run every reviewer inline in the current session (no `Agent` spawn at all). Otherwise fall through to a single-layer fan-out.
   - Defaults: cheapest competent model, minimal effort, `budget-reviewers=8`, tight `budget-tokens` cap, `streaming=off`, `cache=on`.
-- [ ] **5.0.7** Implement the `depth=mid` dispatch path:
+- [~] **5.0.7** Implement the `depth=mid` dispatch path:
   - Activation filter: full Tier-1 + Tier-2 set, Tier-3 only on escalation signal.
   - Single-layer fan-out: main session spawns one `Agent` per reviewer (or per homogeneous group where reviewers share both inputs and model profile). No nested spawns.
   - Defaults: moderate model (harness default mid-tier), moderate effort, `budget-reviewers=30`, default token budget per sub-agent, `streaming=on`, `cache=on`.
   - Explicit `model=` / `effort=` / `budget-*=` arguments override and propagate to every sub-agent.
-- [ ] **5.0.8** Implement the `depth=maximum` dispatch path — multi-level nested fan-out:
+- [~] **5.0.8** Implement the `depth=maximum` dispatch path — multi-level nested fan-out:
   - **Layer A (main session)** — spawns one `domain-lead` sub-agent per review dimension (Correctness / Security / Performance / Tests / Readability / Architecture / Documentation) whose activated reviewers cover at least one specialist. Up to 7 parallel leads.
   - **Layer B (domain-lead)** — each lead is briefed with its dimension's activated reviewers + the project profile + the filtered diff. The lead spawns one `specialist` sub-agent per reviewer, in parallel within the dimension.
   - **Layer C (specialist)** — each specialist may spawn per-file or per-finding `leaf` sub-agents when the file set is large or a single concern warrants its own isolated context window. Specialists that don't need per-file fan-out skip this layer.
   - **Bottom-up aggregation** — leaves → specialist (dedup, cross-validate, confidence-calibrate) → domain-lead (dedup across reviewers in the dimension, dimension-level verdict) → main session (7 dimension reports assembled into the single unified report). Every aggregation layer runs the full dedup / cross-validation / confidence-calibration pass on its inputs before passing up.
   - Defaults: **max effort, max context-window model variant, most efficient strong-reasoning model available**, `budget-reviewers=∞`, `budget-tokens=∞`, `streaming=on`, `cache=on` (but `cache=refresh` honoured). Explicit args still override and propagate to every layer.
-- [ ] **5.0.9** Author the "dispatcher OR inline-worker" prompt shape for each layer (main, domain-lead, specialist) so the same prompt produces correct output whether it spawns children OR answers inline. This is the hard-constraint degradation path for harnesses that reject nested `Agent` spawns.
-- [ ] **5.0.10** Implement nested-spawn degradation: when a Layer-B or Layer-C `Agent` spawn is rejected by the harness (general-purpose sub-agents cannot spawn further agents in some configurations), catch the rejection and fall through to inline servicing within the current sub-agent's context window. Serialised inside the layer, but still isolated from the parent layer's context. Surface the degradation in `reviewer_execution.nesting_limit_hit: "<layer>"` on the final report so users can see the review did not achieve full parallelization and re-run under a harness that supports it if cost matters.
-- [ ] **5.0.11** Implement the depth-level defaults matrix for downstream controls: `depth=basic` → `budget-reviewers=8` / tight tokens / `streaming=off`; `depth=mid` → `budget-reviewers=30` / default tokens / `streaming=on`; `depth=maximum` → uncapped / uncapped / `streaming=on` forced. Any explicit user value for the downstream control wins over the depth default.
-- [ ] **5.0.12** Extend `reviewer_execution` metadata in the report schema to carry: `depth_selected: basic|mid|maximum`, `depth_source: argument|session-context|stored-preference|elicited|default`, `layers_used: [A|B|C]`, `nesting_limit_hit: <layer-id-or-null>`, per-layer sub-agent counts, per-layer wall-clock, per-layer token totals.
-- [ ] **5.0.13** Dispatch-plan printer (`dry-run`) must explicitly show: resolved depth, resolution source, the full dispatch tree (main → leads → specialists → leaves), which layers would run inline vs fan-out, predicted reviewer count per layer, predicted token cost per layer, the defaults matrix values in effect, and any argument overrides applied.
-- [ ] **5.0.14** Validator: a reviewer without a `dimensions:` frontmatter array cannot participate in `depth=maximum` Layer-A routing (because there is no domain-lead to own it). Either require `dimensions:` on every Tier-1/Tier-2 reviewer or have Layer-A declare a fallback "cross-dimensional" lead that owns unclaimed reviewers.
-- [ ] **5.0.15** Test: run a trivial 10-line docs-only diff under each of the three depth levels and measure reviewer count, sub-agent count, wall-clock, and token cost. Expected: `basic` runs inline with ~3 reviewers, `mid` fans out to ~8 reviewers in one layer, `maximum` fans out to 7 domain-leads each with their specialists (may degrade to inline servicing depending on harness — the test must tolerate that). Record the measurements in `.skill-code-review/depth-benchmarks.yaml` for future reference.
-- [ ] **5.0.16** Test: elicitation prompt fires exactly once per interactive session when no signal exists, and not at all when any of the short-circuit branches apply (explicit arg, session context, stored preference, non-interactive mode).
-- [ ] **5.0.17** Test: legacy `mode=thorough` still works end-to-end and produces byte-identical output to `depth=maximum` (minus the deprecation notice line).
-- [ ] **5.0.18** Commit `feat(orchestrator): review depth levels (basic/mid/maximum) with session-aware elicitation and multi-level nested dispatch`.
+- [~] **5.0.9** Author the "dispatcher OR inline-worker" prompt shape for each layer (main, domain-lead, specialist) so the same prompt produces correct output whether it spawns children OR answers inline. This is the hard-constraint degradation path for harnesses that reject nested `Agent` spawns.
+- [~] **5.0.10** Implement nested-spawn degradation: when a Layer-B or Layer-C `Agent` spawn is rejected by the harness (general-purpose sub-agents cannot spawn further agents in some configurations), catch the rejection and fall through to inline servicing within the current sub-agent's context window. Serialised inside the layer, but still isolated from the parent layer's context. Surface the degradation in `reviewer_execution.nesting_limit_hit: "<layer>"` on the final report so users can see the review did not achieve full parallelization and re-run under a harness that supports it if cost matters.
+- [~] **5.0.11** Implement the depth-level defaults matrix for downstream controls: `depth=basic` → `budget-reviewers=8` / tight tokens / `streaming=off`; `depth=mid` → `budget-reviewers=30` / default tokens / `streaming=on`; `depth=maximum` → uncapped / uncapped / `streaming=on` forced. Any explicit user value for the downstream control wins over the depth default.
+- [~] **5.0.12** Extend `reviewer_execution` metadata in the report schema to carry: `depth_selected: basic|mid|maximum`, `depth_source: argument|session-context|stored-preference|elicited|default`, `layers_used: [A|B|C]`, `nesting_limit_hit: <layer-id-or-null>`, per-layer sub-agent counts, per-layer wall-clock, per-layer token totals.
+- [~] **5.0.13** Dispatch-plan printer (`dry-run`) must explicitly show: resolved depth, resolution source, the full dispatch tree (main → leads → specialists → leaves), which layers would run inline vs fan-out, predicted reviewer count per layer, predicted token cost per layer, the defaults matrix values in effect, and any argument overrides applied.
+- [~] **5.0.14** Validator: a reviewer without a `dimensions:` frontmatter array cannot participate in `depth=maximum` Layer-A routing (because there is no domain-lead to own it). Either require `dimensions:` on every Tier-1/Tier-2 reviewer or have Layer-A declare a fallback "cross-dimensional" lead that owns unclaimed reviewers.
+- [~] **5.0.15** Test: run a trivial 10-line docs-only diff under each of the three depth levels and measure reviewer count, sub-agent count, wall-clock, and token cost. Expected: `basic` runs inline with ~3 reviewers, `mid` fans out to ~8 reviewers in one layer, `maximum` fans out to 7 domain-leads each with their specialists (may degrade to inline servicing depending on harness — the test must tolerate that). Record the measurements in `.skill-code-review/depth-benchmarks.yaml` for future reference.
+- [~] **5.0.16** Test: elicitation prompt fires exactly once per interactive session when no signal exists, and not at all when any of the short-circuit branches apply (explicit arg, session context, stored preference, non-interactive mode).
+- [~] **5.0.17** Test: legacy `mode=thorough` still works end-to-end and produces byte-identical output to `depth=maximum` (minus the deprecation notice line).
+- [~] **5.0.18** Commit `feat(orchestrator): review depth levels (basic/mid/maximum) with session-aware elicitation and multi-level nested dispatch`.
 
 #### 5.1 — Tiered dispatch ladder (`code-reviewer.md`)
 
@@ -1823,11 +1823,11 @@ Implements every item from the "Structural & efficiency improvements" section. W
 
 #### 5.2 — Reviewer body sectioning contract
 
-- [ ] **5.2.1** Fixed H2 shape: `When This Activates` / `Audit Surface` / `Detailed Checks` / `Common False Positives` / `Severity Guidance` / `See Also` / `Authoritative References`.
-- [ ] **5.2.2** `Detailed Checks` H3 subsections each carry their own HTML-comment `activation` frontmatter.
-- [ ] **5.2.3** Orchestrator loads only H3 subsections whose activation signals match the current diff.
-- [ ] **5.2.4** Write `scripts/validate-body-shape.mjs` enforcing the contract + per-tier length caps (T1 200, T2 500, T3 800; audit_surface 12/20/25; H3 4/8/12).
-- [ ] **5.2.5** Wire `validate-body-shape.mjs` into the `validate` chain.
+- [x] **5.2.1** Fixed H2 shape: `When This Activates` / `Audit Surface` / `Detailed Checks` / `Common False Positives` / `Severity Guidance` / `See Also` / `Authoritative References`. *Documented in `docs/SCHEMA.md`; enforced by `scripts/validate-body-shape.mjs` over all 596 source files.*
+- [x] **5.2.2** `Detailed Checks` H3 subsections each carry their own HTML-comment `activation` frontmatter. *Pattern in use across the corpus (e.g. `<!-- activation: keywords=[...] -->` per H3 in `sec-owasp-a01-broken-access-control.md`).*
+- [ ] **5.2.3** Orchestrator loads only H3 subsections whose activation signals match the current diff. *Deferred — current orchestrator loads full leaf body. Sprint 4 candidate.*
+- [x] **5.2.4** Write `scripts/validate-body-shape.mjs` enforcing the contract + per-tier length caps (T1 200, T2 500, T3 800; audit_surface 12/20/25; H3 4/8/12). *Soft-warns on tier overruns per user policy; ships.*
+- [x] **5.2.5** Wire `validate-body-shape.mjs` into the `validate` chain. *Part of `npm run validate:src`.*
 
 #### 5.3 — Project-profile fingerprint cache
 
@@ -1907,7 +1907,7 @@ Implements every item from the "Structural & efficiency improvements" section. W
 
 #### 5.14 — Knowledge freshness
 
-- [ ] **5.14.1** `last_reviewed: <YYYY-MM-DD>` in reviewer frontmatter (required on Tier 2/3; optional on Tier 1).
+- [x] **5.14.1** `last_reviewed: <YYYY-MM-DD>` in reviewer frontmatter (required on Tier 2/3; optional on Tier 1). *Field present across all 596 source files.*
 - [ ] **5.14.2** Aggregator emits freshness warning when any high-criticality reviewer (security, compliance-tagged) hasn't been reviewed in 6+ months.
 - [ ] **5.14.3** Validator fails when a Tier-2/3 reviewer missing `last_reviewed`.
 

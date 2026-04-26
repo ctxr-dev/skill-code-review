@@ -63,7 +63,29 @@ The wiki layer handles clustering, slug generation, soft-DAG parents, balance en
 
 ### Updating Phase C framework detection
 
-Adding a framework that the orchestrator doesn't yet recognise from manifests requires updating the Phase C table in [`code-reviewer.md`](code-reviewer.md). The table maps dependency names to semantic categories so the Project Profile carries the right signal into Step 1's tree descent.
+Adding a framework that the orchestrator doesn't yet recognise from manifests requires updating the Phase C table in [`code-reviewer.md`](code-reviewer.md). The table maps dependency names to semantic categories so the Project Profile carries the right signal into Step 3 (Tree Descent).
+
+### FSM authoring (Sprint A foundation)
+
+The orchestrator's flow is also defined as a finite-state-machine YAML at [`fsm/code-reviewer.fsm.yaml`](fsm/code-reviewer.fsm.yaml). The FSM is the substrate for the deterministic-orchestration design described in [`docs/fsm-orchestration-proposal.md`](docs/fsm-orchestration-proposal.md).
+
+When you change the orchestrator's flow, both files must stay in sync until Sprint D collapses the duplication via a generator.
+
+**To add a new state:**
+
+1. Append a new entry to `fsm/code-reviewer.fsm.yaml` `fsm.states[]`. Required fields: `id` (snake_case), `purpose`, `preconditions[]`, `outputs[]`, `transitions[]`.
+2. If the state dispatches a worker, declare a `worker:` block with `role`, `prompt_template` (path to the worker template under `fsm/workers/`), `inputs[]` (must reference outputs of upstream states, or `args` for the entry state), and `response_schema` (a valid JSON Schema). Inline states (no LLM call required) omit the `worker:` block.
+3. Author the worker prompt template at `fsm/workers/<role>.md`. Pattern: front-matter-free Markdown describing the worker's role, inputs, task, output JSON shape (matching the `response_schema`), constraints, and validation-rejection criteria.
+4. Run `npm run validate:fsm` — the static validator catches missing prompt templates, undefined transition targets, unreachable states, missing terminal states, malformed `response_schema`, and input/output flow gaps.
+5. Run `npm run test:src` — keep the 128 unit tests green. Add tests under `tests/unit/fsm-*.test.js` for any new helper logic.
+
+**Validators wired into `npm run validate:src`:**
+
+- `validate:body-shape` — enforces the H2 contract on every reviewer in `reviewers.src/`.
+- `validate:dimensions` — enforces the 7-axis dimensions taxonomy.
+- `validate:fsm` — runs `fsm-validate-static.mjs` over `fsm/code-reviewer.fsm.yaml`.
+
+The FSM YAML validates clean before any commit.
 
 ### Validation
 

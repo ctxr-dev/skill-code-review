@@ -214,11 +214,12 @@ async function runFullInlinePipeline() {
 
   // Filter the seeded specialist outputs to only those whose id corresponds
   // to an activated + picked leaf — the pipeline never collects findings from
-  // a specialist that wasn't dispatched.
+  // a specialist that wasn't dispatched. Skipped status is a per-worker
+  // decision AFTER dispatch (e.g., "no relevant files in diff"), so picked
+  // leaves can legitimately appear with status="skipped" — collect-findings
+  // is responsible for discarding any findings they emit.
   const pickedIds = new Set(pickedLeaves.map((l) => l.id));
-  const dispatched = SEEDED_SPECIALIST_OUTPUTS.filter(
-    (s) => pickedIds.has(s.id) || s.status === "skipped",
-  );
+  const dispatched = SEEDED_SPECIALIST_OUTPUTS.filter((s) => pickedIds.has(s.id));
 
   const collected = await collectFindings({ env: { specialist_outputs: dispatched } });
 

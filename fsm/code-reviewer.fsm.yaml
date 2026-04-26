@@ -160,9 +160,9 @@ fsm:
           - stage_a_candidates
         response_schema:
           type: object
-          required: [picked, rejected]
+          required: [picked_leaves, rejected_leaves]
           properties:
-            picked:
+            picked_leaves:
               type: array
               items:
                 type: object
@@ -174,7 +174,7 @@ fsm:
                   dimensions:
                     type: array
                     items: { type: string }
-            rejected:
+            rejected_leaves:
               type: array
               items:
                 type: object
@@ -219,17 +219,40 @@ fsm:
             tool_results:
               type: array
               items:
-                type: object
-                required: [name, status]
-                properties:
-                  name: { type: string }
-                  status: { enum: [pass, fail, skipped] }
-                  findings: { type: integer }
-                  output: { type: string }
-                  reason: { type: string }
-                  scoped_files:
-                    type: array
-                    items: { type: string }
+                oneOf:
+                  - type: object
+                    required: [name, status, findings, output]
+                    properties:
+                      name: { type: string }
+                      status: { enum: [pass] }
+                      findings: { type: integer }
+                      output: { type: string }
+                      reason: { type: string }
+                      scoped_files:
+                        type: array
+                        items: { type: string }
+                  - type: object
+                    required: [name, status, findings, output]
+                    properties:
+                      name: { type: string }
+                      status: { enum: [fail] }
+                      findings: { type: integer }
+                      output: { type: string }
+                      reason: { type: string }
+                      scoped_files:
+                        type: array
+                        items: { type: string }
+                  - type: object
+                    required: [name, status, reason]
+                    properties:
+                      name: { type: string }
+                      status: { enum: [skipped] }
+                      findings: { type: integer }
+                      output: { type: string }
+                      reason: { type: string }
+                      scoped_files:
+                        type: array
+                        items: { type: string }
       outputs:
         - tool_results
       post_validations: []
@@ -279,6 +302,11 @@ fsm:
                         impact: { type: string }
                         fix: { type: string }
                   skip_reason: { type: string }
+                if:
+                  properties:
+                    status: { const: skipped }
+                then:
+                  required: [skip_reason]
       outputs:
         - specialist_outputs
       post_validations:

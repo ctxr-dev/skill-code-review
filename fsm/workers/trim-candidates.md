@@ -25,7 +25,7 @@ Coverage rule: every file in `changed_paths` must be covered by ≥ 2 picked lea
 
 ```json
 {
-  "picked": [
+  "picked_leaves": [
     {
       "id": "sec-owasp-a01-broken-access-control",
       "path": "reviewers.wiki/csrf-missing/sec-owasp-a01-broken-access-control.md",
@@ -33,7 +33,7 @@ Coverage rule: every file in `changed_paths` must be covered by ≥ 2 picked lea
       "dimensions": ["security"]
     }
   ],
-  "rejected": [
+  "rejected_leaves": [
     {
       "id": "fw-react",
       "reason": "Diff has no frontend file changes; React review would not surface relevant findings."
@@ -51,23 +51,23 @@ Coverage rule: every file in `changed_paths` must be covered by ≥ 2 picked lea
 
 Fields:
 
-- `picked[].id` and `picked[].path` — must match a value from `stage_a_candidates`.
-- `picked[].justification` — non-empty; one sentence; cite a specific file or pattern.
-- `picked[].dimensions` — array; copy from the leaf's `dimensions:` frontmatter.
-- `rejected[].id` — leaf id from `stage_a_candidates`.
-- `rejected[].reason` — non-empty; one sentence stating why the leaf does not apply.
+- `picked_leaves[].id` and `picked_leaves[].path` — must match a value from `stage_a_candidates`.
+- `picked_leaves[].justification` — non-empty; one sentence; cite a specific file or pattern.
+- `picked_leaves[].dimensions` — array; copy from the leaf's `dimensions:` frontmatter.
+- `rejected_leaves[].id` — leaf id from `stage_a_candidates`.
+- `rejected_leaves[].reason` — non-empty; one sentence stating why the leaf does not apply.
 - `coverage_rescues` — empty array if no rescues were needed.
 
 ## Constraints
 
-- `len(picked) <= cap`.
-- Every leaf in `stage_a_candidates` appears in EITHER `picked` OR `rejected` — no leaf left out.
+- `len(picked_leaves) <= cap`.
+- Every leaf in `stage_a_candidates` appears in EITHER `picked_leaves` OR `rejected_leaves` — no leaf left out.
 - Justifications must be specific. "Looks relevant" is rejected by review.
 - You may read `reviewers.wiki/<path>/<id>.md` frontmatter (top YAML block only) to look up `dimensions:` and `focus:`. Do NOT read leaf body content.
 
 ## Validation will reject
 
-- `picked[].justification` empty.
-- `picked[].dimensions` missing.
-- A leaf id appearing in both `picked` and `rejected`.
-- `coverage_rescues[]` referencing leaves not in `rejected[]`.
+- `picked_leaves[].justification` empty.
+- `picked_leaves[].dimensions` missing.
+- A leaf id appearing in both `picked_leaves` and `rejected_leaves`.
+- `coverage_rescues[]` referencing leaves not in `rejected_leaves[]`.

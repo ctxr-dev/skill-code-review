@@ -67,7 +67,7 @@ Adding a framework that the orchestrator doesn't yet recognise from manifests re
 
 ### FSM authoring
 
-The orchestrator's flow is defined as a finite-state-machine YAML at [`fsm/code-reviewer.fsm.yaml`](fsm/code-reviewer.fsm.yaml). The engine that consumes this YAML lives in the standalone [`@ctxr/fsm`](https://github.com/ctxr-dev/fsm) package, wired here via `file:../fsm` in `package.json` for active development.
+The orchestrator's flow is defined as a finite-state-machine YAML at [`fsm/code-reviewer.fsm.yaml`](fsm/code-reviewer.fsm.yaml). The engine that consumes this YAML lives in the standalone [`@ctxr/fsm`](https://github.com/ctxr-dev/fsm) package, referenced from `package.json` via `git+https://github.com/ctxr-dev/fsm.git#main` (always resolves the latest `main`).
 
 The FSM design substrate, CLI reference, state-YAML schema, worker contract, and storage-layout reference all live in the FSM package's `docs/` directory:
 

@@ -22,27 +22,27 @@ Execute Step 6 of `code-reviewer.md` (Dispatch Specialists):
 2. **Dispatch ALL specialists in parallel** — emit ONE message containing multiple Agent tool calls. Each specialist runs as a separate sub-agent with its own context.
 3. Each specialist returns JSON with its findings array. Collect all responses.
 
-Specialist sub-agent contract: each specialist returns
+Specialist sub-agent contract: each specialist returns one JSON object. `status` must be exactly one of `completed`, `failed`, `skipped`; `severity` exactly one of `critical`, `important`, `minor` (the `|` separators below indicate enum choices, not literal string values):
 
 ```json
 {
   "id": "<leaf-id>",
-  "status": "completed | failed | skipped",
-  "runtime_ms": <integer>,
-  "tokens_in": <integer>,
-  "tokens_out": <integer>,
+  "status": "completed",
+  "runtime_ms": 1234,
+  "tokens_in": 567,
+  "tokens_out": 890,
   "findings": [
     {
-      "severity": "critical | important | minor",
+      "severity": "important",
       "file": "<path>",
-      "line": <integer or null>,
+      "line": 42,
       "title": "<short title>",
       "description": "<full description>",
       "impact": "<impact statement>",
       "fix": "<suggested fix>"
     }
   ],
-  "skip_reason": "<sentence-if-skipped>"
+  "skip_reason": "<sentence — required iff status==skipped>"
 }
 ```
 

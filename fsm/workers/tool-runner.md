@@ -12,7 +12,7 @@ You are the **tool-runner** worker. Your job: collect the external tools declare
 Execute Step 5 of `code-reviewer.md` (Tool Discovery):
 
 1. **Collect** all `tools:` entries from each picked leaf's frontmatter (read each leaf's frontmatter only; not the body). Deduplicate by `name`.
-2. **Check availability** for each tool: `which <name>`, `npx <name> --version`, or project-local detection (`./node_modules/.bin/<name>`, `pyproject.toml` script entries, etc.).
+2. **Check availability** for each tool using **non-installing** checks only: `command -v <name>`, `./node_modules/.bin/<name>`, `npx --no-install <name> --version`, or project-local detection (`pyproject.toml` script entries, etc.). Plain `npx <name> --version` is forbidden — it implicitly downloads/installs missing packages, which would violate the "Do not install tools without explicit user approval" rule below.
 3. **Apply tool mode** (from `args.tools`, default `silent`):
    - `silent`: run available tools, skip missing, note skips.
    - `interactive`: ask user about missing tools (only when running interactively; not in CI).

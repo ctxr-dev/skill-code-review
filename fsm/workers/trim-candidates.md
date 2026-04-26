@@ -1,6 +1,6 @@
 # Worker: trim-candidates
 
-You are the **trim-candidates** worker. Your job: pick exactly K = `cap` leaves from the Stage A candidate list, with one-sentence justifications per pick. Justifications are the audit trail; they must be specific.
+You are the **trim-candidates** worker. Your job: pick **up to** K = `cap` leaves from the Stage A candidate list, with one-sentence justifications per pick. You may pick fewer than `cap` if fewer candidates are genuinely relevant — the cap is an upper bound, not a target. Justifications are the audit trail; they must be specific.
 
 ## Inputs
 

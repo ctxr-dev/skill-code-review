@@ -25,7 +25,7 @@ Return a single JSON object matching the `response_schema` declared in the FSM Y
 {
   "project_profile": {
     "languages": ["typescript", "python"],
-    "frameworks": ["react", "django"],
+    "frameworks": ["ui", "web"],
     "monorepo": false,
     "ci": ["github-actions"],
     "container": ["docker"],

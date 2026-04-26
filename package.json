@@ -26,6 +26,8 @@
     "release-readiness.md",
     "report-format.md",
     "reviewers.wiki/",
+    "fsm/",
+    ".fsmrc.json",
     "README.md",
     "LICENSE"
   ],
@@ -39,17 +41,18 @@
     "index:build:src": "node scripts/build-index-src.mjs",
     "validate:body-shape": "node scripts/validate-body-shape.mjs",
     "validate:dimensions": "node scripts/validate-dimensions.mjs",
-    "validate:fsm": "node scripts/fsm-validate-static.mjs fsm/code-reviewer.fsm.yaml",
+    "validate:fsm": "fsm-validate-static fsm/code-reviewer.fsm.yaml",
     "validate:src": "npm run index:build:src && npm run validate:body-shape && npm run validate:dimensions && npm run validate:fsm",
     "lint": "markdownlint-cli2 '**/*.md' '#node_modules'",
     "lint:fix": "markdownlint-cli2 --fix '**/*.md' '#node_modules'",
     "prepare": "husky"
   },
+  "dependencies": {
+    "@ctxr/fsm": "file:../fsm"
+  },
   "devDependencies": {
-    "ajv": "^8.20.0",
     "gray-matter": "^4.0.3",
     "husky": "^9.1.0",
-    "markdownlint-cli2": "^0.14.0",
-    "yaml": "^2.8.3"
+    "markdownlint-cli2": "^0.14.0"
   }
 }

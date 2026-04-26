@@ -19,7 +19,7 @@ fsm:
       preconditions: []
       worker:
         role: project-scanner
-        prompt_template: fsm/workers/project-scanner.md
+        prompt_template: workers/project-scanner.md
         inputs:
           - args
         response_schema:
@@ -96,7 +96,7 @@ fsm:
         - "tier exists in run state"
       worker:
         role: tree-descender
-        prompt_template: fsm/workers/tree-descender.md
+        prompt_template: workers/tree-descender.md
         inputs:
           - project_profile
           - changed_paths
@@ -144,7 +144,7 @@ fsm:
         - "cap exists in run state"
       worker:
         role: trim-candidates
-        prompt_template: fsm/workers/trim-candidates.md
+        prompt_template: workers/trim-candidates.md
         inputs:
           - project_profile
           - changed_paths
@@ -201,7 +201,7 @@ fsm:
         - "picked_leaves is an array"
       worker:
         role: tool-runner
-        prompt_template: fsm/workers/tool-runner.md
+        prompt_template: workers/tool-runner.md
         inputs:
           - picked_leaves
           - args
@@ -237,7 +237,7 @@ fsm:
         - "picked_leaves is non-empty"
       worker:
         role: specialist-coordinator
-        prompt_template: fsm/workers/specialist-coordinator.md
+        prompt_template: workers/specialist-coordinator.md
         inputs:
           - project_profile
           - changed_paths

@@ -1,0 +1,4 @@
+{
+  "fsm_path": "fsm/code-reviewer.fsm.yaml",
+  "storage_root": ".skill-code-review"
+}

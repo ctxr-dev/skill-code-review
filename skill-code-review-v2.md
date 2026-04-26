@@ -63,7 +63,7 @@ Five parallel sub-agent investigations converged on the same backbone for high-p
 
 ### Sprint B — detailed scope (P0, in-flight)
 
-The current state honesty: the FSM YAML is structurally validated (`validate:fsm` passes, 14 states, 0 errors) and the engine's libraries are tested upstream (88 tests in `@ctxr/fsm`). But **today no script in skill-code-review calls `fsm-next` / `fsm-commit` to drive a live review** — when a user invokes `/skill-code-review`, Claude reads `code-reviewer.md` and walks the prose. The FSM is a design contract with executable static validation; it is not yet the runtime substrate.
+The current state honesty: the FSM YAML is structurally validated (`validate:fsm` passes, 14 states, 0 errors) and the engine's libraries are tested upstream (88 tests in `@ctxr/fsm`). This repo now also ships `scripts/run-review.mjs` — a runner that calls `fsm-next` / `fsm-commit` to walk the FSM and dispatch each state to either an inline-state Node module or a worker brief for the caller to fulfil. The runner is the canonical entry point as of B1; `code-reviewer.md`'s prose moves toward advisory documentation under B6. Until B6 lands, Claude can still invoke the prose path when `/skill-code-review` is called without going through the runner — so the FSM is beyond design-contract status but is not yet the *exclusive* runtime substrate.
 
 That gap is the largest hallucination surface the skill currently has. Several state-spec invariants (`post_validations[]`, `preconditions[]`) are declarative-only — the engine writes them into the trace but does not evaluate them. Several "deterministic" inline states (Step 3 activation gate, Step 7 dedup, Step 8 coverage matrix, Step 9 gate predicate matching) are described as deterministic in the FSM YAML but are computed by Claude reading prose, not by code. Two runs of the same diff can therefore produce different routing, different dedup, different coverage matrix, different gate aggregation.
 
@@ -80,7 +80,7 @@ That gap is the largest hallucination surface the skill currently has. Several s
 
 #### FSM-side dependencies (issues on `ctxr-dev/fsm`)
 
-These items unblock B1–B4 and land as separate PRs on the engine repo. Tracked as GitHub issues; bump the dep SHA in `package.json` when each merges.
+These items unblock B1–B4 and land as separate PRs on the engine repo. Tracked as GitHub issues; `package.json` intentionally tracks `git+https://github.com/ctxr-dev/fsm.git#main`, so when each merges, refresh the lockfile (`npm install`) to pick up the new resolved commit SHA in `package-lock.json`.
 
 - [ ] **F1. Runtime preconditions evaluation** — [`ctxr-dev/fsm#1`](https://github.com/ctxr-dev/fsm/issues/1). Today `writeEntryTrace` records the preconditions strings but does not execute them. Extend `fsm-engine.mjs` so the runner blocks state entry when a precondition predicate evaluates false (or warn-only in soft-validate mode per F4). Predicates reuse the existing `evaluatePredicate` DSL.
 - [ ] **F2. Runtime post-validations evaluation** — [`ctxr-dev/fsm#2`](https://github.com/ctxr-dev/fsm/issues/2). `runPostValidations` returns `valid: true` with a stub note. Implement real evaluation against the run env. Failed post-validations write a fault trace and short-circuit the transition.

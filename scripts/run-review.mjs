@@ -3,7 +3,7 @@
 //
 // Drives the FSM at fsm/code-reviewer.fsm.yaml through the @ctxr/fsm engine:
 // - calls `fsm-next` to get a state brief,
-// - for inline states (no `worker:`) dispatches to scripts/inline-states/<state-id>.mjs,
+// - for inline states (no `worker:`) dispatches to scripts/inline-states/<kebab-state-id>.mjs,
 // - for worker states pauses and emits a structured brief for the caller (Main Session
 //   Claude) to dispatch the worker via the Agent tool,
 // - calls `fsm-commit` with the captured outputs,
@@ -17,6 +17,11 @@
 //   { status: "awaiting_worker", run_id, brief }   — caller dispatches worker
 //   { status: "terminal",        run_id, verdict, run_dir_path }
 //   { status: "fault",           run_id, fault: { state, reason, details } }
+//   { status: "error",           message, ...extra } — environment / setup
+//     failure (no fsm dep installed, bad CLI args, missing inline handler).
+//     Distinct from `fault`: `fault` is an in-flow runtime fault during state
+//     execution; `error` is a fail-fast pre-condition before the loop is
+//     usable. Process exits non-zero after emitting `error`.
 //
 // This is the SKELETON. Inline-state modules under scripts/inline-states/ are
 // implemented in Sprint B B2; until they exist, hitting an inline state without
@@ -132,12 +137,21 @@ function parseFsmCliResult(result, label) {
   }
 }
 
+// FSM state ids are snake_case (`risk_tier_triage`, `stage_a_empty`, ...)
+// but the inline-state module filenames are kebab-case
+// (`risk-tier-triage.mjs`, `stage-a-empty.mjs`, ...) — the convention used
+// across the rest of the repo. Translate at dispatch time so both sides keep
+// their idiomatic spelling.
+function stateIdToModuleName(stateId) {
+  return stateId.replace(/_/g, "-");
+}
+
 // Load and invoke a deterministic inline-state handler from
-// scripts/inline-states/<state-id>.mjs. Each handler exports a default async
-// function `({ brief, env }) => outputs`. The env is the cumulative output
-// of all prior states in the run (read via @ctxr/fsm's runEnv).
+// scripts/inline-states/<kebab-state-id>.mjs. Each handler exports a default
+// async function `({ brief, env }) => outputs`. The env is the cumulative
+// output of all prior states in the run (read via @ctxr/fsm's runEnv).
 async function dispatchInlineState(brief, runId) {
-  const modulePath = join(INLINE_STATES_DIR, `${brief.state}.mjs`);
+  const modulePath = join(INLINE_STATES_DIR, `${stateIdToModuleName(brief.state)}.mjs`);
   if (!existsSync(modulePath)) {
     return {
       ok: false,

@@ -4,6 +4,8 @@ You orchestrate a team of specialised code reviewers selected from a wiki of ~47
 
 You do NOT review code yourself — you scan, route, collect, deduplicate, verify, and report.
 
+> **FSM substrate.** The eleven steps below are also defined as a finite-state machine at [`fsm/code-reviewer.fsm.yaml`](fsm/code-reviewer.fsm.yaml). The engine + CLIs live in the standalone [`@ctxr/fsm`](https://github.com/ctxr-dev/fsm) package; `.fsmrc.json` at the repo root configures `fsm_path` and `storage_root`. See [`ctxr-dev/fsm/docs/orchestration-design.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/orchestration-design.md) for the design substrate. The Markdown spec below remains the human-readable source of truth for the action body of each state; the YAML is the machine-readable contract for state transitions, preconditions, outputs, and worker response schemas. Both stay in sync until the FSM package's v0.4 generator collapses the duplication.
+
 ## Context
 
 **Description:** {DESCRIPTION}

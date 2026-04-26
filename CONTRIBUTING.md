@@ -63,7 +63,63 @@ The wiki layer handles clustering, slug generation, soft-DAG parents, balance en
 
 ### Updating Phase C framework detection
 
-Adding a framework that the orchestrator doesn't yet recognise from manifests requires updating the Phase C table in [`code-reviewer.md`](code-reviewer.md). The table maps dependency names to semantic categories so the Project Profile carries the right signal into Step 1's tree descent.
+Adding a framework that the orchestrator doesn't yet recognise from manifests requires updating the Phase C table in [`code-reviewer.md`](code-reviewer.md). The table maps dependency names to semantic categories so the Project Profile carries the right signal into Step 3 (Tree Descent).
+
+### FSM authoring
+
+The orchestrator's flow is defined as a finite-state-machine YAML at [`fsm/code-reviewer.fsm.yaml`](fsm/code-reviewer.fsm.yaml). The engine that consumes this YAML lives in the standalone [`@ctxr/fsm`](https://github.com/ctxr-dev/fsm) package, referenced from `package.json` via `git+https://github.com/ctxr-dev/fsm.git#main` (always resolves the latest `main`).
+
+The FSM design substrate, CLI reference, state-YAML schema, worker contract, and storage-layout reference all live in the FSM package's `docs/` directory:
+
+- [`orchestration-design.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/orchestration-design.md)
+- [`cli-reference.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/cli-reference.md)
+- [`state-yaml-reference.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/state-yaml-reference.md)
+- [`worker-contract.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/worker-contract.md)
+- [`storage-layout.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/storage-layout.md)
+
+`package.json` references `@ctxr/fsm` via `git+https://github.com/ctxr-dev/fsm.git#main`, so `npm install` always resolves from the latest `main` of the FSM package — no sibling checkout required, no manual SHA bump needed. Note: npm caches git deps by URL, so to force a refresh after FSM `main` advances, run `npm install --force` (or explicitly reinstall with `npm install --save "@ctxr/fsm@git+https://github.com/ctxr-dev/fsm.git#main"`, or delete `node_modules/@ctxr/fsm` and reinstall).
+
+**For local engine hacking** against a sibling checkout at `../fsm`, override the dep temporarily:
+
+```bash
+npm install --save file:../fsm   # writes "@ctxr/fsm": "file:../fsm" into package.json
+# ... iterate locally; changes in ../fsm are picked up immediately
+```
+
+Revert to the upstream-resolvable form before committing:
+
+```bash
+npm install --save "@ctxr/fsm@git+https://github.com/ctxr-dev/fsm.git#main"
+```
+
+`.fsmrc.json` at the repo root tells the FSM CLIs where the FSM YAML and storage root live:
+
+```json
+{
+  "fsms": [
+    {
+      "name": "code-reviewer",
+      "fsm_path": "fsm/code-reviewer.fsm.yaml",
+      "storage_root": ".skill-code-review"
+    }
+  ]
+}
+```
+
+**To add a new state:**
+
+1. Append a new entry to `fsm/code-reviewer.fsm.yaml` `fsm.states[]`. Required fields: `id` (snake_case), `purpose`, `preconditions[]`, `outputs[]`, `transitions[]`. See [`state-yaml-reference.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/state-yaml-reference.md) for the full schema.
+2. If the state dispatches a worker, declare a `worker:` block with `role`, `prompt_template` (path relative to the FSM YAML's directory — typically `workers/<role>.md`), `inputs[]` (must reference outputs of upstream states, or `args` for the entry state), and `response_schema` (a valid JSON Schema). Inline states (no LLM call required) omit the `worker:` block.
+3. Author the worker prompt template at `fsm/workers/<role>.md`. See [`worker-contract.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/worker-contract.md) for conventions.
+4. Run `npm run validate:fsm` — the package's static validator catches missing prompt templates, undefined transition targets, unreachable states, missing terminal states, malformed `response_schema`, and input/output flow gaps.
+
+**Validators wired into `npm run validate:src`:**
+
+- `validate:body-shape` — enforces the H2 contract on every reviewer in `reviewers.src/`.
+- `validate:dimensions` — enforces the 7-axis dimensions taxonomy.
+- `validate:fsm` — runs `@ctxr/fsm`'s `fsm-validate-static` over `fsm/code-reviewer.fsm.yaml`.
+
+The FSM YAML validates clean before any commit.
 
 ### Validation
 

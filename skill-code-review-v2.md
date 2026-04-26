@@ -8,14 +8,21 @@
 > Phase 3 (orchestrator rewired onto `reviewers.wiki/` tree-descent + predicate-based gate aggregation) ✓ commit `9f1823e`
 > Sprint 1 (risk-tier triage + two-stage routing + sharded manifest) ✓ commit `4b54db5`, tag `sprint-1-complete`
 >
-> **Next (P0): Sprint A — FSM substrate.** Author the orchestrator finite-state-machine YAML + static validator + structured-emit protocol. Detail in [`docs/fsm-orchestration-proposal.md`](docs/fsm-orchestration-proposal.md). Sprint B (live trace + soft-validate) ships immediately after as the second P0. Both are foundation for every later sprint.
+> **Next (P0): Sprint A — FSM substrate.** The FSM substrate now lives in the standalone `@ctxr/fsm` package (sibling repo at `../fsm/`, ships at `https://github.com/ctxr-dev/fsm.git`). skill-code-review consumes the package via `git+https://github.com/ctxr-dev/fsm.git#main` (latest `main`); local sibling hacking is covered by an `npm install --save file:../fsm` override documented in `CONTRIBUTING.md`. Sprint A's work in this repo is now narrow: author `fsm/code-reviewer.fsm.yaml` + skill-specific worker prompt templates under `fsm/workers/`, add `@ctxr/fsm` as a dependency, and wire the package's CLIs into the npm scripts. Sprint B (live trace + soft-validate) ships immediately after as the second P0. The FSM design substrate, CLI reference, state-YAML schema, worker contract, and storage-layout reference all live in the FSM package's `docs/` directory.
 >
 > **Then (P1+):** Sprint 2 (verification judge), Sprint C (strict trace + child FSMs), Sprint 3 (corpus quality), Sprint 4 (persistent reports + scaffold). Sprint D (YAML/prose collapse) and Sprint 5 (hypothesis pre-pass) are P3 — polish or optional.
 >
 > **Sources of truth:**
 >
 > 1. [`docs/sniper-precision-review-architecture.md`](docs/sniper-precision-review-architecture.md) — investigation that defines the 6-tier architecture and the sprint backbone.
-> 2. [`docs/fsm-orchestration-proposal.md`](docs/fsm-orchestration-proposal.md) — Sprint A's design.
+> 2. The FSM package's docs (canonical, browsable on GitHub):
+>    - [`orchestration-design.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/orchestration-design.md) — design substrate
+>    - [`cli-reference.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/cli-reference.md)
+>    - [`state-yaml-reference.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/state-yaml-reference.md)
+>    - [`worker-contract.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/worker-contract.md)
+>    - [`storage-layout.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/storage-layout.md)
+>
+>    *(For local sibling-repo checkouts these live at `../fsm/docs/*`.)*
 > 3. The Sprint mapping table below — which Phase 4/5/6/7 sub-items each sprint covers.
 >
 > **`skill-llm-wiki` work is carved out** into the "Upstream skill-llm-wiki items" section at the bottom of this plan. Anything that requires changes to skill-llm-wiki's clustering, slug generation, or build pipeline is filed there as upstream issues for that repo to solve. skill-code-review never implements wiki-build workarounds inside this repo.
@@ -40,14 +47,14 @@ Five parallel sub-agent investigations converged on the same backbone for high-p
 
 | Sprint | Priority | What | Original sub-items folded in |
 |--------|----------|------|------------------------------|
-| **Sprint A** — FSM substrate | **P0** | Author orchestrator FSM YAML + schema + static validator + file-only state storage (`manifest.json` + sequential `fsm-trace/*.yaml` + `lock.json` per run; date-sharded paths; no database). See `docs/fsm-orchestration-proposal.md`. Substrate for every later sprint. | None — this is new foundation |
+| **Sprint A** — FSM consumer wiring | **P0** | Author `fsm/code-reviewer.fsm.yaml` + skill-specific worker prompts under `fsm/workers/`. Consume `@ctxr/fsm` via `git+https://github.com/ctxr-dev/fsm.git#main` (always tracking the FSM package's `main`); `file:../fsm` is a documented local-only override for sibling-repo development. Wire `validate:fsm` into `package.json` scripts now (invokes the package's `fsm-validate-static` CLI); the runtime CLIs (`fsm-next`, `fsm-commit`, `fsm-inspect`) are usable directly via `npx` and ship as `node_modules/.bin/` symlinks once the dep installs — they will be wired into named npm scripts when an actual run loop lands in Sprint B. Add `.fsmrc.json` with the canonical `fsms[]` array (single entry: `fsm_path: fsm/code-reviewer.fsm.yaml`, `storage_root: .skill-code-review`). Engine itself ships from `@ctxr/fsm`; design + reference docs live there too. | None — depends only on the FSM package |
 | **Sprint 1** — Routing precision (shipped 2026-04-26, commit `4b54db5`, tag `sprint-1-complete`) | P1 | Risk-tier triage + two-stage routing + sharded manifest | 5.0, 5.1, 5.12, 5.13 |
-| **Sprint B** — Live trace + soft-validate | P0 | `validate-trace.mjs` script; trace capture in manifest; warn-only on protocol violation. Preserves a per-run audit of which states fired with which preconditions. | None — depends on Sprint A |
+| **Sprint B** — Live trace + soft-validate | P0 | Use `@ctxr/fsm`'s `fsm-validate-trace` (lands in FSM package v0.2) on every run; trace capture in `manifest.json`; warn-only on protocol violation. Preserves a per-run audit of which states fired with which preconditions. | None — depends on FSM package v0.2 |
 | **Sprint 2** — Quality lever | P1 | Verification judge pass + severity × agreement | 5.6, 5.11 |
-| **Sprint C** — Strict trace + child FSMs | P1 | Trace-validate violations downgrade verdict; specialists + judge get child FSMs | None — depends on Sprint A and Sprint B |
+| **Sprint C** — Strict trace + child FSMs | P1 | Trace-validate violations downgrade verdict; specialists + judge get child FSMs (FSM package v0.3 child-FSM contract). | None — depends on FSM package v0.3 |
 | **Sprint 3** — Corpus quality | P2 | Explicit `dimensions:` field to all source files; tag casing; populate `tools:`; `escalation_from` chains | 5.2, 5.3, 5.4, 5.10, 5.14 |
 | **Sprint 4** — Persistent reports + scaffold | P2 | SARIF + Markdown dual output; logical-certificate prompt scaffold | Phase 4 entire (4.1 through 4.9), 5.5, 5.7, 5.8 |
-| **Sprint D** — YAML/prose collapse | P3 | Generator script: prose sections of `code-reviewer.md` regenerated from FSM YAML; YAML becomes single source of truth | None — depends on Sprint A through Sprint 4 |
+| **Sprint D** — YAML/prose collapse | P3 | Generator script (FSM package v0.4): prose sections of `code-reviewer.md` regenerated from `fsm/code-reviewer.fsm.yaml`; YAML becomes single source of truth. | None — depends on FSM package v0.4 |
 | **Sprint 5** — Hypothesis pre-pass | P3 (optional) | Tier 3 hypothesis pre-pass — only if Sprints 1–4 leave residual misses | None |
 
 **Priority key.** P0 is shippable next; nothing else gates on this finishing. P1 is shippable after the P0s land in any order. P2 is corpus / report enrichment; valuable but not blocking. P3 is optional or polish.

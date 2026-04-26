@@ -1,9 +1,13 @@
 // synthesize-release-readiness.mjs — deterministic implementation of FSM state Step 9.
 //
 // Inputs (from env):
-//   - findings        : deduped findings from Step 7 (each carries `flagged_by[]`)
-//   - picked_leaves   : { id, path, justification, dimensions[] }[]
-//   - coverage_gaps   : string[] (from Step 8 — degrades verdict if non-empty)
+//   - findings               : deduped findings from Step 7 (each carries `flagged_by[]`)
+//   - picked_leaves          : { id, path, justification, dimensions[] }[]
+//   - coverage_gaps          : string[] (from Step 8; informational detail, surfaced
+//                              in the report payload but NOT consulted for verdict —
+//                              the engine-enforced signal is `coverage_rule_violated`)
+//   - coverage_rule_violated : boolean (from Step 8 — degrades verdict to NO-GO when true,
+//                              per B4 hard enforcement)
 //
 // Outputs:
 //   - gates   : 8 entries each shaped { number, name, status, contributing_leaves[], blocker_count }
@@ -90,7 +94,6 @@ function leafProducedBlockers(leafId, blockingFlaggedBy) {
 export default async function synthesizeReleaseReadiness({ env }) {
   const findings = Array.isArray(env.findings) ? env.findings : [];
   const pickedLeaves = Array.isArray(env.picked_leaves) ? env.picked_leaves : [];
-  const coverageGaps = Array.isArray(env.coverage_gaps) ? env.coverage_gaps : [];
 
   const blockingFlaggedBy = new Set();
   for (const f of findings) {

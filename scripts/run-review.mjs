@@ -23,9 +23,10 @@
 //     execution; `error` is a fail-fast pre-condition before the loop is
 //     usable. Process exits non-zero after emitting `error`.
 //
-// This is the SKELETON. Inline-state modules under scripts/inline-states/ are
-// implemented in Sprint B B2; until they exist, hitting an inline state without
-// a registered handler raises a clear "B2 pending" error.
+// Inline states are dispatched to handler modules under scripts/inline-states/.
+// FSM state ids are snake_case; handler filenames are kebab-case. The runner
+// translates at dispatch time. Hitting an inline state without a registered
+// handler emits a `fault` so callers can react uniformly.
 
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdtempSync, existsSync } from "node:fs";

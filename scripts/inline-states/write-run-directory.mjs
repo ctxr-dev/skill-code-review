@@ -11,7 +11,8 @@
 // already live there from earlier states.
 
 import { writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   loadConfig,
@@ -30,7 +31,11 @@ function resolveStorageRoot(repoRoot) {
 }
 
 export default async function writeRunDirectory({ brief, env }) {
-  const repoRoot = resolve(import.meta.dirname, "..", "..");
+  // `import.meta.dirname` is Node ≥ 21 only; the rest of the runner uses the
+  // portable `dirname(fileURLToPath(import.meta.url))` form, so do the same
+  // here for consistency and pre-21 portability.
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const repoRoot = resolve(__dirname, "..", "..");
   const storageRoot = resolveStorageRoot(repoRoot);
   const runId = brief.run_id;
   const dir = runDirPath(runId, { storageRoot });

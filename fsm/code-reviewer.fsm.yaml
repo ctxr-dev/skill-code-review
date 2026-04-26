@@ -126,7 +126,7 @@ fsm:
                     type: array
                     minItems: 1
                     items:
-                      enum: [file_globs, keyword_matches, structural_signals, escalation_from]
+                      enum: [file_globs, keyword_matches, structural_signals, escalation_from, focus_only]
             descent_path:
               type: array
               items: { type: string }
@@ -341,6 +341,7 @@ fsm:
       outputs:
         - coverage_matrix
         - coverage_gaps
+        - coverage_rule_violated
       post_validations:
         - "coverage_matrix is an array"
       transitions:

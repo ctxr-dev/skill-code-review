@@ -77,7 +77,7 @@ The FSM design substrate, CLI reference, state-YAML schema, worker contract, and
 - [`worker-contract.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/worker-contract.md)
 - [`storage-layout.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/storage-layout.md)
 
-`package.json` references `@ctxr/fsm` via `git+https://github.com/ctxr-dev/fsm.git#main`, so `npm install` always resolves from the latest `main` of the FSM package — no sibling checkout required, no manual SHA bump needed. Note: npm caches git deps by URL, so to force a refresh after FSM `main` advances, run `npm install @ctxr/fsm --force` (or delete `node_modules/@ctxr/fsm` + re-install).
+`package.json` references `@ctxr/fsm` via `git+https://github.com/ctxr-dev/fsm.git#main`, so `npm install` always resolves from the latest `main` of the FSM package — no sibling checkout required, no manual SHA bump needed. Note: npm caches git deps by URL, so to force a refresh after FSM `main` advances, run `npm install --force` (or explicitly reinstall with `npm install --save "@ctxr/fsm@git+https://github.com/ctxr-dev/fsm.git#main"`, or delete `node_modules/@ctxr/fsm` and reinstall).
 
 **For local engine hacking** against a sibling checkout at `../fsm`, override the dep temporarily:
 

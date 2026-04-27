@@ -44,10 +44,8 @@ import {
   stashPendingBrief,
   readPendingBrief,
   clearPendingBrief,
-  defaultFixturesRoot,
+  FIXTURES_ROOT,
 } from "./lib/worker-replay.mjs";
-
-const FIXTURES_ROOT = defaultFixturesRoot(import.meta.url);
 
 // Project the FSM brief's declared inputs out of the run env so the hash
 // key only depends on what the worker actually sees, not the full env.
@@ -63,6 +61,10 @@ function hashKeyForBrief(brief, env) {
     state: brief?.state,
     promptTemplate: brief?.prompt_template ?? brief?.worker?.prompt_template ?? "",
     inputs: projectBriefInputs(brief, env),
+    // Pass repoRoot so the harness reads the prompt body and includes its
+    // SHA in the hash — editing the prose without renaming the file
+    // invalidates every recorded fixture for that worker.
+    repoRoot: REPO_ROOT,
   });
 }
 

@@ -31,8 +31,16 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+// Compute the fixtures root from THIS module's location (scripts/lib/),
+// not from a caller-supplied metaUrl. The previous shape was misuse-prone:
+// a caller in scripts/run-review.mjs passing import.meta.url would resolve
+// `.., ..` to the parent of the repo. Pin the derivation to this file so
+// any caller gets the right path.
+const __replay_dirname = dirname(fileURLToPath(import.meta.url));
+export const FIXTURES_ROOT = resolve(__replay_dirname, "..", "..", "tests", "fixtures", "worker-responses");
 
 export const VALID_REPLAY_MODES = new Set(["live", "record", "replay"]);
 
@@ -62,32 +70,60 @@ function canonicalJson(value) {
 
 // Hash key for a worker invocation. Inputs:
 //   - state:           FSM state id (e.g. "llm_trim").
-//   - promptTemplate:  the prompt-template path the worker was dispatched
-//                      with, OR (when stable identity matters more than
-//                      content) the SHA of the prompt body itself.
+//   - promptTemplate:  the prompt-template PATH (relative to repo root).
+//                      Used both as a stable identity AND to read the
+//                      prompt body so the hash buckets on prompt CONTENT,
+//                      not just the path. Editing the prompt without
+//                      renaming the file ⇒ different hash ⇒ replay miss
+//                      ⇒ caller knows the fixture is stale.
 //   - inputs:          the env payload sent to the worker. Caller projects
 //                      the relevant slice (the FSM brief's `inputs:[...]`
 //                      list) so unrelated env fields don't bust the hash.
-export function computeHashKey({ state, promptTemplate, inputs }) {
+//   - repoRoot:        optional; only used to read the prompt body. When
+//                      omitted, only the path is hashed (back-compat with
+//                      callers that don't have repo-root context).
+export function computeHashKey({ state, promptTemplate, inputs, repoRoot }) {
   const h = createHash("sha256");
   h.update(String(state ?? ""));
   h.update("\u001f"); // unit-separator — unlikely to appear in any field
   h.update(String(promptTemplate ?? ""));
   h.update("\u001f");
+  // Hash the prompt body when we can read it, so a content edit invalidates
+  // every recorded fixture for that worker. Missing / unreadable file is
+  // captured as the empty-content marker so the hash is still defined.
+  let promptBody = "";
+  if (typeof repoRoot === "string" && typeof promptTemplate === "string" && promptTemplate.length > 0) {
+    const candidate = resolve(repoRoot, promptTemplate);
+    try {
+      promptBody = readFileSync(candidate, "utf8");
+    } catch {
+      // Treat unreadable prompts as empty; the hash still differs from
+      // any fixture recorded against a real prompt.
+    }
+  }
+  h.update(promptBody);
+  h.update("\u001f");
   h.update(canonicalJson(inputs ?? {}));
   return h.digest("hex");
 }
 
-export function defaultFixturesRoot(metaUrl) {
-  const here = dirname(fileURLToPath(metaUrl));
-  // The harness lives at scripts/lib/; fixtures live at tests/fixtures/.
-  return resolve(here, "..", "..", "tests", "fixtures", "worker-responses");
-}
-
-export function fixturePath(fixturesRoot, state, hashKey) {
+// Reject path-traversal in `state` so a tampered `.replay-pending.json`
+// (or any other untrusted source for `state`) can't direct
+// `recordOutputs` to write outside the fixtures tree via `join`.
+function assertSafeStateSegment(state) {
   if (typeof state !== "string" || state.length === 0) {
     throw new Error("fixturePath: state must be a non-empty string");
   }
+  if (state.includes("/") || state.includes("\\") || state.includes("..")) {
+    throw new Error(`fixturePath: state must not contain path separators or '..' (got: ${state})`);
+  }
+  if (isAbsolute(state)) {
+    throw new Error(`fixturePath: state must not be an absolute path (got: ${state})`);
+  }
+}
+
+export function fixturePath(fixturesRoot, state, hashKey) {
+  assertSafeStateSegment(state);
   if (typeof hashKey !== "string" || !/^[a-f0-9]{64}$/.test(hashKey)) {
     throw new Error(`fixturePath: hashKey must be 64-char hex sha256; got ${hashKey}`);
   }

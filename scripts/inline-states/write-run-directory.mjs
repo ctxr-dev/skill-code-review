@@ -37,7 +37,7 @@ function resolveStorageRoot(repoRoot) {
   return resolve(repoRoot, settings.storage_root);
 }
 
-function buildReportPayload(runId, env) {
+export function buildReportPayload(runId, env) {
   return {
     run_id: runId,
     repo: env.repo ?? null,

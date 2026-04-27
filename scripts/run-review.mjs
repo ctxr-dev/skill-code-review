@@ -46,7 +46,7 @@ function resolveStorageRoot() {
   return resolve(REPO_ROOT, settings.storage_root);
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const args = {};
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
@@ -133,7 +133,7 @@ function runFsmCommit({ runId, outputs }) {
   return parseFsmCliResult(result, "fsm-commit");
 }
 
-function parseFsmCliResult(result, label) {
+export function parseFsmCliResult(result, label) {
   if (result.error) {
     return {
       ok: false,
@@ -173,7 +173,7 @@ function parseFsmCliResult(result, label) {
 // (`risk-tier-triage.mjs`, `stage-a-empty.mjs`, ...) — the convention used
 // across the rest of the repo. Translate at dispatch time so both sides keep
 // their idiomatic spelling.
-function stateIdToModuleName(stateId) {
+export function stateIdToModuleName(stateId) {
   return stateId.replace(/_/g, "-");
 }
 
@@ -306,4 +306,8 @@ async function main() {
   );
 }
 
-main().catch((err) => fail(`unhandled error: ${err.stack || err.message}`));
+// Gate the auto-run on "this is the entrypoint" so unit tests can import
+// helpers from this module without firing the FSM loop.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => fail(`unhandled error: ${err.stack || err.message}`));
+}

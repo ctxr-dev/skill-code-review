@@ -15,7 +15,7 @@ When the skill is invoked, parse arguments from the invocation context as `key=v
 | Argument | Values | Default | Description |
 |----------|--------|---------|-------------|
 | help | (flag) | — | Print this argument table and exit. No review is run. |
-| format | auto, markdown, json | auto | Output format. auto = markdown for direct user, JSON when dispatched as subagent. `yaml` is reserved for a future PR; passing it today emits a stderr notice and falls back to markdown. |
+| format | auto, markdown, json | auto | Output format. `auto` resolves via the stdout TTY heuristic in `emit-stdout.mjs`: markdown when stdout is a TTY (interactive user), JSON otherwise (piped consumer / sub-agent). `yaml` is reserved for a future PR; passing it today emits a stderr notice and falls back to markdown. |
 | full | (flag) | — | Review entire codebase, not just git diff. Respects scope-dir. |
 | base | auto, git SHA or ref | auto | Base commit for diff. Auto: merge-base with origin/main or HEAD~1. Ignored if full. |
 | head | git SHA or ref | HEAD | Head commit for diff. |
@@ -63,10 +63,12 @@ Tools are declared in each reviewer leaf's frontmatter (`tools:` array). The orc
 
 ### Format Auto-Detection
 
-When `format=auto` (the default):
+When `format=auto` (the default), `emit-stdout.mjs` resolves the format from `process.stdout.isTTY`:
 
-- If the orchestrator was dispatched as a **subagent** by another agent or tool → output **JSON**
-- If the orchestrator was invoked directly by a **user** (slash command, chat) → output **markdown**
+- TTY stdout (interactive user / slash command / chat) → **markdown**
+- Non-TTY stdout (piped consumer, sub-agent, CI) → **JSON**
+
+The TTY check approximates "user vs tool" because the runner can't introspect "subagent vs user" directly from inside the process.
 
 ---
 

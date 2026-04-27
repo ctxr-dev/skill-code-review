@@ -23,7 +23,7 @@ const VALID_FORMATS = new Set(["markdown", "json"]);
 // kept. Index = rank; higher = more severe.
 const SEVERITY_RANK = { minor: 1, important: 2, critical: 3 };
 
-function resolveFormat(argsBag) {
+export function resolveFormat(argsBag) {
   const requested = argsBag?.format;
   if (typeof requested !== "string") return "markdown";
   const normalised = requested.toLowerCase();
@@ -33,13 +33,13 @@ function resolveFormat(argsBag) {
 // `--scope-severity <level>` is interpreted as a threshold (per
 // code-reviewer.md / report-format.md): findings AT OR ABOVE the requested
 // rank are kept. Returns the minimum rank to keep, or null when no filter.
-function parseSeverityThreshold(raw) {
+export function parseSeverityThreshold(raw) {
   if (typeof raw !== "string" || raw.trim() === "") return null;
   const rank = SEVERITY_RANK[raw.trim().toLowerCase()];
   return Number.isInteger(rank) ? rank : null;
 }
 
-function parseGateFilter(raw) {
+export function parseGateFilter(raw) {
   if (raw === undefined || raw === null) return null;
   const tokens = String(raw)
     .split(",")
@@ -48,7 +48,7 @@ function parseGateFilter(raw) {
   return tokens.length > 0 ? new Set(tokens) : null;
 }
 
-function applyScopeFilters(payload, severityThreshold, gateFilter) {
+export function applyScopeFilters(payload, severityThreshold, gateFilter) {
   if (severityThreshold === null && !gateFilter) return payload;
   const filtered = { ...payload };
   if (severityThreshold !== null) {

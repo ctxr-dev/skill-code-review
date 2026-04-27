@@ -16,7 +16,10 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
-const VALID_FORMATS = new Set(["markdown", "json", "yaml"]);
+// `yaml` was advertised in earlier drafts but the runner doesn't bundle a
+// YAML serializer. Drop it from the valid set rather than silently fall back
+// to JSON — surfaces the gap explicitly. Re-add once a serializer is wired.
+const VALID_FORMATS = new Set(["markdown", "json"]);
 
 function resolveFormat(argsBag) {
   const requested = argsBag?.format;
@@ -51,12 +54,6 @@ export default async function emitStdout({ env }) {
       `(emit_stdout: report file for format=${format} not found under ${runDirPath})\n`,
     );
     return {};
-  }
-
-  if (format === "yaml") {
-    process.stdout.write(
-      "(emit_stdout: yaml format requested; YAML serializer not bundled — falling back to json)\n",
-    );
   }
 
   process.stdout.write(body);

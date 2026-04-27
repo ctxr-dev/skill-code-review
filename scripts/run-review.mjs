@@ -100,7 +100,7 @@ function runFsmNextStart({ baseSha, headSha, argsBag }) {
       "--args-file",
       argsFile,
     ],
-    { encoding: "utf8" },
+    { encoding: "utf8", cwd: REPO_ROOT },
   );
   return parseFsmCliResult(result, "fsm-next --new-run");
 }
@@ -114,7 +114,7 @@ function runFsmCommit({ runId, outputs }) {
   const result = spawnSync(
     fsmBin("fsm-commit"),
     ["--run-id", runId, "--outputs-file", outputsFile],
-    { encoding: "utf8" },
+    { encoding: "utf8", cwd: REPO_ROOT },
   );
   return parseFsmCliResult(result, "fsm-commit");
 }

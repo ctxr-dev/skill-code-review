@@ -6,6 +6,17 @@
 // materialised before `emit_stdout`. Keeping this handler pure (no filesystem
 // I/O) lets unit + integration tests run it without a writable storage root.
 
+const GATE_NAMES = [
+  "SOLID & Clean Code",
+  "Error Handling & Resilience",
+  "Code Quality & Type Safety",
+  "Test Coverage",
+  "Architecture & Design",
+  "Security & Safety",
+  "Documentation",
+  "Domain-specific quality",
+];
+
 export default async function shortCircuitExit() {
   return {
     findings: [],
@@ -23,14 +34,3 @@ export default async function shortCircuitExit() {
     short_circuited: true,
   };
 }
-
-const GATE_NAMES = [
-  "SOLID & Clean Code",
-  "Error Handling & Resilience",
-  "Code Quality & Type Safety",
-  "Test Coverage",
-  "Architecture & Design",
-  "Security & Safety",
-  "Documentation",
-  "Domain-specific quality",
-];

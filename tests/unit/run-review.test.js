@@ -268,6 +268,30 @@ test("handleWorkerStateBrief: hash compute failure (record mode) surfaces as in-
   assert.match(result.payload.fault.reason, /hash key compute failed/);
 });
 
+test("handleWorkerStateBrief: record-mode runDirPath failure surfaces as fault (not crash)", () => {
+  // runDirPath touches the run-storage tree on disk. A missing /
+  // corrupt storage tree would throw — the helper must convert that
+  // to a structured fault instead of letting it bubble out as a
+  // top-level error.
+  const result = handleWorkerStateBrief(
+    { state: "llm_trim", has_worker: true },
+    "run-1",
+    { replayMode: "record" },
+    {
+      resolveStorageRoot: () => "/tmp",
+      runEnv: () => ({}),
+      hashKeyForBrief: () => "f".repeat(64),
+      replayLookup: () => ({ hit: false }),
+      runFsmCommit: () => assert.fail("must not commit"),
+      stashPendingBrief: () => assert.fail("must not stash when runDirPath threw"),
+      runDirPath: () => { throw new Error("storage tree missing"); },
+      fixturesRoot: "/tmp/fixtures",
+    },
+  );
+  assert.equal(result.kind, "fault");
+  assert.match(result.payload.fault.reason, /failed to stash pending brief/);
+});
+
 test("handleWorkerStateBrief: record-mode stash failure surfaces as fault", () => {
   const result = handleWorkerStateBrief(
     { state: "llm_trim", has_worker: true },

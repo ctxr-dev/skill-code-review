@@ -49,10 +49,19 @@ import {
 
 // Project the FSM brief's declared inputs out of the run env so the hash
 // key only depends on what the worker actually sees, not the full env.
+// fsm-next can expose the inputs list either at the top level
+// (`brief.inputs`) or nested under the worker block (`brief.worker.inputs`),
+// matching how prompt_template is exposed. Fall back so a hash isn't
+// computed against an empty inputs list when the brief uses the nested
+// shape.
 function projectBriefInputs(brief, env) {
-  const names = Array.isArray(brief?.inputs) ? brief.inputs : [];
+  const namesRaw = Array.isArray(brief?.inputs)
+    ? brief.inputs
+    : Array.isArray(brief?.worker?.inputs)
+      ? brief.worker.inputs
+      : [];
   const out = {};
-  for (const name of names) out[name] = env?.[name];
+  for (const name of namesRaw) out[name] = env?.[name];
   return out;
 }
 
@@ -548,8 +557,12 @@ export function handleWorkerStateBrief(brief, runId, opts = {}, _deps = {}) {
   // surface as faults — without the stash, --continue can't persist
   // the recorded fixture and the user would think record-mode
   // succeeded when it silently didn't. (Live mode returned early.)
-  const dir = runDirPathFn(runId, { storageRoot });
+  // Wrap both runDirPath AND stashPendingBrief in the same try/catch:
+  // runDirPath can throw on a missing/corrupt run-storage tree, and
+  // an unhandled throw there would crash the runner instead of
+  // surfacing as the same structured fault that a stash failure does.
   try {
+    const dir = runDirPathFn(runId, { storageRoot });
     stashPendingBriefFn(dir, { state: brief.state, hashKey });
   } catch (err) {
     return {

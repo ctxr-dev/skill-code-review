@@ -142,6 +142,37 @@ test("computeHashKey: rejects traversal / absolute / UNC promptTemplate (defense
   }
 });
 
+test("computeHashKey: rejects symlink that escapes repoRoot", async () => {
+  // Even a sanitised `fsm/workers/p.md` could target a symlink whose
+  // realpath resolves outside the repo. Without the realpath boundary
+  // check, a tampered prompt symlink would let an attacker fold
+  // arbitrary file contents (e.g. /etc/passwd) into the hash and the
+  // recorded fixture's content fingerprint.
+  const { mkdirSync, writeFileSync, symlinkSync, mkdtempSync } = await import("node:fs");
+  const { tmpdir: td } = await import("node:os");
+  const outsideDir = mkdtempSync(join(td(), "replay-outside-"));
+  const outsideFile = join(outsideDir, "secret.md");
+  writeFileSync(outsideFile, "secret content");
+  const repoRoot = makeTmpDir();
+  try {
+    mkdirSync(join(repoRoot, "fsm", "workers"), { recursive: true });
+    symlinkSync(outsideFile, join(repoRoot, "fsm", "workers", "leaky.md"));
+    assert.throws(
+      () =>
+        computeHashKey({
+          state: "s",
+          promptTemplate: "fsm/workers/leaky.md",
+          inputs: {},
+          repoRoot,
+        }),
+      /symlink escapes repoRoot/,
+    );
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(outsideDir, { recursive: true, force: true });
+  }
+});
+
 test("computeHashKey: throws when promptTemplate is unreadable under a given repoRoot", () => {
   // A bad promptTemplate path under a real repoRoot must surface — silent
   // empty-content fallback would mask a bug as a systematic replay miss.

@@ -28,10 +28,11 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Compute the fixtures root from THIS module's location (scripts/lib/),
@@ -138,12 +139,41 @@ export function computeHashKey({ state, promptTemplate, inputs, repoRoot }) {
       );
     }
     const candidate = resolve(repoRoot, promptTemplate);
+    // Symlink-safe boundary check: even with traversal/absolute strings
+    // rejected up-front, a `promptTemplate` like `fsm/workers/p.md`
+    // could target a symlink inside the repo whose realpath escapes
+    // outside it. Resolve both the candidate AND the repoRoot, then
+    // assert the realpath candidate is INSIDE the realpath repoRoot.
+    let realRoot;
     try {
-      promptBody = readFileSync(candidate, "utf8");
+      realRoot = realpathSync(repoRoot);
+    } catch {
+      // If repoRoot itself isn't realpath-able, treat as fatal — the
+      // hash bucket can't be defined.
+      throw new Error(
+        `computeHashKey: repoRoot not realpath-able: ${repoRoot}`,
+      );
+    }
+    let realCandidate;
+    try {
+      realCandidate = realpathSync(candidate);
     } catch (err) {
       throw new Error(
         `computeHashKey: prompt template not readable at ${candidate} (${err.code ?? err.message}). ` +
           `Check that promptTemplate is correct relative to repoRoot. To opt out of content hashing, omit repoRoot.`,
+      );
+    }
+    const rel = relative(realRoot, realCandidate);
+    if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+      throw new Error(
+        `computeHashKey: promptTemplate symlink escapes repoRoot (resolved to ${realCandidate}); rejecting.`,
+      );
+    }
+    try {
+      promptBody = readFileSync(realCandidate, "utf8");
+    } catch (err) {
+      throw new Error(
+        `computeHashKey: prompt template not readable at ${realCandidate} (${err.code ?? err.message}).`,
       );
     }
     // Normalize line endings so the same logical prompt produces the

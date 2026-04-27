@@ -4,7 +4,22 @@ You orchestrate a team of specialised code reviewers selected from a wiki of ~47
 
 You do NOT review code yourself — you scan, route, collect, deduplicate, verify, and report.
 
-> **FSM substrate.** The eleven steps below are also defined as a finite-state machine at [`fsm/code-reviewer.fsm.yaml`](fsm/code-reviewer.fsm.yaml). The engine + CLIs live in the standalone [`@ctxr/fsm`](https://github.com/ctxr-dev/fsm) package; `.fsmrc.json` at the repo root configures `fsm_path` and `storage_root`. See [`ctxr-dev/fsm/docs/orchestration-design.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/orchestration-design.md) for the design substrate. The Markdown spec below remains the human-readable source of truth for the action body of each state; the YAML is the machine-readable contract for state transitions, preconditions, outputs, and worker response schemas. Both stay in sync until the FSM package's v0.4 generator collapses the duplication.
+## Runtime contract
+
+**This document describes intent. The runtime contract is code.**
+
+| Layer | File | Role |
+|---|---|---|
+| State machine | [`fsm/code-reviewer.fsm.yaml`](fsm/code-reviewer.fsm.yaml) | Authoritative state transitions, preconditions, outputs, worker response schemas. |
+| Runner | [`scripts/run-review.mjs`](scripts/run-review.mjs) | Drives the FSM end-to-end via `@ctxr/fsm`'s `fsm-next` / `fsm-commit` CLIs. Dispatches inline-state handlers, pauses on workers. |
+| Inline-state handlers | [`scripts/inline-states/*.mjs`](scripts/inline-states/) | Pure deterministic implementations of each non-worker step. |
+| Worker prompts | [`fsm/workers/*.md`](fsm/workers/) | LLM-judgement steps (tree-descender, trim-candidates, specialist-runner, etc.). |
+| Activation gate | [`scripts/lib/activation-gate.mjs`](scripts/lib/activation-gate.mjs) | Deterministic file_globs / keyword_matches / structural_signals / escalation_from evaluation invoked by the tree-descender worker. |
+| Report shape | [`report-format.md`](report-format.md) | Canonical JSON / markdown report contract — what `report.json` and `report.md` look like. |
+
+**The eleven prose Steps below are not the runtime spec.** They document what each FSM state *does* in human terms. Each Step now carries a callout naming its FSM state id and the handler / worker that implements it. Read the prose to understand intent; trust the linked code for what actually executes.
+
+> **FSM substrate.** The engine + CLIs live in the standalone [`@ctxr/fsm`](https://github.com/ctxr-dev/fsm) package; `.fsmrc.json` at the repo root configures `fsm_path` and `storage_root`. See [`ctxr-dev/fsm/docs/orchestration-design.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/orchestration-design.md) for the design substrate. The Markdown narrative below documents the action body of each state in human terms; the YAML is the machine-readable contract for state transitions, preconditions, outputs, and worker response schemas. The two stay in sync until the FSM package's v0.4 generator collapses the duplication.
 
 ## Context
 
@@ -27,6 +42,8 @@ The orchestrator runs as eleven sequential steps. Each step has defined inputs a
 ---
 
 ## Step 1: Deep Project Scan
+
+> **Action body for FSM state `scan_project`.** Worker: [`fsm/workers/scan-project.md`](fsm/workers/scan-project.md). The runner is authoritative; this prose documents intent.
 
 Build a **Project Profile** that every later step consumes. Respect `scope-*` arguments.
 
@@ -149,6 +166,8 @@ repo: <name>
 
 ## Step 2: Risk-Tier Triage
 
+> **Action body for FSM state `risk_tier_triage`.** Inline-state handler: [`scripts/inline-states/risk-tier-triage.mjs`](scripts/inline-states/risk-tier-triage.mjs). Pure-function: same `(changed_paths, diff_stats, project_profile, args) → (tier, cap, risk_signals)` for every run. The runner is authoritative; this prose documents intent.
+
 Bucket the diff into one of four tiers. The tier sets the upper bound on specialist count and gates short-circuit.
 
 ### Tier rules
@@ -189,7 +208,9 @@ Explicit `max-reviewers=N` argument overrides the tier-default cap. The orchestr
 
 ## Step 3: Tree Descent
 
-Walk the wiki tree at `reviewers.wiki/` to gather a candidate leaf set. Deterministic; no LLM call.
+> **Action body for FSM state `tree_descend`.** Worker: [`fsm/workers/tree-descender.md`](fsm/workers/tree-descender.md). The worker invokes [`scripts/lib/activation-gate.mjs`](scripts/lib/activation-gate.mjs) for the deterministic activation evaluation; only the focus-descent step is LLM judgement. The runner is authoritative; this prose documents intent.
+
+Walk the wiki tree at `reviewers.wiki/` to gather a candidate leaf set. Activation evaluation (file_globs / keyword_matches / structural_signals / escalation_from) is deterministic; only the parent-`focus` semantic descent calls the LLM.
 
 ### Routing model
 
@@ -231,6 +252,8 @@ If `scope-framework=<f1>,<f2>,...` is set: restrict the descent to leaves whose 
 ---
 
 ## Step 4: LLM Trim
+
+> **Action body for FSM state `llm_trim`.** Worker: [`fsm/workers/trim-candidates.md`](fsm/workers/trim-candidates.md). Worker output is then validated for referential integrity by [`scripts/lib/trim-output-validator.mjs`](scripts/lib/trim-output-validator.mjs) (SC-B8) — fabricated `picked_leaves[].id`, `coverage_rescues[].file`, etc. abort the run before downstream consumers see them. The runner is authoritative; this prose documents intent.
 
 Pick the final K = `cap` leaves from Step 3's candidates with explicit per-pick justifications. One sub-agent dispatch (or inline reasoning).
 
@@ -277,6 +300,8 @@ The full picked + rejected output goes into `manifest.json` under `routing.stage
 
 ## Step 5: Tool Discovery
 
+> **Action body for FSM state `tool_discovery`.** Worker: [`fsm/workers/tool-discovery.md`](fsm/workers/tool-discovery.md). The runner is authoritative; this prose documents intent.
+
 Collect external tools declared by the picked leaves. Run available tools before specialist dispatch so their output flows into specialist prompts.
 
 1. Collect all `tools:` entries from each picked leaf's frontmatter. Deduplicate by `name`.
@@ -294,6 +319,8 @@ Collect external tools declared by the picked leaves. Run available tools before
 ---
 
 ## Step 6: Dispatch Specialists
+
+> **Action body for FSM state `dispatch_specialists`.** Worker: [`fsm/workers/specialist-runner.md`](fsm/workers/specialist-runner.md) (one invocation per picked leaf, dispatched in parallel by the runner). The runner is authoritative; this prose documents intent.
 
 Run all picked leaves in parallel as Agent sub-tasks.
 
@@ -321,6 +348,8 @@ Dispatch ALL specialists in parallel: emit one message with multiple Agent tool 
 
 ## Step 7: Collect Findings
 
+> **Action body for FSM state `collect_findings`.** Inline-state handler: [`scripts/inline-states/collect-findings.mjs`](scripts/inline-states/collect-findings.mjs). Dedup keyed by `(file, line, normalised_title)`; pickWinner breaks severity ties by the persisted `__winner` / `__origin` stamp, never by the changing `flagged_by[0]`. Pure-function: byte-identical output for byte-identical input. The runner is authoritative; this prose documents intent.
+
 Wait for all specialists to complete. Then:
 
 1. Collect all findings from all specialists.
@@ -334,6 +363,8 @@ Wait for all specialists to complete. Then:
 
 ## Step 8: Verify Coverage
 
+> **Action body for FSM state `verify_coverage`.** Inline-state handler: [`scripts/inline-states/verify-coverage.mjs`](scripts/inline-states/verify-coverage.mjs). Per-leaf scope is narrowed by reading each picked leaf's `activation.file_globs[]` from its on-disk frontmatter; coverage_rule_violated is set when any changed file has < 2 reviewers after rescues. The runner is authoritative; this prose documents intent.
+
 Build a coverage matrix: for every file in the diff, list which specialists reviewed it.
 
 - Every file MUST be covered by ≥ 2 specialists.
@@ -344,6 +375,8 @@ Build a coverage matrix: for every file in the diff, list which specialists revi
 ---
 
 ## Step 9: Synthesize Release Readiness
+
+> **Action body for FSM state `synthesize_release_readiness`.** Inline-state handler: [`scripts/inline-states/synthesize-release-readiness.mjs`](scripts/inline-states/synthesize-release-readiness.mjs). The eight-gate predicate match against picked leaf dimensions, the verdict computation, and the B4 hard-coverage-rule promotion to NO-GO all live in code there — the prose below describes intent. The runner is authoritative.
 
 Apply the 8-gate release readiness framework using the deduplicated findings from Step 7. Gate-to-specialist binding is **predicate-based on each leaf's `dimensions:` and `tags:`**.
 
@@ -371,6 +404,8 @@ See `release-readiness.md` (project root) for the full audit checklist per gate.
 ---
 
 ## Step 10: Write Run Directory
+
+> **Action body for FSM state `write_run_directory`.** Inline-state handler: [`scripts/inline-states/write-run-directory.mjs`](scripts/inline-states/write-run-directory.mjs). `buildReportPayload(runId, env)` produces the canonical [`report-format.md`](report-format.md) JSON shape (verdict / summary / methodology / issues / strengths / tool_results / specialists / gates / coverage); `writeRunArtefacts` persists `report.json`, `report.md`, and updates `manifest.json`. Edge states `short_circuit_exit` and `stage_a_empty` route through this state too. The runner is authoritative; this prose documents intent.
 
 Every review writes a sharded run-keyed directory at `.skill-code-review/<shard>/<run-id>/`. The directory is the canonical output; Step 11's stdout / return value is the human-readable report plus a pointer to the directory.
 
@@ -462,6 +497,8 @@ All required fields are present even when empty (e.g. `routing.stage_b.picked: [
 ---
 
 ## Step 11: Stdout / Return Value
+
+> **Action body for FSM state `emit_stdout`.** Inline-state handler: [`scripts/inline-states/emit-stdout.mjs`](scripts/inline-states/emit-stdout.mjs). Format negotiation (`auto`/`markdown`/`json`), scope-severity / scope-gate filtering, and the canonical `Manifest: <path>` trailer all live in code there. The runner is authoritative; this prose documents intent.
 
 Read `report-format.md` for the canonical report structure.
 

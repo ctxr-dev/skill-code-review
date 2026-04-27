@@ -128,6 +128,12 @@ function pickle(value) {
   return JSON.stringify(value);
 }
 
+// Deep-clone every fixture argument before each invocation so a handler that
+// mutates its input env in place (sort, splice, push, …) cannot smuggle state
+// between runs and silently keep the equality check passing. Object.freeze on
+// the top-level fixtures only freezes the outer container; inner arrays /
+// objects must be re-cloned. Done by wrapping the runOnce thunk so call-sites
+// stay terse.
 async function twiceIdentical(label, runOnce) {
   const first = await runOnce();
   const second = await runOnce();
@@ -139,13 +145,19 @@ async function twiceIdentical(label, runOnce) {
   return first;
 }
 
+function frozenClone(value) {
+  return structuredClone(value);
+}
+
 test("reproducibility: risk-tier-triage twice on sensitive fixture", async () => {
-  await twiceIdentical("risk-tier-triage", () => riskTierTriage({ env: SENSITIVE_FIXTURE }));
+  await twiceIdentical("risk-tier-triage", () =>
+    riskTierTriage({ env: frozenClone(SENSITIVE_FIXTURE) }),
+  );
 });
 
 test("reproducibility: collect-findings twice on seeded specialist outputs", async () => {
   await twiceIdentical("collect-findings", () =>
-    collectFindings({ env: { specialist_outputs: SEEDED_SPECIALIST_OUTPUTS } }),
+    collectFindings({ env: { specialist_outputs: frozenClone(SEEDED_SPECIALIST_OUTPUTS) } }),
   );
 });
 
@@ -159,7 +171,7 @@ test("reproducibility: verify-coverage twice on synthetic findings + leaves", as
     coverage_rescues: [],
     changed_paths: SENSITIVE_FIXTURE.changed_paths,
   };
-  await twiceIdentical("verify-coverage", () => verifyCoverage({ env }));
+  await twiceIdentical("verify-coverage", () => verifyCoverage({ env: frozenClone(env) }));
 });
 
 test("reproducibility: synthesize-release-readiness twice on seeded inputs", async () => {
@@ -171,7 +183,9 @@ test("reproducibility: synthesize-release-readiness twice on seeded inputs", asy
     coverage_gaps: [],
     coverage_rule_violated: false,
   };
-  await twiceIdentical("synthesize-release-readiness", () => synthesizeReleaseReadiness({ env }));
+  await twiceIdentical("synthesize-release-readiness", () =>
+    synthesizeReleaseReadiness({ env: frozenClone(env) }),
+  );
 });
 
 test("reproducibility: short-circuit-exit twice (no env)", async () => {
@@ -180,7 +194,7 @@ test("reproducibility: short-circuit-exit twice (no env)", async () => {
 
 test("reproducibility: stage-a-empty twice on changed_paths", async () => {
   await twiceIdentical("stage-a-empty", () =>
-    stageAEmpty({ env: { changed_paths: SENSITIVE_FIXTURE.changed_paths } }),
+    stageAEmpty({ env: frozenClone({ changed_paths: SENSITIVE_FIXTURE.changed_paths }) }),
   );
 });
 
@@ -188,9 +202,9 @@ test("reproducibility: activation-gate twice on full leaf set", async () => {
   await twiceIdentical("activation-gate", () =>
     Promise.resolve(
       evaluateActivation({
-        leaves: PIPELINE_LEAVES,
-        changed_paths: SENSITIVE_FIXTURE.changed_paths,
-        project_profile: SENSITIVE_FIXTURE.project_profile,
+        leaves: frozenClone(PIPELINE_LEAVES),
+        changed_paths: frozenClone(SENSITIVE_FIXTURE.changed_paths),
+        project_profile: frozenClone(SENSITIVE_FIXTURE.project_profile),
         diff_text: SENSITIVE_FIXTURE.diff_text,
       }),
     ),
@@ -200,14 +214,16 @@ test("reproducibility: activation-gate twice on full leaf set", async () => {
 // Full inline pipeline: composes risk-tier-triage → activation-gate →
 // collect-findings → verify-coverage → synthesize-release-readiness against
 // the sensitive fixture and seeded worker outputs. Two runs must produce a
-// byte-identical aggregated manifest.
+// byte-identical aggregated manifest. Every input fixture is deep-cloned per
+// invocation so a handler that accidentally mutates its input cannot smuggle
+// state between runs.
 async function runFullInlinePipeline() {
-  const triage = await riskTierTriage({ env: SENSITIVE_FIXTURE });
+  const triage = await riskTierTriage({ env: frozenClone(SENSITIVE_FIXTURE) });
 
   const activation = evaluateActivation({
-    leaves: PIPELINE_LEAVES,
-    changed_paths: SENSITIVE_FIXTURE.changed_paths,
-    project_profile: SENSITIVE_FIXTURE.project_profile,
+    leaves: frozenClone(PIPELINE_LEAVES),
+    changed_paths: frozenClone(SENSITIVE_FIXTURE.changed_paths),
+    project_profile: frozenClone(SENSITIVE_FIXTURE.project_profile),
     diff_text: SENSITIVE_FIXTURE.diff_text,
   });
   const pickedLeaves = activation.activated.slice(0, triage.cap);
@@ -219,24 +235,24 @@ async function runFullInlinePipeline() {
   // leaves can legitimately appear with status="skipped" — collect-findings
   // is responsible for discarding any findings they emit.
   const pickedIds = new Set(pickedLeaves.map((l) => l.id));
-  const dispatched = SEEDED_SPECIALIST_OUTPUTS.filter((s) => pickedIds.has(s.id));
+  const dispatched = frozenClone(SEEDED_SPECIALIST_OUTPUTS).filter((s) => pickedIds.has(s.id));
 
   const collected = await collectFindings({ env: { specialist_outputs: dispatched } });
 
   const coverage = await verifyCoverage({
     env: {
-      findings: collected.findings,
-      picked_leaves: pickedLeaves,
+      findings: frozenClone(collected.findings),
+      picked_leaves: frozenClone(pickedLeaves),
       coverage_rescues: [],
-      changed_paths: SENSITIVE_FIXTURE.changed_paths,
+      changed_paths: frozenClone(SENSITIVE_FIXTURE.changed_paths),
     },
   });
 
   const readiness = await synthesizeReleaseReadiness({
     env: {
-      findings: collected.findings,
-      picked_leaves: pickedLeaves,
-      coverage_gaps: coverage.coverage_gaps,
+      findings: frozenClone(collected.findings),
+      picked_leaves: frozenClone(pickedLeaves),
+      coverage_gaps: frozenClone(coverage.coverage_gaps),
       coverage_rule_violated: coverage.coverage_rule_violated,
     },
   });

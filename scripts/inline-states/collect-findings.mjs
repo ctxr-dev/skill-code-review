@@ -27,10 +27,23 @@ function dedupKey(finding) {
   return `${file}::${line}::${title}`;
 }
 
-function pickHigherSeverity(a, b) {
-  return (SEVERITY_RANK[a.severity] ?? 0) >= (SEVERITY_RANK[b.severity] ?? 0)
-    ? a
-    : b;
+// Tie-break the dedup winner deterministically when severities are equal but
+// other fields (description / impact / fix / …) differ. Without this, the
+// winner depends on input iteration order, which would let two seeded
+// fixtures with the same findings produce byte-different manifests across
+// runs that visit the specialists in different orders. Pick by:
+//   1. higher severity (the original rule),
+//   2. lexicographically earlier source id (stable across runs because each
+//      finding always carries `flagged_by[]` after the first merge — but on
+//      the first encounter `flagged_by` may not exist; fall back to the
+//      hosting specialist's id captured at the call site).
+function pickWinner(a, b) {
+  const aSev = SEVERITY_RANK[a.severity] ?? 0;
+  const bSev = SEVERITY_RANK[b.severity] ?? 0;
+  if (aSev !== bSev) return aSev > bSev ? a : b;
+  const aOrigin = ((a.flagged_by ?? [])[0] ?? a.__origin ?? "");
+  const bOrigin = ((b.flagged_by ?? [])[0] ?? b.__origin ?? "");
+  return aOrigin <= bOrigin ? a : b;
 }
 
 export default async function collectFindings({ env }) {
@@ -47,9 +60,13 @@ export default async function collectFindings({ env }) {
       const existing = merged.get(key);
       const sourceIds = new Set(existing?.flagged_by ?? []);
       sourceIds.add(specialist.id);
-      const winner = existing ? pickHigherSeverity(existing, f) : f;
+      // Stamp __origin so the tie-breaker can compare even on the first
+      // encounter (before the merged record has a flagged_by[]).
+      const fStamped = { ...f, __origin: specialist.id };
+      const winner = existing ? pickWinner(existing, fStamped) : fStamped;
+      const { __origin, ...winnerOut } = winner;
       merged.set(key, {
-        ...winner,
+        ...winnerOut,
         flagged_by: [...sourceIds].sort(),
       });
     }

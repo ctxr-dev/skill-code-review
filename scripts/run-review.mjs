@@ -195,8 +195,17 @@ async function dispatchInlineState(brief, runId) {
     };
   }
   // ESM dynamic import on Windows refuses raw absolute paths; convert to a
-  // file:// URL so the same call works on POSIX and Windows.
-  const mod = await import(pathToFileURL(modulePath).href);
+  // file:// URL so the same call works on POSIX and Windows. The import
+  // itself can throw (module-not-found at the URL, syntax error in the
+  // handler, etc.); catch and surface as a structured fault rather than
+  // letting the exception escape to main().catch and emit a generic
+  // "unhandled error".
+  let mod;
+  try {
+    mod = await import(pathToFileURL(modulePath).href);
+  } catch (err) {
+    return { ok: false, error: `Inline handler import failed (${modulePath}): ${err.message}` };
+  }
   if (typeof mod.default !== "function") {
     return {
       ok: false,

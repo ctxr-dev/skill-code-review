@@ -28,7 +28,7 @@
 //   (c) coverage_rescues — each rescue maps a file → leaf that was promoted
 //       precisely to lift that file's coverage.
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, realpathSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -53,15 +53,31 @@ function readLeafGlobs(repoRoot, leafPath) {
   // path.relative + boundary check (NOT `abs.startsWith(wikiRoot)` — that
   // would accept `reviewers.wiki-malicious/...`).
   const wikiRoot = resolve(repoRoot, "reviewers.wiki");
+  // Resolve symlinks to real paths before the boundary check — a symlink
+  // pointing outside the wiki would otherwise let a worker-supplied
+  // leaf.path escape via `reviewers.wiki/<name>` → `/etc/passwd`. Both
+  // wikiRoot and the candidate are realpath'd so the comparison is between
+  // canonical paths.
+  let realWiki;
+  try {
+    realWiki = realpathSync(wikiRoot);
+  } catch {
+    return null;
+  }
   const candidates = [resolve(wikiRoot, leafPath), resolve(repoRoot, leafPath)];
   let abs = null;
   for (const candidate of candidates) {
-    const rel = relative(wikiRoot, candidate);
-    if (rel.startsWith("..") || rel.startsWith(sep) || rel === "") continue;
-    if (existsSync(candidate)) {
-      abs = candidate;
-      break;
+    if (!existsSync(candidate)) continue;
+    let realCandidate;
+    try {
+      realCandidate = realpathSync(candidate);
+    } catch {
+      continue;
     }
+    const rel = relative(realWiki, realCandidate);
+    if (rel.startsWith("..") || rel.startsWith(sep) || rel === "") continue;
+    abs = realCandidate;
+    break;
   }
   if (abs === null) return null;
   if (_leafGlobsCache.has(abs)) return _leafGlobsCache.get(abs);

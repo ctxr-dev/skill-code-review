@@ -217,7 +217,7 @@ function runFsmCommit({ runId, outputs }) {
   // of caller. Lowercase + restrict to the run-id alphabet (matches
   // isValidRunId's `[a-z0-9-]+` exactly) so the temp filename is consistent
   // with the documented id format.
-  const safeRunId = String(runId).toLowerCase().replace(/[^a-z0-9-]/g, "_").slice(0, 64);
+  const safeRunId = String(runId).toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 64);
   const outputsFile = join(getScratchDir(), `outputs-${safeRunId}-${Date.now()}.json`);
   writeFileSync(outputsFile, JSON.stringify(outputs ?? {}));
   try {

@@ -19,8 +19,8 @@
 // rather than persisting their own artefacts, so the handlers themselves stay
 // pure.
 
-import { writeFileSync, readdirSync, statSync, existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { writeFileSync, readdirSync, lstatSync, realpathSync, existsSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -48,8 +48,19 @@ const METHODOLOGY_PRINCIPLES = ["SRP", "OCP", "LSP", "ISP", "DIP", "DRY", "KISS"
 function countWikiLeaves(repoRoot) {
   const root = resolve(repoRoot, "reviewers.wiki");
   if (!existsSync(root)) return 0;
+  // Resolve the wiki root to its canonical path so symlinks ANYWHERE under
+  // the tree can be checked against the real boundary. Anything that
+  // resolves outside `realRoot` is skipped — a symlink pointing at
+  // /etc/passwd or another repo subdirectory must not get counted as a
+  // leaf.
+  let realRoot;
+  try {
+    realRoot = realpathSync(root);
+  } catch {
+    return 0;
+  }
   let count = 0;
-  const stack = [root];
+  const stack = [realRoot];
   while (stack.length > 0) {
     const dir = stack.pop();
     let entries;
@@ -61,15 +72,33 @@ function countWikiLeaves(repoRoot) {
     for (const ent of entries) {
       if (ent.name.startsWith(".")) continue;
       const full = join(dir, ent.name);
-      if (ent.isDirectory()) {
-        stack.push(full);
+      // Use lstatSync so we DON'T follow symlinks transparently. Then
+      // realpath the entry and verify it stays within realRoot before
+      // descending or counting.
+      let lst;
+      try {
+        lst = lstatSync(full);
+      } catch {
         continue;
       }
-      if (!ent.isFile() && !ent.isSymbolicLink()) continue;
+      let realFull;
+      try {
+        realFull = realpathSync(full);
+      } catch {
+        continue;
+      }
+      const rel = relative(realRoot, realFull);
+      if (rel.startsWith("..") || rel.startsWith(sep)) continue;
+      if (lst.isDirectory() || (lst.isSymbolicLink() && existsSync(realFull) && lstatSync(realFull).isDirectory())) {
+        stack.push(realFull);
+        continue;
+      }
       if (!ent.name.endsWith(".md")) continue;
       if (ent.name === "index.md") continue;
+      // At this point we know realFull is inside realRoot AND it's a regular
+      // file (or a symlink that resolved to one). Count it.
       try {
-        if (statSync(full).isFile()) count++;
+        if (lstatSync(realFull).isFile()) count++;
       } catch {
         // unreadable entry — skip
       }

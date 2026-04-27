@@ -136,9 +136,17 @@ export default async function verifyCoverage({ env }) {
   for (const leaf of pickedLeaves) {
     if (!leaf.id) continue;
     const globs = readLeafGlobs(repoRoot, leaf.path);
-    if (globs === null || globs.length === 0) {
-      // No activation block on disk → broad credit. Silence is precision.
+    if (globs === null) {
+      // No activation block / unreadable frontmatter — fall back to broad
+      // credit. Silence is precision.
       for (const file of changedPaths) ensureSet(reviewersByFile, file).add(leaf.id);
+      continue;
+    }
+    if (globs.length === 0) {
+      // Explicit empty file_globs[] in frontmatter — the leaf activates on
+      // keywords / structural signals only, not on file paths. Skip the
+      // file-level credit; the leaf still earns coverage when it actually
+      // produces a finding (source a) or a rescue names it (source c).
       continue;
     }
     // Narrow: only files matching one of the leaf's globs.

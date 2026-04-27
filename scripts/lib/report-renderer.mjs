@@ -207,7 +207,7 @@ function renderCoverage(coverage) {
   const out = ["## Coverage", "", "| File | Reviewed By |", "|------|-----------|"];
   for (const row of coverage) {
     const reviewers = (row.reviewers ?? []).join(", ") || "—";
-    out.push(`| ${row.file} | ${reviewers} |`);
+    out.push(`| ${mdCell(row.file)} | ${mdCell(reviewers)} |`);
   }
   out.push("");
   return out;

@@ -127,7 +127,7 @@ test("replayLookup: returns null on cache miss", () => {
   }
 });
 
-test("recordOutputs: file is canonical-JSON pretty-printed", () => {
+test("recordOutputs: file is pretty-printed JSON with trailing newline", () => {
   const root = makeTmpDir();
   try {
     const hashKey = "1".repeat(64);

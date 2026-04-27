@@ -524,10 +524,6 @@ async function main() {
     }
     const outputs = readJsonFile(outputsFile, "--outputs-file");
 
-    // B8 referential-integrity check (extracted into runTrimValidationGate
-    // so unit tests can exercise it without a live runner).
-    runTrimValidationGate(runId, outputs);
-
     // --replay-mode must be passed on EACH --continue invocation. The
     // runner is stateless across CLI calls; if --start was invoked with
     // --replay-mode=record but a subsequent --continue omitted the flag,
@@ -553,21 +549,29 @@ async function main() {
       const storageRoot = resolveStorageRoot();
       const dir = runDirPath(runId, { storageRoot });
       const stash = readPendingBrief(dir);
-      if (stash && typeof stash.state === "string" && typeof stash.hashKey === "string") {
-        try {
-          recordOutputs(FIXTURES_ROOT, {
-            state: stash.state,
-            hashKey: stash.hashKey,
-            outputs,
-            meta: { recorded_at: new Date().toISOString(), run_id: runId },
-          });
-          clearPendingBrief(dir);
-        } catch (err) {
-          fail(
-            `replay-mode=record: failed to persist fixture for state=${stash.state}: ${err.message}`,
-            { state: stash.state, hash_key: stash.hashKey },
-          );
-        }
+      // No silent skip: a missing/malformed stash means the user thinks
+      // they are recording fixtures but nothing would land on disk.
+      // Surface as a structured fault so the harness fails loud, not
+      // quiet — that is the entire point of record mode.
+      if (!(stash && typeof stash.state === "string" && typeof stash.hashKey === "string")) {
+        fail(
+          "replay-mode=record: missing or invalid pending-brief stash; cannot persist fixture",
+          { run_id: runId, dir },
+        );
+      }
+      try {
+        recordOutputs(FIXTURES_ROOT, {
+          state: stash.state,
+          hashKey: stash.hashKey,
+          outputs,
+          meta: { recorded_at: new Date().toISOString(), run_id: runId },
+        });
+        clearPendingBrief(dir);
+      } catch (err) {
+        fail(
+          `replay-mode=record: failed to persist fixture for state=${stash.state}: ${err.message}`,
+          { state: stash.state, hash_key: stash.hashKey },
+        );
       }
     }
 

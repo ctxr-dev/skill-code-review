@@ -147,7 +147,14 @@ export function replayLookup(fixturesRoot, state, hashKey) {
     // Each fixture stores both the original meta (for debugging) and the
     // worker's outputs. The replay path returns just `outputs`; meta is
     // optional and only present when the file was written by recordOutputs.
-    if (parsed && typeof parsed === "object" && parsed.outputs) return parsed.outputs;
+    // Use Object.hasOwn for property presence (not a truthiness check) so
+    // a fixture that legitimately recorded `outputs: null` still returns
+    // null instead of falling back to the wrapping `{outputs, meta}`
+    // object — the call site can distinguish "no fixture" (return null
+    // from existsSync miss) from "fixture exists, output is null".
+    if (parsed && typeof parsed === "object" && Object.hasOwn(parsed, "outputs")) {
+      return parsed.outputs;
+    }
     return parsed;
   } catch {
     return null;

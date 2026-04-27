@@ -123,7 +123,12 @@ const ALLOWED_ARGS_KEYS = new Set([
   "mode",
   "description",
   "max-reviewers",
-  "replay-mode",
+  // `replay-mode` is intentionally NOT in this set — it's a runner-level
+  // CLI flag, not part of the FSM run's `args` env (per report-format.md).
+  // Forwarding it into env.args would mean the same worker invocation
+  // hashes differently depending on whether the user passed
+  // --replay-mode=live vs left the flag off, defeating the determinism
+  // the harness exists to provide.
 ]);
 function validateArgsBag(bag) {
   if (bag === null || typeof bag !== "object" || Array.isArray(bag)) {
@@ -490,7 +495,10 @@ async function main() {
       fail(`fsm-next --new-run failed: ${start.error}`, { raw: start.raw });
     }
     const brief = start.payload;
-    const replayMode = resolveReplayMode({ "replay-mode": args["replay-mode"] ?? argsBag["replay-mode"] });
+    // Read replay-mode from the runner-level CLI flag only. Pulling it
+     // from argsBag would forward it into env.args (the FSM run env),
+     // which makes the worker hash differ between record vs replay.
+    const replayMode = resolveReplayMode({ "replay-mode": args["replay-mode"] });
     emit(await loop(brief, brief.run_id, { replayMode }));
     return;
   }
@@ -515,18 +523,38 @@ async function main() {
       fail(`--run-id must be lowercase alnum + dashes, 3-64 chars; got: ${runId}`);
     }
     const outputs = readJsonFile(outputsFile, "--outputs-file");
+
+    // B8 referential-integrity check (extracted into runTrimValidationGate
+    // so unit tests can exercise it without a live runner).
+    runTrimValidationGate(runId, outputs);
+
+    // --replay-mode must be passed on EACH --continue invocation. The
+    // runner is stateless across CLI calls; if --start was invoked with
+    // --replay-mode=record but a subsequent --continue omitted the flag,
+    // those outputs would silently NOT be recorded. Callers driving the
+    // record/replay flow should set the same mode on every call. (A
+    // future enhancement could persist the mode in the run dir's
+    // manifest, but for now per-call is the documented contract.)
     const replayMode = resolveReplayMode({ "replay-mode": args["replay-mode"] });
+
+    const commit = runFsmCommit({ runId, outputs });
+    if (!commit.ok) {
+      fail(`fsm-commit failed: ${commit.error}`, { raw: commit.raw });
+    }
 
     // B7 record mode: persist the worker outputs we just received under
     // the hash key the runner stashed when it emitted awaiting_worker.
-    // Done BEFORE fsm-commit so a commit failure doesn't leave a
-    // half-recorded fixture without its corresponding env update.
+    // Done AFTER a successful fsm-commit so a commit failure (schema
+    // validation, post-validation, etc.) doesn't leave behind a stale
+    // fixture or wipe the pending-brief stash that a retry would need.
+    // Recording errors surface as a fault — silent failure here would
+    // make later replay-mode runs fail without a clear root cause.
     if (replayMode === "record") {
-      try {
-        const storageRoot = resolveStorageRoot();
-        const dir = runDirPath(runId, { storageRoot });
-        const stash = readPendingBrief(dir);
-        if (stash && typeof stash.state === "string" && typeof stash.hashKey === "string") {
+      const storageRoot = resolveStorageRoot();
+      const dir = runDirPath(runId, { storageRoot });
+      const stash = readPendingBrief(dir);
+      if (stash && typeof stash.state === "string" && typeof stash.hashKey === "string") {
+        try {
           recordOutputs(FIXTURES_ROOT, {
             state: stash.state,
             hashKey: stash.hashKey,
@@ -534,16 +562,15 @@ async function main() {
             meta: { recorded_at: new Date().toISOString(), run_id: runId },
           });
           clearPendingBrief(dir);
+        } catch (err) {
+          fail(
+            `replay-mode=record: failed to persist fixture for state=${stash.state}: ${err.message}`,
+            { state: stash.state, hash_key: stash.hashKey },
+          );
         }
-      } catch {
-        // Recording is opt-in instrumentation; never fail the run on it.
       }
     }
 
-    const commit = runFsmCommit({ runId, outputs });
-    if (!commit.ok) {
-      fail(`fsm-commit failed: ${commit.error}`, { raw: commit.raw });
-    }
     emit(await loop(commit.payload, runId, { replayMode }));
     return;
   }

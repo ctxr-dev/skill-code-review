@@ -186,7 +186,11 @@ export function buildReportPayload(runId, env) {
   return {
     verdict: env.verdict ?? null,
     summary: {
-      description: env.description ?? argsBag.description ?? null,
+      // report-format.md JSON Schema rules: description is a string,
+      // specialists_total is an integer. Default to "" / 0 rather than
+      // null so downstream consumers that string-format / numeric-compare
+      // these fields don't trip on a type mismatch.
+      description: env.description ?? argsBag.description ?? "",
       range: {
         base: env.base_sha ?? null,
         head: env.head_sha ?? null,
@@ -195,7 +199,7 @@ export function buildReportPayload(runId, env) {
       files_changed: Array.isArray(env.changed_paths) ? env.changed_paths.length : 0,
       stack,
       specialists_dispatched: specialistOutputs.length,
-      specialists_total: env.specialists_total ?? null,
+      specialists_total: Number.isInteger(env.specialists_total) ? env.specialists_total : 0,
       scope: buildScope(argsBag),
     },
     methodology: buildMethodology(env),

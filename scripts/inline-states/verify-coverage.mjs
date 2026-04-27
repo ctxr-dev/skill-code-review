@@ -29,7 +29,7 @@
 //       precisely to lift that file's coverage.
 
 import { readFileSync, existsSync } from "node:fs";
-import { dirname, resolve, join } from "node:path";
+import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { minimatch } from "../lib/minimatch-shim.mjs";
@@ -45,10 +45,14 @@ import { minimatch } from "../lib/minimatch-shim.mjs";
 const _leafGlobsCache = new Map();
 function readLeafGlobs(repoRoot, leafPath) {
   if (typeof leafPath !== "string" || leafPath.length === 0) return null;
-  // Resolve against repo root; reject anything that escapes the wiki.
+  // Resolve against repo root; reject anything that escapes the wiki. Use
+  // path.relative + a `..`/absolute check rather than `abs.startsWith(wikiRoot)`
+  // — the prefix check would accept `reviewers.wiki-malicious/...` because
+  // it shares the leading string with `reviewers.wiki`.
   const wikiRoot = resolve(repoRoot, "reviewers.wiki");
   const abs = resolve(repoRoot, leafPath);
-  if (!abs.startsWith(wikiRoot)) return null;
+  const rel = relative(wikiRoot, abs);
+  if (rel.startsWith("..") || rel.startsWith(sep) || rel === "") return null;
   if (_leafGlobsCache.has(abs)) return _leafGlobsCache.get(abs);
   if (!existsSync(abs)) {
     _leafGlobsCache.set(abs, null);

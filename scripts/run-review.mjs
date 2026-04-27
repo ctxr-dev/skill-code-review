@@ -83,17 +83,17 @@ export function isValidRunId(value) {
 }
 
 // Validate a git ref / SHA / revspec per code-reviewer.md's argument-parsing
-// allowlist. Accept the full git revspec character set the spec calls out:
-// alnum + `_./-@^~{}:` (the last few support `HEAD~1`, `branch@{1.day.ago}`,
-// `commit^2`, etc.). Reject anything else — in particular shell
+// allowlist. Accept alnum + `_./-@^~{}` so the documented revspec features
+// (`HEAD~1`, `branch@{1.day.ago}`, `commit^2`) work, but DON'T accept `:` —
+// the spec doesn't document `:` and allowing it expands the shape to
+// `treeish:path` forms that the orchestrator never asks for. Reject shell
 // metacharacters (whitespace, `;`, `|`, `&`, `$`, backticks, `(`, `)`, `*`,
-// `?`, `\`, `'`, `"`, `>`, `<`) so values can't inject into downstream `git`
-// invocations even if the engine forwards them to a shell context. Also
-// reject refs that START with `-`: even with metacharacters scrubbed,
-// `-something` would be parsed as an option (`-n`, `--upload-pack=...`,
-// etc.) and turn into option injection if any downstream call lacks a `--`
-// separator before the ref.
-const GIT_REF_PATTERN = /^(?!-)[A-Za-z0-9_./@^~{}:-]{1,255}$/;
+// `?`, `\`, `'`, `"`, `>`, `<`, `:`) so values can't inject into downstream
+// `git` invocations even if the engine forwards them to a shell context.
+// Also reject refs that START with `-`: `-something` would be parsed by
+// `git` as an option (`-n`, `--upload-pack=...`) and turn into option
+// injection if any downstream call lacks a `--` separator before the ref.
+const GIT_REF_PATTERN = /^(?!-)[A-Za-z0-9_./@^~{}-]{1,255}$/;
 export function isValidGitRef(value) {
   return typeof value === "string" && GIT_REF_PATTERN.test(value);
 }

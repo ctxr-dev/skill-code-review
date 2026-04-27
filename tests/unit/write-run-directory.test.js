@@ -26,12 +26,21 @@ const CANONICAL_TOP_LEVEL_KEYS = [
 ];
 
 test("buildReportPayload: top-level keys exactly match report-format.md", () => {
-  const payload = buildReportPayload("run-1", {});
+  const payload = buildReportPayload("run-1", { verdict: "GO" });
   assert.deepEqual(
     Object.keys(payload).sort(),
     [...CANONICAL_TOP_LEVEL_KEYS].sort(),
     "report.json must contain exactly the canonical top-level keys (no run_id, no _meta, no skill-internal extras)",
   );
+});
+
+test("buildReportPayload: throws when env.verdict is missing or invalid", () => {
+  assert.throws(() => buildReportPayload("r", {}), /verdict must be one of/);
+  assert.throws(
+    () => buildReportPayload("r", { verdict: "MAYBE" }),
+    /verdict must be one of/,
+  );
+  assert.throws(() => buildReportPayload("r", { verdict: null }), /verdict must be one of/);
 });
 
 test("buildReportPayload: full env produces canonical issues + specialists + gates", () => {
@@ -103,6 +112,7 @@ test("buildReportPayload: full env produces canonical issues + specialists + gat
 
 test("buildReportPayload: scope mapping from args matches the spec", () => {
   const payload = buildReportPayload("r", {
+    verdict: "GO",
     args: {
       "scope-dir": "src/api,src/util",
       "scope-lang": "typescript",
@@ -121,7 +131,7 @@ test("buildReportPayload: scope mapping from args matches the spec", () => {
 });
 
 test("buildReportPayload: sparse env yields canonical empty arrays + null fields", () => {
-  const payload = buildReportPayload("run-empty", {});
+  const payload = buildReportPayload("run-empty", { verdict: "CONDITIONAL" });
   assert.deepEqual(payload.issues, []);
   assert.deepEqual(payload.strengths, []);
   assert.deepEqual(payload.tool_results, []);
@@ -136,11 +146,12 @@ test("buildReportPayload: sparse env yields canonical empty arrays + null fields
   for (const k of ["dirs", "langs", "frameworks", "reviewers", "severity_filter", "gates_filter"]) {
     assert.equal(payload.summary.scope[k], null);
   }
-  assert.equal(payload.verdict, null);
+  assert.equal(payload.verdict, "CONDITIONAL");
 });
 
 test("buildReportPayload: specialist row buckets findings by severity", () => {
   const payload = buildReportPayload("r", {
+    verdict: "GO",
     specialist_outputs: [
       {
         id: "lang-typescript",
@@ -178,6 +189,7 @@ test("buildReportPayload: specialist row buckets findings by severity", () => {
 
 test("buildReportPayload: tool row maps `output` to `output_summary` for canonical shape", () => {
   const payload = buildReportPayload("r", {
+    verdict: "GO",
     tool_results: [
       { name: "tsc", status: "pass", findings: 0, output: "0 errors" },
       { name: "npm-audit", status: "skipped", reason: "not installed" },

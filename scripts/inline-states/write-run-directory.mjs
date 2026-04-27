@@ -213,7 +213,18 @@ function buildToolRow(t) {
   };
 }
 
+const VALID_VERDICTS = new Set(["GO", "NO-GO", "CONDITIONAL"]);
+
 export function buildReportPayload(runId, env) {
+  // verdict MUST be one of GO | NO-GO | CONDITIONAL per report-format.md.
+  // The FSM precondition for write_run_directory is "verdict exists in run
+  // state", so reaching here without one is a contract violation upstream.
+  // Fail fast rather than emitting a non-canonical report.json.
+  if (!VALID_VERDICTS.has(env.verdict)) {
+    throw new Error(
+      `buildReportPayload: env.verdict must be one of ${[...VALID_VERDICTS].join(", ")}; got: ${JSON.stringify(env.verdict)}`,
+    );
+  }
   const findings = Array.isArray(env.findings) ? env.findings : [];
   const specialistOutputs = Array.isArray(env.specialist_outputs) ? env.specialist_outputs : [];
   const gates = Array.isArray(env.gates) ? env.gates : [];
@@ -234,7 +245,7 @@ export function buildReportPayload(runId, env) {
   // manifest.json; skill-internal context like tier / routing /
   // short_circuited belongs in the FSM trace, not the canonical report).
   return {
-    verdict: env.verdict ?? null,
+    verdict: env.verdict,
     summary: {
       // report-format.md JSON Schema rules: description is a string,
       // specialists_total is an integer. Default to "" / 0 rather than

@@ -38,39 +38,51 @@ import { resolveSettings, runEnv } from "@ctxr/fsm";
 
 import { validateTrimOutput } from "./lib/trim-output-validator.mjs";
 
-// Apply the B8 referential-integrity check to a worker output. Looks like
-// trim output (carries `picked_leaves[]`) ⇒ validate against the run env
-// and fail-fast on any violation. Anything else ⇒ no-op. Wraps the
-// runEnv call in try/catch so a missing/corrupt run-storage error
-// surfaces as a structured fail() rather than escaping to main().catch.
+// Apply the B8 referential-integrity check to a worker output. Returns
+// `{ ok: true }` for no-op (output isn't a trim shape) or for a clean
+// pass; returns `{ ok: false, message, details }` on any violation
+// (env unreadable, schema-cross-ref violations). The --continue caller
+// is responsible for converting `ok: false` to a fail() so the runner
+// stays the only place that touches process.exit; unit tests can drive
+// this function without process.exit by stubbing the env loader and
+// inspecting the return shape.
+//
 // Exported so unit tests can pin the gate without a live FSM run.
-export function runTrimValidationGate(runId, outputs) {
-  if (!outputs || !Array.isArray(outputs.picked_leaves)) return;
+// `_deps` is an optional injection seam (resolveStorageRoot, runEnv,
+// repoRoot) so tests can drive both happy and failure paths.
+export function runTrimValidationGate(runId, outputs, _deps = {}) {
+  if (!outputs || !Array.isArray(outputs.picked_leaves)) return { ok: true };
+  const resolveStorageRootFn = _deps.resolveStorageRoot ?? resolveStorageRoot;
+  const runEnvFn = _deps.runEnv ?? runEnv;
+  const repoRoot = _deps.repoRoot ?? REPO_ROOT;
   let env;
   try {
-    const storageRoot = resolveStorageRoot();
-    env = runEnv(runId, { storageRoot });
+    const storageRoot = resolveStorageRootFn();
+    env = runEnvFn(runId, { storageRoot });
   } catch (err) {
     // Build the parenthetical from defined parts only so we don't emit
-    // awkward strings like "( something)" or "(undefined ...)" when the
-    // thrown value lacks `code` or `message`. Falls back to the
-    // stringified value when neither is present.
+    // awkward strings like "( something)" when the thrown value lacks
+    // `code` or `message`. Falls back to the stringified value when
+    // neither is present.
     const parts = [err?.code, err?.message ?? (typeof err === "string" ? err : null)].filter(
       (p) => typeof p === "string" && p.length > 0,
     );
     const detail = parts.length > 0 ? ` (${parts.join(": ")})` : "";
-    fail(`llm_trim validation: failed to read run env${detail}.`, {
-      state: "llm_trim",
-      run_id: runId,
-    });
+    return {
+      ok: false,
+      message: `llm_trim validation: failed to read run env${detail}.`,
+      details: { state: "llm_trim", run_id: runId },
+    };
   }
-  const v = validateTrimOutput(outputs, env, { repoRoot: REPO_ROOT });
+  const v = validateTrimOutput(outputs, env, { repoRoot });
   if (!v.ok) {
-    fail(
-      `llm_trim referential-integrity validation failed: ${v.errors.join("; ")}`,
-      { state: "llm_trim", violations: v.errors },
-    );
+    return {
+      ok: false,
+      message: `llm_trim referential-integrity validation failed: ${v.errors.join("; ")}`,
+      details: { state: "llm_trim", violations: v.errors },
+    };
   }
+  return { ok: true };
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -490,7 +502,10 @@ async function main() {
     // shape; the trim worker can fabricate ids / paths / files that pass
     // the schema but break downstream consumers. Abort here on any
     // violation rather than let a bad trim output corrupt the env.
-    runTrimValidationGate(runId, outputs);
+    const gate = runTrimValidationGate(runId, outputs);
+    if (!gate.ok) {
+      fail(gate.message, gate.details);
+    }
 
     const commit = runFsmCommit({ runId, outputs });
     if (!commit.ok) {

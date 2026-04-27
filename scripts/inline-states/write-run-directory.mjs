@@ -35,8 +35,9 @@ import { renderReportMarkdown, renderReportJson } from "../lib/report-renderer.m
 function resolveStorageRoot(repoRoot) {
   // @ctxr/fsm exposes resolveSettings(cliArgs, cwd) — cliArgs is the
   // selector ({fsmName, fsmPath, ...}), cwd resolves .fsmrc.json.
-  // resolveSettings calls loadConfig internally, so the caller must
-  // not pre-load. Returns { fsmPath, storageRoot, ... } in camelCase.
+  // resolveSettings calls loadConfig internally; the caller must NOT
+  // pre-load. Returns are camelCase (storageRoot), not the snake_case
+  // form used in .fsmrc.json on disk.
   const settings = resolveSettings({ fsmName: "code-reviewer" }, repoRoot);
   return resolve(repoRoot, settings.storageRoot);
 }

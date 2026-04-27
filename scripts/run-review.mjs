@@ -34,7 +34,18 @@ import { dirname, join, resolve } from "node:path";
 import { tmpdir, platform } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { resolveSettings, runEnv } from "@ctxr/fsm";
+import { resolveSettings, runEnv, runDirPath } from "@ctxr/fsm";
+
+import {
+  resolveReplayMode,
+  computeHashKey,
+  replayLookup,
+  recordOutputs,
+  stashPendingBrief,
+  readPendingBrief,
+  clearPendingBrief,
+  FIXTURES_ROOT,
+} from "./lib/worker-replay.mjs";
 
 import { validateTrimOutput } from "./lib/trim-output-validator.mjs";
 
@@ -85,15 +96,96 @@ export function runTrimValidationGate(runId, outputs, _deps = {}) {
   return { ok: true };
 }
 
+// Project the FSM brief's declared inputs out of the run env so the hash
+// key only depends on what the worker actually sees, not the full env.
+// fsm-next can expose the inputs list either at the top level
+// (`brief.inputs`) or nested under the worker block (`brief.worker.inputs`),
+// matching how prompt_template is exposed. Fall back so a hash isn't
+// computed against an empty inputs list when the brief uses the nested
+// shape.
+function projectBriefInputs(brief, env) {
+  const namesRaw = Array.isArray(brief?.inputs)
+    ? brief.inputs
+    : Array.isArray(brief?.worker?.inputs)
+      ? brief.worker.inputs
+      : [];
+  const out = {};
+  for (const name of namesRaw) out[name] = env?.[name];
+  return out;
+}
+
+// In the FSM YAML, prompt_template paths are written relative to the FSM
+// YAML's own directory (e.g. `workers/project-scanner.md`), not relative
+// to the repo root. computeHashKey expects a path relative to repoRoot
+// when reading the prompt body, so the runner projects the brief's path
+// into a repo-relative one before calling it.
+//
+// The FSM YAML for this project lives at `fsm/code-reviewer.fsm.yaml`
+// (configured in .fsmrc.json). Hardcoding the prefix here is simpler
+// than going through loadConfig/resolveSettings every call AND keeps
+// this helper purely synchronous + testable without a config gate.
+const FSM_YAML_DIR_REL = "fsm";
+
+export function repoRelativePromptPath(briefPath) {
+  if (typeof briefPath !== "string" || briefPath.length === 0) return "";
+  // Reject absolute paths and any traversal segment up front. The hashing
+  // harness reads `<repoRoot>/<promptTemplate>`; without these guards a
+  // brief carrying `../etc/passwd` or `/abs/path` would let a tampered
+  // FSM YAML pull arbitrary files into the hash (and into the recorded
+  // fixture's content fingerprint). Legitimate shapes are
+  // `workers/<role>.md` (FSM-yaml-relative) or `fsm/workers/<role>.md`
+  // (already repo-relative). Throw rather than silently sanitize so a
+  // malformed brief surfaces immediately.
+  if (
+    /(^|[\\/])\.\.([\\/]|$)/.test(briefPath) ||
+    briefPath.startsWith("/") ||
+    briefPath.startsWith("\\") ||
+    /^[A-Za-z]:[\\/]/.test(briefPath)
+  ) {
+    throw new Error(
+      `repoRelativePromptPath: traversal / absolute / UNC paths are rejected; got ${JSON.stringify(briefPath)}`,
+    );
+  }
+  // Already repo-relative (starts with `fsm/`) → pass through unchanged.
+  // Otherwise prepend the FSM-YAML directory so paths like
+  // `workers/project-scanner.md` become `fsm/workers/project-scanner.md`.
+  const norm = briefPath.split(/[/\\]+/).join("/");
+  if (norm.startsWith(`${FSM_YAML_DIR_REL}/`) || norm === FSM_YAML_DIR_REL) {
+    return norm;
+  }
+  return `${FSM_YAML_DIR_REL}/${norm}`;
+}
+
+function hashKeyForBrief(brief, env) {
+  const briefPath = brief?.prompt_template ?? brief?.worker?.prompt_template ?? "";
+  return computeHashKey({
+    state: brief?.state,
+    // Project the FSM-yaml-relative path to a repo-relative one so
+    // computeHashKey's `resolve(repoRoot, promptTemplate)` finds the
+    // actual prompt file under fsm/workers/.
+    promptTemplate: repoRelativePromptPath(briefPath),
+    inputs: projectBriefInputs(brief, env),
+    // Pass repoRoot so the harness reads the prompt body and includes its
+    // SHA in the hash — editing the prose without renaming the file
+    // invalidates every recorded fixture for that worker.
+    repoRoot: REPO_ROOT,
+  });
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "..");
 const INLINE_STATES_DIR = resolve(__dirname, "inline-states");
 
 function resolveStorageRoot() {
   // @ctxr/fsm exposes resolveSettings(cliArgs, cwd) — cliArgs is the
-  // selector ({fsmName, fsmPath, ...}), cwd resolves .fsmrc.json.
-  // resolveSettings calls loadConfig internally; the caller does NOT
-  // pre-load. Returns { fsmPath, storageRoot, ... } in camelCase.
+  // selector ({fsmName, fsmPath, storageRoot, sessionId}), cwd is the
+  // directory to resolve the .fsmrc.json relative to. resolveSettings
+  // calls loadConfig internally; the caller does NOT pre-load. Returns
+  // are camelCase (storageRoot), not the snake_case form used in
+  // .fsmrc.json on disk. Earlier rounds had this backwards
+  // (loadConfig({cwd: REPO_ROOT}) and resolveSettings(config, {...})),
+  // which was hidden because this function is only on the --continue
+  // path.
   const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
   return resolve(REPO_ROOT, settings.storageRoot);
 }
@@ -108,6 +200,14 @@ export function parseArgs(argv) {
     // positionals.
     if (a === "--") break;
     if (!a.startsWith("--")) continue;
+    // Support both `--key value` and `--key=value` forms. The latter is
+    // what most CLIs accept by convention, and our docs show that shape.
+    const eq = a.indexOf("=");
+    if (eq !== -1) {
+      const key = a.slice(2, eq);
+      args[key] = a.slice(eq + 1);
+      continue;
+    }
     const key = a.slice(2);
     const next = argv[i + 1];
     if (next === undefined || next === "--" || next.startsWith("--")) {
@@ -143,6 +243,12 @@ const ALLOWED_ARGS_KEYS = new Set([
   "mode",
   "description",
   "max-reviewers",
+  // `replay-mode` is intentionally NOT in this set — it's a runner-level
+  // CLI flag, not part of the FSM run's `args` env (per report-format.md).
+  // Forwarding it into env.args would mean the same worker invocation
+  // hashes differently depending on whether the user passed
+  // --replay-mode=live vs left the flag off, defeating the determinism
+  // the harness exists to provide.
 ]);
 function validateArgsBag(bag) {
   if (bag === null || typeof bag !== "object" || Array.isArray(bag)) {
@@ -380,9 +486,166 @@ async function dispatchInlineState(brief, runId) {
   }
 }
 
+// handleWorkerStateBrief — the worker-state branch of loop(), pulled out so
+// unit tests can drive replay-hit / replay-miss / replay-corrupted /
+// hash-fail / record-stash-fail without spinning up the FSM CLIs.
+//
+// Returns one of:
+//   { kind: "advance", payload: <new fsm-commit payload> }   — replay-hit auto-commit
+//   { kind: "pause",   payload: { status, run_id, brief } }   — emit awaiting_worker
+//   { kind: "fault",   payload: { status: "fault", run_id, fault } } — surface up
+//
+// `_deps` is the dependency injection seam (resolveStorageRoot, runEnv,
+// hashKeyForBrief, replayLookup, runFsmCommit, stashPendingBrief,
+// fixturesRoot, runDirPath). All have production defaults so the runner
+// can call this with no extra args.
+export function handleWorkerStateBrief(brief, runId, opts = {}, _deps = {}) {
+  const replayMode = opts.replayMode ?? "live";
+  const resolveStorageRootFn = _deps.resolveStorageRoot ?? resolveStorageRoot;
+  const runEnvFn = _deps.runEnv ?? runEnv;
+  const hashKeyForBriefFn = _deps.hashKeyForBrief ?? hashKeyForBrief;
+  const replayLookupFn = _deps.replayLookup ?? replayLookup;
+  const runFsmCommitFn = _deps.runFsmCommit ?? runFsmCommit;
+  const stashPendingBriefFn = _deps.stashPendingBrief ?? stashPendingBrief;
+  const runDirPathFn = _deps.runDirPath ?? runDirPath;
+  const fixturesRoot = _deps.fixturesRoot ?? FIXTURES_ROOT;
+
+  // Live mode (the default) skips the env+hash+stash work entirely. The
+  // hash key and stash only matter for replay/record; running them on
+  // every live worker pause introduces new failure modes (unreadable
+  // prompt template, missing run-storage) for callers who didn't
+  // opt into the harness. The trade-off: a user who goes
+  // `--start --replay-mode=live` and then `--continue
+  // --replay-mode=record` will not have a stash to record against;
+  // record mode is per-run, not retroactive.
+  if (replayMode === "live") {
+    return {
+      kind: "pause",
+      payload: { status: "awaiting_worker", run_id: runId, brief },
+    };
+  }
+
+  // resolveStorageRoot reads .fsmrc.json + walks @ctxr/fsm config; runEnv
+  // reads the run-storage tree on disk. Either can throw on a missing /
+  // corrupt config or storage. Convert to an in-flow fault so the run
+  // stops cleanly instead of crashing out as a top-level {status:"error"}.
+  let storageRoot, env;
+  try {
+    storageRoot = resolveStorageRootFn();
+    env = runEnvFn(runId, { storageRoot });
+  } catch (err) {
+    return {
+      kind: "fault",
+      payload: {
+        status: "fault",
+        run_id: runId,
+        fault: {
+          state: brief.state,
+          reason: `failed to load run env: ${err?.message ?? String(err)}`,
+        },
+      },
+    };
+  }
+
+  // hashKeyForBrief can throw when the prompt template is unreadable.
+  let hashKey;
+  try {
+    hashKey = hashKeyForBriefFn(brief, env);
+  } catch (err) {
+    return {
+      kind: "fault",
+      payload: {
+        status: "fault",
+        run_id: runId,
+        fault: {
+          state: brief.state,
+          reason: `hash key compute failed: ${err?.message ?? String(err)}`,
+        },
+      },
+    };
+  }
+
+  // B7 replay mode: try to satisfy the worker call from a recorded fixture.
+  if (replayMode === "replay") {
+    let cached;
+    try {
+      cached = replayLookupFn(fixturesRoot, brief.state, hashKey);
+    } catch (err) {
+      return {
+        kind: "fault",
+        payload: {
+          status: "fault",
+          run_id: runId,
+          fault: {
+            state: brief.state,
+            reason: `replay-mode fixture corrupted: ${err?.message ?? String(err)}`,
+            hash_key: hashKey,
+          },
+        },
+      };
+    }
+    if (!cached.hit) {
+      return {
+        kind: "fault",
+        payload: {
+          status: "fault",
+          run_id: runId,
+          fault: {
+            state: brief.state,
+            reason: `replay-mode miss: no fixture for state="${brief.state}" hashKey=${hashKey.slice(0, 12)}...`,
+            hash_key: hashKey,
+          },
+        },
+      };
+    }
+    const commit = runFsmCommitFn({ runId, outputs: cached.outputs });
+    if (!commit.ok) {
+      return {
+        kind: "fault",
+        payload: {
+          status: "fault",
+          run_id: runId,
+          fault: { state: brief.state, reason: commit.error, details: commit.raw },
+        },
+      };
+    }
+    return { kind: "advance", payload: commit.payload };
+  }
+
+  // B7 record mode: stash the brief for --continue. Stash failures
+  // surface as faults — without the stash, --continue can't persist
+  // the recorded fixture and the user would think record-mode
+  // succeeded when it silently didn't. (Live mode returned early.)
+  // Wrap both runDirPath AND stashPendingBrief in the same try/catch:
+  // runDirPath can throw on a missing/corrupt run-storage tree, and
+  // an unhandled throw there would crash the runner instead of
+  // surfacing as the same structured fault that a stash failure does.
+  try {
+    const dir = runDirPathFn(runId, { storageRoot });
+    stashPendingBriefFn(dir, { state: brief.state, hashKey });
+  } catch (err) {
+    return {
+      kind: "fault",
+      payload: {
+        status: "fault",
+        run_id: runId,
+        fault: {
+          state: brief.state,
+          reason: `replay-mode=record: failed to stash pending brief: ${err?.message ?? String(err)}`,
+        },
+      },
+    };
+  }
+
+  return {
+    kind: "pause",
+    payload: { status: "awaiting_worker", run_id: runId, brief },
+  };
+}
+
 // Drive the loop from a starting brief: walk inline states, pause on workers,
 // stop on terminal. Returns the final status payload to emit.
-async function loop(brief, runId) {
+async function loop(brief, runId, { replayMode = "live" } = {}) {
   let current = brief;
   while (true) {
     if (current.status === "terminal") {
@@ -394,14 +657,13 @@ async function loop(brief, runId) {
       };
     }
     if (current.has_worker) {
-      // The runner does not pre-compute activation-gate signals into the env
-      // here — the tree-descender worker prose instructs the LLM to invoke
-      // `scripts/lib/activation-gate.mjs` itself today. Lifting that
-      // pre-compute up to the runner (so any worker can consume
-      // activated_leaves[] from env without an LLM hop) is part of the B6
-      // reframe (#11). For now this branch is intentionally a thin
-      // pass-through.
-      return { status: "awaiting_worker", run_id: runId, brief: current };
+      const result = handleWorkerStateBrief(current, runId, { replayMode });
+      if (result.kind === "advance") {
+        current = result.payload;
+        continue;
+      }
+      // "pause" (awaiting_worker) and "fault" both terminate this call.
+      return result.payload;
     }
     const dispatch = await dispatchInlineState(current, runId);
     if (!dispatch.ok) {
@@ -471,7 +733,16 @@ async function main() {
       fail(`fsm-next --new-run failed: ${start.error}`, { raw: start.raw });
     }
     const brief = start.payload;
-    emit(await loop(brief, brief.run_id));
+    // Read replay-mode from the runner-level CLI flag only. Pulling it
+    // from argsBag would forward it into env.args (the FSM run env),
+    // which makes the worker hash differ between record vs replay.
+    const replayMode = resolveReplayMode(
+      { "replay-mode": args["replay-mode"] },
+      {
+        onInvalid: (msg) => fail(msg, { flag: "--replay-mode" }),
+      },
+    );
+    emit(await loop(brief, brief.run_id, { replayMode }));
     return;
   }
 
@@ -507,18 +778,106 @@ async function main() {
       fail(gate.message, gate.details);
     }
 
+    // --replay-mode SHOULD be passed on EACH --continue invocation. The
+    // runner is stateless across CLI calls and the flag defaults to
+    // "live" when omitted; if --start was invoked with
+    // --replay-mode=record but a subsequent --continue omitted the
+    // flag, those outputs would silently NOT be recorded. Callers
+    // driving the record/replay flow should set the same mode on every
+    // call. (A future enhancement could persist the mode in the run
+    // dir's manifest so --continue infers it; for now per-call is the
+    // documented contract.)
+    const replayMode = resolveReplayMode(
+      { "replay-mode": args["replay-mode"] },
+      {
+        onInvalid: (msg) => fail(msg, { flag: "--replay-mode" }),
+      },
+    );
+
     const commit = runFsmCommit({ runId, outputs });
     if (!commit.ok) {
       fail(`fsm-commit failed: ${commit.error}`, { raw: commit.raw });
     }
-    emit(await loop(commit.payload, runId));
+
+    // B7 record mode: persist the worker outputs we just received under
+    // the hash key the runner stashed when it emitted awaiting_worker.
+    // Done AFTER a successful fsm-commit so a commit failure (schema
+    // validation, post-validation, etc.) doesn't leave behind a stale
+    // fixture or wipe the pending-brief stash that a retry would need.
+    // Recording errors surface as a fault — silent failure here would
+    // make later replay-mode runs fail without a clear root cause.
+    if (replayMode === "record") {
+      // resolveStorageRoot / runDirPath / readPendingBrief can throw on
+      // a missing or corrupt .fsmrc.json or a missing run-storage tree.
+      // Wrap in try/catch so the record-mode finalisation surfaces a
+      // structured error instead of falling through to main().catch.
+      let storageRoot, dir, stash;
+      try {
+        storageRoot = resolveStorageRoot();
+        dir = runDirPath(runId, { storageRoot });
+        stash = readPendingBrief(dir);
+      } catch (err) {
+        fail(
+          `replay-mode=record: failed to read run state for fixture persistence: ${err?.message ?? String(err)}`,
+          { run_id: runId },
+        );
+      }
+      // No silent skip: a missing/malformed stash means the user thinks
+      // they are recording fixtures but nothing would land on disk.
+      // Surface via fail() so the run stops loud (emits {status:"error"}
+      // and exits non-zero) — silent record-mode would be worse than no
+      // record mode at all.
+      if (!(stash && typeof stash.state === "string" && typeof stash.hashKey === "string")) {
+        fail(
+          "replay-mode=record: missing or invalid pending-brief stash; cannot persist fixture",
+          { run_id: runId, dir },
+        );
+      }
+      try {
+        // Don't write a wall-clock timestamp into the fixture meta — the
+        // whole point of canonicalized record mode is byte-stable
+        // refresh, and a per-record `recorded_at` would force a diff
+        // every time a maintainer re-records the same logical brief.
+        // The run id is similarly per-invocation noise. recordOutputs
+        // skips the meta wrapper entirely when meta is null, so the
+        // fixture body collapses to `{ outputs: <outputs> }`.
+        recordOutputs(FIXTURES_ROOT, {
+          state: stash.state,
+          hashKey: stash.hashKey,
+          outputs,
+        });
+        clearPendingBrief(dir);
+      } catch (err) {
+        fail(
+          `replay-mode=record: failed to persist fixture for state=${stash.state}: ${err?.message ?? String(err)}`,
+          { state: stash.state, hash_key: stash.hashKey },
+        );
+      }
+    } else {
+      // Live / replay --continue: even when we're not recording the
+      // current step, clear any previous-step stash if it's there.
+      // Otherwise a stash left over from a record-mode --start could
+      // be picked up by a later record-mode --continue against the
+      // wrong outputs (the stash is keyed only on `{state, hashKey}`,
+      // not on the specific output payload). Best-effort: a missing
+      // run dir or unreadable stash is the harmless case.
+      try {
+        const storageRoot = resolveStorageRoot();
+        const dir = runDirPath(runId, { storageRoot });
+        clearPendingBrief(dir);
+      } catch {
+        // ignore — clearing is best-effort housekeeping, not load-bearing
+      }
+    }
+
+    emit(await loop(commit.payload, runId, { replayMode }));
     return;
   }
 
   fail(
     "Usage:\n" +
-      "  run-review.mjs --start --base <sha> --head <sha> [--args-file <path>]\n" +
-      "  run-review.mjs --continue --run-id <id> --outputs-file <path>",
+      "  run-review.mjs --start --base <sha> --head <sha> [--args-file <path>] [--replay-mode <live|record|replay>]\n" +
+      "  run-review.mjs --continue --run-id <id> --outputs-file <path> [--replay-mode <live|record|replay>]",
   );
 }
 

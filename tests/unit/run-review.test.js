@@ -319,6 +319,44 @@ test("handleWorkerStateBrief: record-mode stash failure surfaces as fault", () =
   assert.match(result.payload.fault.reason, /failed to stash pending brief/);
 });
 
+test("handleWorkerStateBrief: record mode happy path stashes brief and pauses", () => {
+  // The successful record-mode path: hash, runDirPath, stashPendingBrief
+  // all succeed; the helper must invoke stashPendingBrief with
+  // {state, hashKey} matching the brief and the computed hash, then
+  // return kind:"pause" / awaiting_worker so the runner emits the
+  // brief for the caller to dispatch.
+  const brief = { state: "llm_trim", has_worker: true };
+  const expectedHash = "1".repeat(64);
+  const stashCalls = [];
+  const result = handleWorkerStateBrief(
+    brief,
+    "run-1",
+    { replayMode: "record" },
+    {
+      resolveStorageRoot: () => "/tmp",
+      runEnv: () => ({}),
+      hashKeyForBrief: () => expectedHash,
+      replayLookup: () => assert.fail("must not look up replays in record mode"),
+      runFsmCommit: () => assert.fail("must not commit on the awaiting_worker path"),
+      stashPendingBrief: (dir, payload) => {
+        stashCalls.push({ dir, payload });
+      },
+      runDirPath: (runId, opts) => {
+        assert.equal(runId, "run-1");
+        assert.equal(opts.storageRoot, "/tmp");
+        return "/tmp/run-dir";
+      },
+      fixturesRoot: "/tmp/fixtures",
+    },
+  );
+  assert.equal(result.kind, "pause");
+  assert.equal(result.payload.status, "awaiting_worker");
+  assert.equal(result.payload.brief, brief);
+  assert.equal(stashCalls.length, 1);
+  assert.equal(stashCalls[0].dir, "/tmp/run-dir");
+  assert.deepEqual(stashCalls[0].payload, { state: "llm_trim", hashKey: expectedHash });
+});
+
 test("handleWorkerStateBrief: live mode skips env+hash entirely and pauses", () => {
   // The default live path must NOT touch the env loaders, hash, or
   // stash. Pre-B7 a live --start didn't read the prompt template or

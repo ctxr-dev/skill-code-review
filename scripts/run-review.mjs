@@ -72,6 +72,38 @@ function emit(payload) {
   process.stdout.write(JSON.stringify(payload) + "\n");
 }
 
+// Allowlist for the args bag forwarded into the FSM run env. Mirrors the
+// argument table in report-format.md. Unknown keys are rejected so a
+// typo'd flag (e.g. `scope-langs` instead of `scope-lang`) surfaces at
+// startup rather than being silently dropped mid-pipeline.
+const ALLOWED_ARGS_KEYS = new Set([
+  "format",
+  "full",
+  "base",
+  "head",
+  "scope-dir",
+  "scope-lang",
+  "scope-framework",
+  "scope-reviewer",
+  "scope-severity",
+  "scope-gate",
+  "tools",
+  "mode",
+  "description",
+]);
+function validateArgsBag(bag) {
+  if (bag === null || typeof bag !== "object" || Array.isArray(bag)) {
+    fail(`--args-file must contain a JSON object; got: ${typeof bag}`);
+  }
+  for (const key of Object.keys(bag)) {
+    if (!ALLOWED_ARGS_KEYS.has(key)) {
+      fail(
+        `--args-file contains unknown key '${key}'. Allowed keys: ${[...ALLOWED_ARGS_KEYS].join(", ")}`,
+      );
+    }
+  }
+}
+
 // Validate a run id per @ctxr/fsm's run-id format: lowercase alnum + dashes
 // only, fixed length range. Anything else (especially `/` or `..`) would
 // let `path.join(SCRATCH_DIR, ...)` escape the scratch directory when the
@@ -187,12 +219,23 @@ function runFsmCommit({ runId, outputs }) {
   const safeRunId = String(runId).toLowerCase().replace(/[^a-z0-9-]/g, "_").slice(0, 64);
   const outputsFile = join(getScratchDir(), `outputs-${safeRunId}-${Date.now()}.json`);
   writeFileSync(outputsFile, JSON.stringify(outputs ?? {}));
-  const result = spawnSync(
-    fsmBin("fsm-commit"),
-    ["--run-id", runId, "--outputs-file", outputsFile],
-    { encoding: "utf8", cwd: REPO_ROOT },
-  );
-  return parseFsmCliResult(result, "fsm-commit");
+  try {
+    const result = spawnSync(
+      fsmBin("fsm-commit"),
+      ["--run-id", runId, "--outputs-file", outputsFile],
+      { encoding: "utf8", cwd: REPO_ROOT },
+    );
+    return parseFsmCliResult(result, "fsm-commit");
+  } finally {
+    // Delete the per-commit outputs file as soon as fsm-commit returns —
+    // long sessions otherwise accumulate many small files in SCRATCH_DIR.
+    // Process-exit cleanup remains as a safety net for the dir itself.
+    try {
+      rmSync(outputsFile, { force: true });
+    } catch {
+      // best-effort
+    }
+  }
 }
 
 export function parseFsmCliResult(result, label) {
@@ -334,6 +377,13 @@ async function loop(brief, runId) {
 async function main() {
   const args = parseArgs(process.argv);
 
+  // --start and --continue are mutually exclusive: passing both is an
+  // ambiguous invocation that the caller almost certainly didn't mean.
+  // Reject up front rather than silently picking one branch.
+  if (args.start && args.continue) {
+    fail("--start and --continue are mutually exclusive; pick one");
+  }
+
   if (args.start) {
     const baseSha = args.base ?? args["base-sha"];
     const headSha = args.head ?? args["head-sha"];
@@ -356,6 +406,12 @@ async function main() {
         fail("--args-file requires a path argument");
       }
       argsBag = readJsonFile(args["args-file"], "--args-file");
+      // The args bag flows into the FSM run env as `args` and is referenced
+      // by report-format.md (scope-* keys, format, full, description).
+      // Reject unknown keys before they enter the run env so a typo'd flag
+      // surfaces as a startup error instead of silently being ignored
+      // mid-pipeline.
+      validateArgsBag(argsBag);
     }
     const start = runFsmNextStart({ baseSha, headSha, argsBag });
     if (!start.ok) {

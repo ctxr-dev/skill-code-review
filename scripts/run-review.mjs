@@ -90,6 +90,7 @@ const ALLOWED_ARGS_KEYS = new Set([
   "tools",
   "mode",
   "description",
+  "max-reviewers",
 ]);
 function validateArgsBag(bag) {
   if (bag === null || typeof bag !== "object" || Array.isArray(bag)) {

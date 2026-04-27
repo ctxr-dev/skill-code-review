@@ -46,6 +46,10 @@ before(() => {
   writeLeaf(HERMETIC_REPO_ROOT, "cluster-a/fake-lang.md", "fake-lang");
   writeLeaf(HERMETIC_REPO_ROOT, "cluster-b/fake-sec.md", "fake-sec");
   writeLeaf(HERMETIC_REPO_ROOT, "cluster-b/fake-rejected.md", "fake-rejected");
+  // Second copy of fake-lang under cluster-b/ so the duplicate-stage-A
+  // test can pick a real, on-disk leaf and exercise class 3 alone (not
+  // accidentally fail on class 2 because the file doesn't exist).
+  writeLeaf(HERMETIC_REPO_ROOT, "cluster-b/fake-lang.md", "fake-lang");
 });
 
 after(() => {
@@ -227,7 +231,7 @@ test("validateTrimOutput: pair check accepts cosmetic 'reviewers.wiki/' prefix o
   };
   const result = validateTrimOutput(out, env, hermeticOpts());
   const class3Errors = result.errors.filter((e) =>
-    e.includes("not in stage_a_candidates") || e.includes("does not match stage_a_candidates entry path"),
+    e.includes("not in stage_a_candidates") || e.includes("does not match any stage_a_candidates entry path"),
   );
   assert.deepEqual(class3Errors, [], `prefix-normalized paths must not trigger class 3: ${result.errors.join("; ")}`);
 });

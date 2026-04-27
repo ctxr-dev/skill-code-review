@@ -502,11 +502,11 @@ All required fields are present even when empty (e.g. `routing.stage_b.picked: [
 
 Read `report-format.md` for the canonical report structure.
 
-1. Determine format: check the `format` argument. If `auto`: markdown when invoked by a user, JSON when dispatched as a sub-agent.
+1. Determine format: check the `format` argument. Supported values are `markdown` and `json`; `auto` resolves to markdown when stdout is a TTY (interactive user) and JSON otherwise (piped / sub-agent). `yaml` is reserved for a future PR that bundles a serializer; passing it today emits a stderr notice and falls back to markdown.
 2. If `scope-severity` is set: filter issues to only include those at or above the specified severity.
 3. If `scope-gate` is set: only include the specified gates in the release readiness section.
 4. If markdown: print `report.md` content; append a final line `Manifest: <run_dir_path>/manifest.json` so the user can drill in.
-5. If json or yaml: print `report.json` content (or YAML-dump of it).
+5. If json: print `report.json` content. The `Manifest:` pointer goes to stderr so stdout remains valid JSON for downstream parsers.
 
 **Step 11 outputs:** stdout content; exit status.
 

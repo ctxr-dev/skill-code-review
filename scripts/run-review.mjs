@@ -418,6 +418,126 @@ async function dispatchInlineState(brief, runId) {
   }
 }
 
+// handleWorkerStateBrief — the worker-state branch of loop(), pulled out so
+// unit tests can drive replay-hit / replay-miss / replay-corrupted /
+// hash-fail / record-stash-fail without spinning up the FSM CLIs.
+//
+// Returns one of:
+//   { kind: "advance", payload: <new fsm-commit payload> }   — replay-hit auto-commit
+//   { kind: "pause",   payload: { status, run_id, brief } }   — emit awaiting_worker
+//   { kind: "fault",   payload: { status: "fault", run_id, fault } } — surface up
+//
+// `_deps` is the dependency injection seam (resolveStorageRoot, runEnv,
+// hashKeyForBrief, replayLookup, runFsmCommit, stashPendingBrief,
+// fixturesRoot, runDirPath). All have production defaults so the runner
+// can call this with no extra args.
+export function handleWorkerStateBrief(brief, runId, opts = {}, _deps = {}) {
+  const replayMode = opts.replayMode ?? "live";
+  const resolveStorageRootFn = _deps.resolveStorageRoot ?? resolveStorageRoot;
+  const runEnvFn = _deps.runEnv ?? runEnv;
+  const hashKeyForBriefFn = _deps.hashKeyForBrief ?? hashKeyForBrief;
+  const replayLookupFn = _deps.replayLookup ?? replayLookup;
+  const runFsmCommitFn = _deps.runFsmCommit ?? runFsmCommit;
+  const stashPendingBriefFn = _deps.stashPendingBrief ?? stashPendingBrief;
+  const runDirPathFn = _deps.runDirPath ?? runDirPath;
+  const fixturesRoot = _deps.fixturesRoot ?? FIXTURES_ROOT;
+
+  const storageRoot = resolveStorageRootFn();
+  const env = runEnvFn(runId, { storageRoot });
+
+  // hashKeyForBrief can throw when the prompt template is unreadable.
+  let hashKey;
+  try {
+    hashKey = hashKeyForBriefFn(brief, env);
+  } catch (err) {
+    return {
+      kind: "fault",
+      payload: {
+        status: "fault",
+        run_id: runId,
+        fault: {
+          state: brief.state,
+          reason: `hash key compute failed: ${err?.message ?? String(err)}`,
+        },
+      },
+    };
+  }
+
+  // B7 replay mode: try to satisfy the worker call from a recorded fixture.
+  if (replayMode === "replay") {
+    let cached;
+    try {
+      cached = replayLookupFn(fixturesRoot, brief.state, hashKey);
+    } catch (err) {
+      return {
+        kind: "fault",
+        payload: {
+          status: "fault",
+          run_id: runId,
+          fault: {
+            state: brief.state,
+            reason: `replay-mode fixture corrupted: ${err?.message ?? String(err)}`,
+            hash_key: hashKey,
+          },
+        },
+      };
+    }
+    if (cached === null) {
+      return {
+        kind: "fault",
+        payload: {
+          status: "fault",
+          run_id: runId,
+          fault: {
+            state: brief.state,
+            reason: `replay-mode miss: no fixture for state="${brief.state}" hashKey=${hashKey.slice(0, 12)}...`,
+            hash_key: hashKey,
+          },
+        },
+      };
+    }
+    const commit = runFsmCommitFn({ runId, outputs: cached });
+    if (!commit.ok) {
+      return {
+        kind: "fault",
+        payload: {
+          status: "fault",
+          run_id: runId,
+          fault: { state: brief.state, reason: commit.error, details: commit.raw },
+        },
+      };
+    }
+    return { kind: "advance", payload: commit.payload };
+  }
+
+  // B7 record / live: stash the brief for --continue. Record-mode failures
+  // surface; live-mode stash is best-effort.
+  const dir = runDirPathFn(runId, { storageRoot });
+  try {
+    stashPendingBriefFn(dir, { state: brief.state, hashKey });
+  } catch (err) {
+    if (replayMode === "record") {
+      return {
+        kind: "fault",
+        payload: {
+          status: "fault",
+          run_id: runId,
+          fault: {
+            state: brief.state,
+            reason: `replay-mode=record: failed to stash pending brief: ${err?.message ?? String(err)}`,
+          },
+        },
+      };
+    }
+    // Live mode: stash is best-effort bookkeeping; safe to ignore.
+  }
+
+  return {
+    kind: "pause",
+    payload: { status: "awaiting_worker", run_id: runId, brief },
+  };
+}
+
 // Drive the loop from a starting brief: walk inline states, pause on workers,
 // stop on terminal. Returns the final status payload to emit.
 async function loop(brief, runId, { replayMode = "live" } = {}) {
@@ -432,97 +552,13 @@ async function loop(brief, runId, { replayMode = "live" } = {}) {
       };
     }
     if (current.has_worker) {
-      const storageRoot = resolveStorageRoot();
-      const env = runEnv(runId, { storageRoot });
-      // hashKeyForBrief can throw when the prompt template is unreadable
-      // (a misconfigured FSM YAML). Convert to an in-flow fault for the
-      // current state instead of letting the exception bubble out as an
-      // unhandled top-level {status:"error"}.
-      let hashKey;
-      try {
-        hashKey = hashKeyForBrief(current, env);
-      } catch (err) {
-        return {
-          status: "fault",
-          run_id: runId,
-          fault: {
-            state: current.state,
-            reason: `hash key compute failed: ${err?.message ?? String(err)}`,
-          },
-        };
-      }
-
-      // B7 replay mode: try to satisfy the worker call from a recorded
-      // fixture. On hit, auto-commit the recorded outputs and continue
-      // the loop without ever emitting awaiting_worker. On miss, return
-      // a fault — silent fall-through to live dispatch would defeat the
-      // determinism the harness exists to provide.
-      if (replayMode === "replay") {
-        // replayLookup throws on corrupted/unreadable fixtures; convert
-        // those to in-flow faults so the run stops cleanly instead of
-        // crashing out as a top-level error.
-        let cached;
-        try {
-          cached = replayLookup(FIXTURES_ROOT, current.state, hashKey);
-        } catch (err) {
-          return {
-            status: "fault",
-            run_id: runId,
-            fault: {
-              state: current.state,
-              reason: `replay-mode fixture corrupted: ${err?.message ?? String(err)}`,
-              hash_key: hashKey,
-            },
-          };
-        }
-        if (cached === null) {
-          return {
-            status: "fault",
-            run_id: runId,
-            fault: {
-              state: current.state,
-              reason: `replay-mode miss: no fixture for state="${current.state}" hashKey=${hashKey.slice(0, 12)}...`,
-              hash_key: hashKey,
-            },
-          };
-        }
-        const commit = runFsmCommit({ runId, outputs: cached });
-        if (!commit.ok) {
-          return {
-            status: "fault",
-            run_id: runId,
-            fault: { state: current.state, reason: commit.error, details: commit.raw },
-          };
-        }
-        current = commit.payload;
+      const result = handleWorkerStateBrief(current, runId, { replayMode });
+      if (result.kind === "advance") {
+        current = result.payload;
         continue;
       }
-
-      // B7 record mode: stash the brief so --continue knows where to file
-      // the captured outputs. Live mode also stashes (cheap, harmless) so
-      // a subsequent --replay-mode=record on --continue still works
-      // without requiring the original --start to have set the flag.
-      // In RECORD mode the stash is load-bearing — without it --continue
-      // can't persist the fixture — so a stash failure under record-mode
-      // must surface, not get swallowed.
-      const dir = runDirPath(runId, { storageRoot });
-      try {
-        stashPendingBrief(dir, { state: current.state, hashKey });
-      } catch (err) {
-        if (replayMode === "record") {
-          return {
-            status: "fault",
-            run_id: runId,
-            fault: {
-              state: current.state,
-              reason: `replay-mode=record: failed to stash pending brief: ${err?.message ?? String(err)}`,
-            },
-          };
-        }
-        // Live mode: stash is best-effort bookkeeping; safe to ignore.
-      }
-
-      return { status: "awaiting_worker", run_id: runId, brief: current };
+      // "pause" (awaiting_worker) and "fault" both terminate this call.
+      return result.payload;
     }
     const dispatch = await dispatchInlineState(current, runId);
     if (!dispatch.ok) {

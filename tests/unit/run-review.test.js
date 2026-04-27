@@ -13,6 +13,7 @@ import {
   stateIdToModuleName,
   isValidGitRef,
   repoRelativePromptPath,
+  handleWorkerStateBrief,
 } from "../../scripts/run-review.mjs";
 
 test("parseArgs: --flag value pairs become entries", () => {
@@ -147,6 +148,141 @@ test("repoRelativePromptPath: rejects path traversal and absolute paths", () => 
   // which escapes the intended repo-relative scope.
   assert.throws(() => repoRelativePromptPath("\\Windows\\System32"), /traversal|absolute|UNC/);
   assert.throws(() => repoRelativePromptPath("\\\\server\\share\\file"), /traversal|absolute|UNC/);
+});
+
+test("handleWorkerStateBrief: replay HIT auto-commits and advances", () => {
+  // Replay returns a recorded fixture; the helper must run fsm-commit
+  // and return kind:"advance" with the new payload, never emitting
+  // awaiting_worker on a hit.
+  const fakeBrief = { state: "llm_trim", has_worker: true };
+  const recordedOutputs = { picked_leaves: [], rejected_leaves: [], coverage_rescues: [] };
+  const result = handleWorkerStateBrief(
+    fakeBrief,
+    "run-1",
+    { replayMode: "replay" },
+    {
+      resolveStorageRoot: () => "/tmp",
+      runEnv: () => ({}),
+      hashKeyForBrief: () => "a".repeat(64),
+      replayLookup: () => recordedOutputs,
+      runFsmCommit: ({ runId, outputs }) => {
+        assert.equal(runId, "run-1");
+        assert.deepEqual(outputs, recordedOutputs);
+        return { ok: true, payload: { state: "next-state", has_worker: false } };
+      },
+      stashPendingBrief: () => {},
+      runDirPath: () => "/tmp/run",
+      fixturesRoot: "/tmp/fixtures",
+    },
+  );
+  assert.equal(result.kind, "advance");
+  assert.equal(result.payload.state, "next-state");
+});
+
+test("handleWorkerStateBrief: replay MISS faults with hash_key in details", () => {
+  const result = handleWorkerStateBrief(
+    { state: "llm_trim", has_worker: true },
+    "run-1",
+    { replayMode: "replay" },
+    {
+      resolveStorageRoot: () => "/tmp",
+      runEnv: () => ({}),
+      hashKeyForBrief: () => "b".repeat(64),
+      replayLookup: () => null,
+      runFsmCommit: () => assert.fail("must not commit on a miss"),
+      stashPendingBrief: () => {},
+      runDirPath: () => "/tmp/run",
+      fixturesRoot: "/tmp/fixtures",
+    },
+  );
+  assert.equal(result.kind, "fault");
+  assert.equal(result.payload.status, "fault");
+  assert.match(result.payload.fault.reason, /replay-mode miss/);
+  assert.equal(result.payload.fault.hash_key, "b".repeat(64));
+});
+
+test("handleWorkerStateBrief: replay corrupted fixture surfaces as fault, not crash", () => {
+  const result = handleWorkerStateBrief(
+    { state: "llm_trim", has_worker: true },
+    "run-1",
+    { replayMode: "replay" },
+    {
+      resolveStorageRoot: () => "/tmp",
+      runEnv: () => ({}),
+      hashKeyForBrief: () => "c".repeat(64),
+      replayLookup: () => { throw new Error("invalid JSON in fixture"); },
+      runFsmCommit: () => assert.fail("must not commit when lookup throws"),
+      stashPendingBrief: () => {},
+      runDirPath: () => "/tmp/run",
+      fixturesRoot: "/tmp/fixtures",
+    },
+  );
+  assert.equal(result.kind, "fault");
+  assert.match(result.payload.fault.reason, /fixture corrupted/);
+});
+
+test("handleWorkerStateBrief: hash compute failure surfaces as in-flow fault", () => {
+  const result = handleWorkerStateBrief(
+    { state: "llm_trim", has_worker: true },
+    "run-1",
+    { replayMode: "live" },
+    {
+      resolveStorageRoot: () => "/tmp",
+      runEnv: () => ({}),
+      hashKeyForBrief: () => { throw new Error("prompt template not readable"); },
+      replayLookup: () => assert.fail("must not look up when hash fails"),
+      runFsmCommit: () => assert.fail("must not commit"),
+      stashPendingBrief: () => {},
+      runDirPath: () => "/tmp/run",
+      fixturesRoot: "/tmp/fixtures",
+    },
+  );
+  assert.equal(result.kind, "fault");
+  assert.match(result.payload.fault.reason, /hash key compute failed/);
+});
+
+test("handleWorkerStateBrief: record-mode stash failure surfaces as fault", () => {
+  const result = handleWorkerStateBrief(
+    { state: "llm_trim", has_worker: true },
+    "run-1",
+    { replayMode: "record" },
+    {
+      resolveStorageRoot: () => "/tmp",
+      runEnv: () => ({}),
+      hashKeyForBrief: () => "d".repeat(64),
+      replayLookup: () => null,
+      runFsmCommit: () => assert.fail("must not commit"),
+      stashPendingBrief: () => { throw new Error("disk full"); },
+      runDirPath: () => "/tmp/run",
+      fixturesRoot: "/tmp/fixtures",
+    },
+  );
+  assert.equal(result.kind, "fault");
+  assert.match(result.payload.fault.reason, /failed to stash pending brief/);
+});
+
+test("handleWorkerStateBrief: live-mode pauses with awaiting_worker even when stash fails", () => {
+  // Stash is best-effort in live mode; a write failure must NOT abort
+  // the run. The helper still returns kind:"pause" / awaiting_worker.
+  const brief = { state: "llm_trim", has_worker: true };
+  const result = handleWorkerStateBrief(
+    brief,
+    "run-1",
+    { replayMode: "live" },
+    {
+      resolveStorageRoot: () => "/tmp",
+      runEnv: () => ({}),
+      hashKeyForBrief: () => "e".repeat(64),
+      replayLookup: () => null,
+      runFsmCommit: () => assert.fail("must not commit"),
+      stashPendingBrief: () => { throw new Error("disk full"); },
+      runDirPath: () => "/tmp/run",
+      fixturesRoot: "/tmp/fixtures",
+    },
+  );
+  assert.equal(result.kind, "pause");
+  assert.equal(result.payload.status, "awaiting_worker");
+  assert.equal(result.payload.brief, brief);
 });
 
 test("isValidGitRef: rejects shell metacharacters, leading dash, overlong", () => {

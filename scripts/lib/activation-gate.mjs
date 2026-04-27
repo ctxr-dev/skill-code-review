@@ -50,7 +50,15 @@ function keywordMatches(keywords, diffText) {
   if (!Array.isArray(keywords) || keywords.length === 0) return false;
   if (!diffText) return false;
   const lower = diffText.toLowerCase();
-  return keywords.some((kw) => typeof kw === "string" && lower.includes(kw.toLowerCase()));
+  return keywords.some((kw) => {
+    if (typeof kw !== "string") return false;
+    // An empty / whitespace-only keyword would `includes("")` to true on
+    // every diff, activating leaves spuriously. Reject those defensively
+    // (the corpus validator should reject them upstream too).
+    const norm = kw.trim();
+    if (norm.length === 0) return false;
+    return lower.includes(norm.toLowerCase());
+  });
 }
 
 // Project Profile is a flat-ish structure with arrays per category. A

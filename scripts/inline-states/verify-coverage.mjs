@@ -45,19 +45,26 @@ import { minimatch } from "../lib/minimatch-shim.mjs";
 const _leafGlobsCache = new Map();
 function readLeafGlobs(repoRoot, leafPath) {
   if (typeof leafPath !== "string" || leafPath.length === 0) return null;
-  // Resolve against repo root; reject anything that escapes the wiki. Use
-  // path.relative + a `..`/absolute check rather than `abs.startsWith(wikiRoot)`
-  // — the prefix check would accept `reviewers.wiki-malicious/...` because
-  // it shares the leading string with `reviewers.wiki`.
+  // The wiki carries leaf paths in two shapes:
+  //   1. Relative to wikiRoot (e.g. `formatter-eslint/lang-typescript.md`).
+  //   2. Relative to repoRoot (e.g. `reviewers.wiki/formatter-eslint/...`).
+  // Try both, preferring wiki-relative first since that's how index.md
+  // entries are written. Reject anything that escapes the wiki via a
+  // path.relative + boundary check (NOT `abs.startsWith(wikiRoot)` — that
+  // would accept `reviewers.wiki-malicious/...`).
   const wikiRoot = resolve(repoRoot, "reviewers.wiki");
-  const abs = resolve(repoRoot, leafPath);
-  const rel = relative(wikiRoot, abs);
-  if (rel.startsWith("..") || rel.startsWith(sep) || rel === "") return null;
-  if (_leafGlobsCache.has(abs)) return _leafGlobsCache.get(abs);
-  if (!existsSync(abs)) {
-    _leafGlobsCache.set(abs, null);
-    return null;
+  const candidates = [resolve(wikiRoot, leafPath), resolve(repoRoot, leafPath)];
+  let abs = null;
+  for (const candidate of candidates) {
+    const rel = relative(wikiRoot, candidate);
+    if (rel.startsWith("..") || rel.startsWith(sep) || rel === "") continue;
+    if (existsSync(candidate)) {
+      abs = candidate;
+      break;
+    }
   }
+  if (abs === null) return null;
+  if (_leafGlobsCache.has(abs)) return _leafGlobsCache.get(abs);
   let text;
   try {
     text = readFileSync(abs, "utf8");

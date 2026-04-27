@@ -253,7 +253,7 @@ If `scope-framework=<f1>,<f2>,...` is set: restrict the descent to leaves whose 
 
 ## Step 4: LLM Trim
 
-> **Action body for FSM state `llm_trim`.** Worker: [`fsm/workers/trim-candidates.md`](fsm/workers/trim-candidates.md) (role: `trim-candidates`). Once SC-B8 ([`#13`](https://github.com/ctxr-dev/skill-code-review/issues/13)) lands, `scripts/lib/trim-output-validator.mjs` will run after the worker output and abort the run on fabricated `picked_leaves[].id`, `coverage_rescues[].file`, etc. The runner is authoritative; this prose documents intent.
+> **Action body for FSM state `llm_trim`.** Worker: [`fsm/workers/trim-candidates.md`](fsm/workers/trim-candidates.md) (role: `trim-candidates`). Once SC-B8 ([`#13`](https://github.com/ctxr-dev/skill-code-review/issues/13)) lands, a referential-integrity validator at `scripts/lib/trim-output-validator.mjs` will run after the worker output and abort the run on fabricated `picked_leaves[].id`, `coverage_rescues[].file`, etc. (Plain text rather than a link: the file is added by #13 and is not present on this branch.) The runner is authoritative; this prose documents intent.
 
 Pick the final K = `cap` leaves from Step 3's candidates with explicit per-pick justifications. One sub-agent dispatch (or inline reasoning).
 

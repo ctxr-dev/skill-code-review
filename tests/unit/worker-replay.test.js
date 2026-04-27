@@ -82,6 +82,34 @@ test("computeHashKey: same inputs → same hash; any input change → different 
   assert.notEqual(a, diffInputs);
 });
 
+test("computeHashKey: throws when promptTemplate is unreadable under a given repoRoot", () => {
+  // A bad promptTemplate path under a real repoRoot must surface — silent
+  // empty-content fallback would mask a bug as a systematic replay miss.
+  const root = mkdtempSync(join(tmpdir(), "replay-prompt-"));
+  try {
+    assert.throws(
+      () =>
+        computeHashKey({
+          state: "llm_trim",
+          promptTemplate: "fsm/workers/does-not-exist.md",
+          inputs: {},
+          repoRoot: root,
+        }),
+      /prompt template not readable/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+  // Back-compat: without repoRoot, prompt-content hashing is opt-out;
+  // a missing file does NOT throw — only the path is hashed.
+  const hash = computeHashKey({
+    state: "llm_trim",
+    promptTemplate: "fsm/workers/does-not-exist.md",
+    inputs: {},
+  });
+  assert.match(hash, /^[a-f0-9]{64}$/);
+});
+
 test("computeHashKey: input key order doesn't affect the hash (canonical JSON)", () => {
   const a = computeHashKey({
     state: "s",

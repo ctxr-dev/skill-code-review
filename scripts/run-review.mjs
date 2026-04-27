@@ -570,11 +570,17 @@ async function main() {
         );
       }
       try {
+        // Don't write a wall-clock timestamp into the fixture meta — the
+        // whole point of canonicalized record mode is byte-stable
+        // refresh, and a per-record `recorded_at` would force a diff
+        // every time a maintainer re-records the same logical brief.
+        // The run id is similarly per-invocation noise. recordOutputs
+        // skips the meta wrapper entirely when meta is null, so the
+        // fixture body collapses to `{ outputs: <outputs> }`.
         recordOutputs(FIXTURES_ROOT, {
           state: stash.state,
           hashKey: stash.hashKey,
           outputs,
-          meta: { recorded_at: new Date().toISOString(), run_id: runId },
         });
         clearPendingBrief(dir);
       } catch (err) {

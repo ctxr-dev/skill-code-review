@@ -113,16 +113,23 @@ export function computeHashKey({ state, promptTemplate, inputs, repoRoot }) {
   h.update(String(promptTemplate ?? ""));
   h.update("\u001f");
   // Hash the prompt body when we can read it, so a content edit invalidates
-  // every recorded fixture for that worker. Missing / unreadable file is
-  // captured as the empty-content marker so the hash is still defined.
+  // every recorded fixture for that worker. A missing / unreadable file
+  // when a `repoRoot` AND `promptTemplate` were both provided is treated
+  // as a hard error: it's almost always a misconfigured promptTemplate
+  // path, and silently mapping it to "" would mask a bug as a systematic
+  // replay miss that's hard to root-cause. When `repoRoot` is omitted
+  // (back-compat for callers without repo-root context), we fall back to
+  // hashing only the path — that mode is documented and intentional.
   let promptBody = "";
   if (typeof repoRoot === "string" && typeof promptTemplate === "string" && promptTemplate.length > 0) {
     const candidate = resolve(repoRoot, promptTemplate);
     try {
       promptBody = readFileSync(candidate, "utf8");
-    } catch {
-      // Treat unreadable prompts as empty; the hash still differs from
-      // any fixture recorded against a real prompt.
+    } catch (err) {
+      throw new Error(
+        `computeHashKey: prompt template not readable at ${candidate} (${err.code ?? err.message}). ` +
+          `Check that promptTemplate is correct relative to repoRoot. To opt out of content hashing, omit repoRoot.`,
+      );
     }
   }
   h.update(promptBody);

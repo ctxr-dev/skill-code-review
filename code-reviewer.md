@@ -168,7 +168,7 @@ repo: <name>
 
 > **Action body for FSM state `risk_tier_triage`.** Inline-state handler: [`scripts/inline-states/risk-tier-triage.mjs`](scripts/inline-states/risk-tier-triage.mjs). Pure-function: same `(changed_paths, diff_stats, project_profile, args) → (tier, cap, risk_signals)` for every run. The runner is authoritative; this prose documents intent.
 
-Bucket the diff into one of four tiers. The tier sets the upper bound on specialist count and gates short-circuit.
+Bucket the diff into one of four tiers. The tier sets the upper bound on specialist count and gates the short-circuit transition (the FSM moves directly from `risk_tier_triage` to `short_circuit_exit` when `tier == 'trivial'` AND `len(risk_signals) == 0` AND no scope-overrides — no Step 3 round-trip required).
 
 ### Tier rules
 
@@ -378,7 +378,7 @@ Build a coverage matrix: for every file in the diff, list which specialists revi
 
 > **Action body for FSM state `synthesize_release_readiness`.** Inline-state handler: [`scripts/inline-states/synthesize-release-readiness.mjs`](scripts/inline-states/synthesize-release-readiness.mjs). The eight-gate predicate match against picked leaf dimensions, the verdict computation, and the B4 hard-coverage-rule promotion to NO-GO all live in code there — the prose below describes intent. The runner is authoritative.
 
-Apply the 8-gate release readiness framework using the deduplicated findings from Step 7. Gate-to-specialist binding is **predicate-based on each leaf's `dimensions:` and `tags:`**.
+Apply the 8-gate release readiness framework using the deduplicated findings from Step 7. Gate-to-specialist binding is **predicate-based**, using each leaf's `dimensions:` array (passed through tree_descend's response_schema) and a tag-like signal derived from the leaf id. The runtime predicates live in `synthesize-release-readiness.mjs`'s `GATE_DEFINITIONS`. Tags are not currently in the run env (the trim worker emits dimensions but not tags); the inline-state handler approximates tags from kebab-case segments of the leaf id, plus the full id, plus 2-4 segment slides — so a leaf id like `error-handling-async` matches both single-token (`error`, `handling`, `async`) and compound (`error-handling`, `handling-async`) tags. Lifting `tags:` into the env (via the trim worker's response_schema) is tracked for a later sprint.
 
 The 7-axis dimensions taxonomy (`architecture`, `correctness`, `documentation`, `performance`, `readability`, `security`, `tests`) covers the 8 gates as follows:
 

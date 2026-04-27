@@ -340,7 +340,7 @@ async function main() {
     if (!baseSha || !headSha) {
       fail("--start requires --base <sha> and --head <sha>");
     }
-    const refSyntax = "alnum / _ . / - @ ^ ~ { } :, no leading dash, ≤255 chars";
+    const refSyntax = "alnum / _ . / - @ ^ ~ { }, no leading dash, ≤255 chars";
     if (!isValidGitRef(baseSha)) {
       fail(`--base must be a valid git ref/SHA/revspec (${refSyntax}); got: ${baseSha}`);
     }

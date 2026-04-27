@@ -853,6 +853,21 @@ async function main() {
           { state: stash.state, hash_key: stash.hashKey },
         );
       }
+    } else {
+      // Live / replay --continue: even when we're not recording the
+      // current step, clear any previous-step stash if it's there.
+      // Otherwise a stash left over from a record-mode --start could
+      // be picked up by a later record-mode --continue against the
+      // wrong outputs (the stash is keyed only on `{state, hashKey}`,
+      // not on the specific output payload). Best-effort: a missing
+      // run dir or unreadable stash is the harmless case.
+      try {
+        const storageRoot = resolveStorageRoot();
+        const dir = runDirPath(runId, { storageRoot });
+        clearPendingBrief(dir);
+      } catch {
+        // ignore — clearing is best-effort housekeeping, not load-bearing
+      }
     }
 
     emit(await loop(commit.payload, runId, { replayMode }));

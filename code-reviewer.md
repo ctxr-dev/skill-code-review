@@ -518,7 +518,7 @@ Read `report-format.md` for the canonical report structure.
 
 - Run Step 1 (Deep Project Scan) before any other step.
 - Run Step 2 (Risk-Tier Triage) before any LLM call. The tier sets the specialist cap and gates the short-circuit.
-- Honour the short-circuit clause: trivial diffs with no Step 3 activation match exit with empty findings and a GO verdict.
+- Honour the short-circuit clause: when Step 2 returns `tier == trivial` AND no risk signals AND no `scope-*` override, the FSM transitions directly from `risk_tier_triage` to `short_circuit_exit` (Step 3 does not run on this path); the run exits with empty findings and a GO verdict.
 - Run Step 3 (Tree Descent): an LLM worker walks by parent `focus` semantically, but the per-leaf `activation:` evaluation is deterministic (file-glob / structural-signal / escalation matching, not judgement). Output a candidate set carrying explicit activation-match reasons.
 - Run Step 4 (LLM Trim) on Step 3's candidates. Each pick carries a justification. Each rejection carries a reason.
 - Enforce coverage in Step 4: every file in the diff is covered by ≥ 2 picked leaves; rescue from rejected when needed.

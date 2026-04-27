@@ -4,8 +4,22 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 import { validateTrimOutput } from "../../scripts/lib/trim-output-validator.mjs";
+
+// Reserve a portable, definitely-empty repo root for tests that need a
+// repoRoot which does NOT contain reviewers.wiki/. mkdtempSync + rmSync
+// gives a path that's guaranteed unique AND not on disk — works on
+// Windows + POSIX, and never collides with an existing tree.
+const _t = mkdtempSync(join(tmpdir(), "trim-validator-no-wiki-"));
+rmSync(_t, { recursive: true, force: true });
+const NONEXISTENT_REPO_ROOT = _t;
+if (existsSync(NONEXISTENT_REPO_ROOT)) {
+  throw new Error("test setup failed: NONEXISTENT_REPO_ROOT still exists");
+}
 
 // Use real wiki ids + paths so the file-resolution check (class 2) doesn't
 // false-fail the valid fixture. lang-typescript is committed at
@@ -58,7 +72,7 @@ test("validateTrimOutput: rejects picked_leaves[].path that doesn't resolve (cla
   out.picked_leaves[0].path = "made-up/does-not-exist.md";
   const result = validateTrimOutput(out, VALID_ENV, {
     knownLeafIds: KNOWN_IDS,
-    repoRoot: "/tmp/nonexistent-repo-root-for-test",
+    repoRoot: NONEXISTENT_REPO_ROOT,
   });
   // `knownLeafIds` short-circuits the class-1 wiki walk (the validator
   // accepts the explicit allow-list as the source of truth), so this

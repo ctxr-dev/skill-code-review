@@ -91,10 +91,21 @@ export function enumerateWikiLeaves(repoRoot, { useCache = true } = {}) {
         continue;
       }
       if (!isInside(realRoot, realFull)) continue;
-      if (
-        lst.isDirectory() ||
-        (lst.isSymbolicLink() && existsSync(realFull) && lstatSync(realFull).isDirectory())
-      ) {
+      // Determine if `realFull` is a directory we should descend into.
+      // Direct directory entry → yes. Symlink that resolves to a
+      // directory → yes (already inside-bounds via isInside). Wrap the
+      // realFull stat in try/catch so a TOCTOU race (target disappeared
+      // / unreadable between existsSync and lstatSync) doesn't crash
+      // the validator; treat the entry as not-a-dir and skip.
+      let isDescendable = lst.isDirectory();
+      if (!isDescendable && lst.isSymbolicLink() && existsSync(realFull)) {
+        try {
+          isDescendable = lstatSync(realFull).isDirectory();
+        } catch {
+          isDescendable = false;
+        }
+      }
+      if (isDescendable) {
         if (visited.has(realFull)) continue;
         visited.add(realFull);
         stack.push(realFull);
@@ -159,7 +170,13 @@ function leafPathExists(repoRoot, leafPath) {
       continue;
     }
     if (!isInside(realWiki, real)) continue;
-    if (lstatSync(real).isFile()) return true;
+    // Same TOCTOU guard as enumerateWikiLeaves: if the entry vanished
+    // between existsSync and lstatSync, treat as not-a-file and skip.
+    try {
+      if (lstatSync(real).isFile()) return true;
+    } catch {
+      // ignore — try next candidate
+    }
   }
   return false;
 }
@@ -210,7 +227,7 @@ export function validateTrimOutput(outputs, env, opts = {}) {
       continue;
     }
     if (!leafPathExists(repoRoot, leaf.path)) {
-      errors.push(`picked_leaves[id=${leaf.id}].path "${leaf.path}" does not resolve to a real wiki file`);
+      errors.push(`picked_leaves[id=${leaf.id ?? "?"}].path "${leaf.path}" does not resolve to a real wiki file`);
     }
   }
 

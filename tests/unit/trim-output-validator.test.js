@@ -111,6 +111,32 @@ test("validateTrimOutput: rejects picked_leaves[].path that doesn't resolve (cla
   );
 });
 
+test("validateTrimOutput: class 2 rejects non-leaf wiki paths (index.md, dotfiles, non-md)", () => {
+  // A path that resolves to a real file under reviewers.wiki/ but isn't
+  // a leaf (cluster index, dotfile, non-markdown) must NOT pass class 2.
+  // Without this, a worker could fabricate
+  // `picked_leaves[].path = "cluster-a/index.md"` and bypass the gate.
+  const indexPath = join(HERMETIC_REPO_ROOT, "reviewers.wiki", "cluster-a", "index.md");
+  const dotPath = join(HERMETIC_REPO_ROOT, "reviewers.wiki", "cluster-a", ".gitignore");
+  const txtPath = join(HERMETIC_REPO_ROOT, "reviewers.wiki", "cluster-a", "notes.txt");
+  writeFileSync(indexPath, "---\nid: index\ntype: cluster\n---\n");
+  writeFileSync(dotPath, "");
+  writeFileSync(txtPath, "scratch");
+  for (const badPath of ["cluster-a/index.md", "cluster-a/.gitignore", "cluster-a/notes.txt"]) {
+    const out = {
+      picked_leaves: [{ id: "fake-lang", path: badPath, justification: "x", dimensions: [] }],
+      rejected_leaves: [],
+      coverage_rescues: [],
+    };
+    const result = validateTrimOutput(out, VALID_ENV, hermeticOpts());
+    assert.equal(result.ok, false);
+    assert.ok(
+      result.errors.some((e) => e.includes("does not resolve to a real wiki file")),
+      `expected class-2 rejection for non-leaf path "${badPath}", got: ${result.errors.join("; ")}`,
+    );
+  }
+});
+
 test("validateTrimOutput: rejects picked_leaves not in stage_a_candidates (class 3, id mismatch)", () => {
   // fake-sec is a real wiki id and resolves to a real file — but it is NOT
   // in stage_a_candidates for this scenario. Class 1 + class 2 must both

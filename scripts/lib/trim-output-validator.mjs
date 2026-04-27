@@ -179,8 +179,18 @@ function looksLikeTrimOutput(outputs) {
 // then repo-relative; reject anything that escapes via realpath. Uses the
 // shared isInside() helper so the Windows cross-drive case (where
 // path.relative() returns an absolute path) gets rejected.
+//
+// "Leaf" means a wiki *leaf* markdown file. The file extension must be
+// `.md`, the basename cannot be `index.md` (that's a cluster summary,
+// not a leaf), and the basename can't begin with a dot (no
+// `.gitignore` / metadata). Without these the picked path could
+// resolve to a real-but-non-leaf file and pass class 2 even though the
+// trim worker fabricated the path.
 function leafPathExists(repoRoot, leafPath) {
   if (typeof leafPath !== "string" || leafPath.length === 0) return false;
+  if (!leafPath.endsWith(".md")) return false;
+  const base = leafPath.split("/").pop();
+  if (!base || base === "index.md" || base.startsWith(".")) return false;
   const wikiRoot = resolve(repoRoot, "reviewers.wiki");
   let realWiki;
   try {

@@ -51,10 +51,18 @@ export function runTrimValidationGate(runId, outputs) {
     const storageRoot = resolveStorageRoot();
     env = runEnv(runId, { storageRoot });
   } catch (err) {
-    fail(
-      `llm_trim validation: failed to read run env (${err.code ?? ""} ${err.message}).`.trim(),
-      { state: "llm_trim", run_id: runId },
+    // Build the parenthetical from defined parts only so we don't emit
+    // awkward strings like "( something)" or "(undefined ...)" when the
+    // thrown value lacks `code` or `message`. Falls back to the
+    // stringified value when neither is present.
+    const parts = [err?.code, err?.message ?? (typeof err === "string" ? err : null)].filter(
+      (p) => typeof p === "string" && p.length > 0,
     );
+    const detail = parts.length > 0 ? ` (${parts.join(": ")})` : "";
+    fail(`llm_trim validation: failed to read run env${detail}.`, {
+      state: "llm_trim",
+      run_id: runId,
+    });
   }
   const v = validateTrimOutput(outputs, env, { repoRoot: REPO_ROOT });
   if (!v.ok) {

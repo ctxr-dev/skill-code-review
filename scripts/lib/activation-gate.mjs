@@ -32,7 +32,14 @@ import { minimatch } from "./minimatch-shim.mjs";
 function fileGlobsMatch(globs, changedPaths) {
   if (!Array.isArray(globs) || globs.length === 0) return false;
   for (const glob of globs) {
+    // Skip non-string entries — minimatch's compileGlob walks `glob.length`
+    // and would throw on null/number/object. The reviewer-frontmatter
+    // validator (validate-body-shape.mjs) is supposed to reject these
+    // upstream; this guard is defensive against a malformed leaf reaching
+    // the runtime evaluator anyway.
+    if (typeof glob !== "string" || glob.length === 0) continue;
     for (const path of changedPaths) {
+      if (typeof path !== "string") continue;
       if (minimatch(path, glob)) return true;
     }
   }

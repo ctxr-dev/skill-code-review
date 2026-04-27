@@ -67,6 +67,18 @@ function renderMethodologyTable(payload) {
   return lines;
 }
 
+// Escape a value for inclusion in a markdown table cell. `|` is the column
+// separator and `\n` ends the row; either one in raw form would corrupt the
+// table layout. Issue titles / fixes routinely include code like `a | b`,
+// so escape them on the way in.
+function mdCell(value) {
+  if (value === null || value === undefined) return "—";
+  return String(value)
+    .replace(/\\/g, "\\\\")
+    .replace(/\|/g, "\\|")
+    .replace(/\r?\n/g, " ");
+}
+
 function fileLink(file, line) {
   // The report.md lives under `.skill-code-review/<shard>/<run-id>/`, three
   // levels deep from the repo root. A relative link like `src/x.ts#L42`
@@ -91,7 +103,7 @@ function renderIssuesSection(issues) {
     out.push("|---|-----------|----------|-------|--------|-----|");
     for (const i of buckets.critical) {
       out.push(
-        `| ${i.id} | ${i.specialist ?? "—"} | ${fileLink(i.file, i.line)} | ${i.title ?? "—"} | ${i.impact ?? "—"} | ${i.fix ?? "—"} |`,
+        `| ${i.id} | ${mdCell(i.specialist)} | ${fileLink(i.file, i.line)} | ${mdCell(i.title)} | ${mdCell(i.impact)} | ${mdCell(i.fix)} |`,
       );
     }
     out.push("");
@@ -102,7 +114,7 @@ function renderIssuesSection(issues) {
     out.push("|---|-----------|----------|-------|--------|-----|");
     for (const i of buckets.important) {
       out.push(
-        `| ${i.id} | ${i.specialist ?? "—"} | ${fileLink(i.file, i.line)} | ${i.title ?? "—"} | ${i.impact ?? "—"} | ${i.fix ?? "—"} |`,
+        `| ${i.id} | ${mdCell(i.specialist)} | ${fileLink(i.file, i.line)} | ${mdCell(i.title)} | ${mdCell(i.impact)} | ${mdCell(i.fix)} |`,
       );
     }
     out.push("");
@@ -113,7 +125,7 @@ function renderIssuesSection(issues) {
     out.push("|---|-----------|----------|-------|-----|");
     for (const i of buckets.minor) {
       out.push(
-        `| ${i.id} | ${i.specialist ?? "—"} | ${fileLink(i.file, i.line)} | ${i.title ?? "—"} | ${i.fix ?? "—"} |`,
+        `| ${i.id} | ${mdCell(i.specialist)} | ${fileLink(i.file, i.line)} | ${mdCell(i.title)} | ${mdCell(i.fix)} |`,
       );
     }
     out.push("");
@@ -144,7 +156,7 @@ function renderToolResults(tools) {
       t.status === "skipped" && t.reason
         ? `SKIP (${t.reason})`
         : (t.status ?? "—").toUpperCase();
-    out.push(`| ${t.name ?? "—"} | ${status} | ${t.findings ?? "—"} | ${t.specialist ?? "—"} |`);
+    out.push(`| ${mdCell(t.name)} | ${status} | ${t.findings ?? "—"} | ${mdCell(t.specialist)} |`);
   }
   out.push("");
   return out;
@@ -160,7 +172,7 @@ function renderSpecialists(specialists) {
   ];
   for (const s of specialists) {
     out.push(
-      `| ${s.id ?? "—"} | ${(s.status ?? "—").toUpperCase()} | ${s.critical ?? 0} | ${s.important ?? 0} | ${s.minor ?? 0} | ${s.key_finding ?? "—"} |`,
+      `| ${mdCell(s.id)} | ${(s.status ?? "—").toUpperCase()} | ${s.critical ?? 0} | ${s.important ?? 0} | ${s.minor ?? 0} | ${mdCell(s.key_finding)} |`,
     );
   }
   out.push("");

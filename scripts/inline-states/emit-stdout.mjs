@@ -33,7 +33,7 @@ const SEVERITY_RANK = { minor: 1, important: 2, critical: 3 };
 //              notice so the user knows the flag was seen but ignored,
 //              and fall back to markdown rather than silently treating it
 //              as the default.
-export function resolveFormat(argsBag, { isTTY = process.stdout.isTTY ?? true } = {}) {
+export function resolveFormat(argsBag, { isTTY = process.stdout.isTTY === true } = {}) {
   // Per report-format.md the default is `auto`: emit markdown for direct
   // user invocation, JSON when dispatched as a subagent / piped consumer.
   // We can't introspect "subagent vs user" from inside the runner, so

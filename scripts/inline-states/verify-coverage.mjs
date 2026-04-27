@@ -20,13 +20,13 @@
 //
 // We build the matrix from THREE sources:
 //   (a) each finding's `flagged_by[]` (specialists that produced findings on the file),
-//   (b) all picked_leaves (every picked leaf is presumed to have inspected
-//       its activated files even when emitting empty findings — silence is
-//       precision),
+//   (b) picked_leaves narrowed by their own `activation.file_globs[]` (a leaf
+//       only covers a file if its globs match the file; leaves with no
+//       file_globs — focus_only, escalation_from — are credited broadly),
 //   (c) coverage_rescues — each rescue maps a file → leaf that was promoted
 //       precisely to lift that file's coverage.
-// Source (b) is deliberately broad: until B3's per-leaf scope narrowing is
-// wired into the FSM, we credit every picked leaf with every changed file.
+
+import { minimatch } from "../lib/minimatch-shim.mjs";
 
 function ensureSet(map, key) {
   let s = map.get(key);
@@ -60,11 +60,29 @@ export default async function verifyCoverage({ env }) {
     }
   }
 
-  // Until B3 narrows per-leaf scope, credit every picked leaf with every changed file.
-  for (const file of changedPaths) {
-    const set = ensureSet(reviewersByFile, file);
-    for (const leaf of pickedLeaves) {
-      if (leaf.id) set.add(leaf.id);
+  // Per-leaf scope narrowing: when a picked leaf carries an
+  // `activation.file_globs[]` block, only credit it for files that match
+  // the globs (matching the orchestrator's "per file covered by ≥2
+  // specialists via file_globs" rule). Leaves with no file_globs (e.g.
+  // focus_only or escalation_from picks) are credited broadly across all
+  // changed files because they don't have a path-shaped scope to narrow
+  // against. This is a tighter contract than the original "every leaf
+  // covers every file" approximation, which made coverage_gaps depend
+  // almost entirely on picked_leaves.length.
+  for (const leaf of pickedLeaves) {
+    if (!leaf.id) continue;
+    const globs = Array.isArray(leaf.activation?.file_globs) ? leaf.activation.file_globs : [];
+    if (globs.length === 0) {
+      for (const file of changedPaths) ensureSet(reviewersByFile, file).add(leaf.id);
+      continue;
+    }
+    for (const file of changedPaths) {
+      for (const glob of globs) {
+        if (typeof glob === "string" && minimatch(file, glob)) {
+          ensureSet(reviewersByFile, file).add(leaf.id);
+          break;
+        }
+      }
     }
   }
 

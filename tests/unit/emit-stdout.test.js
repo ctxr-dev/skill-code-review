@@ -15,12 +15,17 @@ import {
   applyScopeFilters,
 } from "../../scripts/inline-states/emit-stdout.mjs";
 
-test("resolveFormat: defaults to markdown, accepts json, normalises case", () => {
-  assert.equal(resolveFormat({}), "markdown");
-  assert.equal(resolveFormat({ format: "markdown" }), "markdown");
-  assert.equal(resolveFormat({ format: "json" }), "json");
-  assert.equal(resolveFormat({ format: "JSON" }), "json");
-  assert.equal(resolveFormat(null), "markdown");
+test("resolveFormat: missing format → auto routing (TTY → markdown, pipe → json)", () => {
+  assert.equal(resolveFormat({}, { isTTY: true }), "markdown");
+  assert.equal(resolveFormat({}, { isTTY: false }), "json");
+  assert.equal(resolveFormat(null, { isTTY: true }), "markdown");
+  assert.equal(resolveFormat(null, { isTTY: false }), "json");
+});
+
+test("resolveFormat: explicit values override auto routing, normalise case", () => {
+  assert.equal(resolveFormat({ format: "markdown" }, { isTTY: false }), "markdown");
+  assert.equal(resolveFormat({ format: "json" }, { isTTY: true }), "json");
+  assert.equal(resolveFormat({ format: "JSON" }, { isTTY: true }), "json");
 });
 
 test("resolveFormat: auto picks json when stdout is not a TTY", () => {

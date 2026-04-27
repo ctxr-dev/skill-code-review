@@ -15,7 +15,7 @@ When the skill is invoked, parse arguments from the invocation context as `key=v
 | Argument | Values | Default | Description |
 |----------|--------|---------|-------------|
 | help | (flag) | — | Print this argument table and exit. No review is run. |
-| format | auto, markdown, json, yaml | auto | Output format. auto = markdown for direct user, JSON when dispatched as subagent. |
+| format | auto, markdown, json | auto | Output format. `auto` resolves via the stdout TTY heuristic in `emit-stdout.mjs`: markdown when stdout is a TTY (interactive user), JSON otherwise (piped consumer / sub-agent). `yaml` is reserved for a future PR; passing it today emits a stderr notice and falls back to markdown. |
 | full | (flag) | — | Review entire codebase, not just git diff. Respects scope-dir. |
 | base | auto, git SHA or ref | auto | Base commit for diff. Auto: merge-base with origin/main or HEAD~1. Ignored if full. |
 | head | git SHA or ref | HEAD | Head commit for diff. |
@@ -63,10 +63,12 @@ Tools are declared in each reviewer leaf's frontmatter (`tools:` array). The orc
 
 ### Format Auto-Detection
 
-When `format=auto` (the default):
+When `format=auto` (the default), [`scripts/inline-states/emit-stdout.mjs`](scripts/inline-states/emit-stdout.mjs) resolves the format from `process.stdout.isTTY`:
 
-- If the orchestrator was dispatched as a **subagent** by another agent or tool → output **JSON**
-- If the orchestrator was invoked directly by a **user** (slash command, chat) → output **markdown**
+- TTY stdout (interactive user / slash command / chat) → **markdown**
+- Non-TTY stdout (piped consumer, sub-agent, CI) → **JSON**
+
+The TTY check approximates "user vs tool" because the runner can't introspect "subagent vs user" directly from inside the process.
 
 ---
 
@@ -322,6 +324,6 @@ When `format=json` or auto-detected as tool context, produce this exact structur
 - `tool_results[].specialist`: string — leaf id from `reviewers.wiki/` that declared this tool
 - All arrays may be empty but must be present (no omission)
 
-### YAML Output
+### YAML Output (reserved)
 
-When `format=yaml`, produce the same structure as JSON but in YAML syntax. Same fields, same rules.
+`format=yaml` is reserved for a future PR that bundles a YAML serializer. The current `emit-stdout.mjs` handler treats it as unimplemented: it emits a stderr notice and falls back to markdown. When the serializer lands, the output structure will be the JSON form translated into YAML syntax, with the same fields and rules.

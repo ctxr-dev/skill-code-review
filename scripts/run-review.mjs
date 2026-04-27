@@ -47,6 +47,55 @@ import {
   FIXTURES_ROOT,
 } from "./lib/worker-replay.mjs";
 
+import { validateTrimOutput } from "./lib/trim-output-validator.mjs";
+
+// Apply the B8 referential-integrity check to a worker output. Returns
+// `{ ok: true }` for no-op (output isn't a trim shape) or for a clean
+// pass; returns `{ ok: false, message, details }` on any violation
+// (env unreadable, schema-cross-ref violations). The --continue caller
+// is responsible for converting `ok: false` to a fail() so the runner
+// stays the only place that touches process.exit; unit tests can drive
+// this function without process.exit by stubbing the env loader and
+// inspecting the return shape.
+//
+// Exported so unit tests can pin the gate without a live FSM run.
+// `_deps` is an optional injection seam (resolveStorageRoot, runEnv,
+// repoRoot) so tests can drive both happy and failure paths.
+export function runTrimValidationGate(runId, outputs, _deps = {}) {
+  if (!outputs || !Array.isArray(outputs.picked_leaves)) return { ok: true };
+  const resolveStorageRootFn = _deps.resolveStorageRoot ?? resolveStorageRoot;
+  const runEnvFn = _deps.runEnv ?? runEnv;
+  const repoRoot = _deps.repoRoot ?? REPO_ROOT;
+  let env;
+  try {
+    const storageRoot = resolveStorageRootFn();
+    env = runEnvFn(runId, { storageRoot });
+  } catch (err) {
+    // Build the parenthetical from defined parts only so we don't emit
+    // awkward strings like "( something)" when the thrown value lacks
+    // `code` or `message`. Falls back to the stringified value when
+    // neither is present.
+    const parts = [err?.code, err?.message ?? (typeof err === "string" ? err : null)].filter(
+      (p) => typeof p === "string" && p.length > 0,
+    );
+    const detail = parts.length > 0 ? ` (${parts.join(": ")})` : "";
+    return {
+      ok: false,
+      message: `llm_trim validation: failed to read run env${detail}.`,
+      details: { state: "llm_trim", run_id: runId },
+    };
+  }
+  const v = validateTrimOutput(outputs, env, { repoRoot });
+  if (!v.ok) {
+    return {
+      ok: false,
+      message: `llm_trim referential-integrity validation failed: ${v.errors.join("; ")}`,
+      details: { state: "llm_trim", run_id: runId, violations: v.errors },
+    };
+  }
+  return { ok: true };
+}
+
 // Project the FSM brief's declared inputs out of the run env so the hash
 // key only depends on what the worker actually sees, not the full env.
 // fsm-next can expose the inputs list either at the top level
@@ -131,10 +180,12 @@ function resolveStorageRoot() {
   // @ctxr/fsm exposes resolveSettings(cliArgs, cwd) — cliArgs is the
   // selector ({fsmName, fsmPath, storageRoot, sessionId}), cwd is the
   // directory to resolve the .fsmrc.json relative to. resolveSettings
-  // calls loadConfig internally; the caller does NOT pre-load. Earlier
-  // rounds of this file had it backwards (loadConfig({cwd: REPO_ROOT})
-  // and resolveSettings(config, {...})), which was hidden because this
-  // function is only on the --continue path.
+  // calls loadConfig internally; the caller does NOT pre-load. Returns
+  // are camelCase (storageRoot), not the snake_case form used in
+  // .fsmrc.json on disk. Earlier rounds had this backwards
+  // (loadConfig({cwd: REPO_ROOT}) and resolveSettings(config, {...})),
+  // which was hidden because this function is only on the --continue
+  // path.
   const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
   return resolve(REPO_ROOT, settings.storageRoot);
 }
@@ -707,6 +758,17 @@ async function main() {
       fail(`--run-id must be lowercase alnum + dashes, 3-64 chars; got: ${runId}`);
     }
     const outputs = readJsonFile(outputsFile, "--outputs-file");
+
+    // B8 referential-integrity: when the worker output looks like trim
+    // output (`picked_leaves[]` present), validate cross-references against
+    // the run env BEFORE handing it to fsm-commit. JSON-Schema only checks
+    // shape; the trim worker can fabricate ids / paths / files that pass
+    // the schema but break downstream consumers. Abort here on any
+    // violation rather than let a bad trim output corrupt the env.
+    const gate = runTrimValidationGate(runId, outputs);
+    if (!gate.ok) {
+      fail(gate.message, gate.details);
+    }
 
     // --replay-mode SHOULD be passed on EACH --continue invocation. The
     // runner is stateless across CLI calls and the flag defaults to

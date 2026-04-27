@@ -5,8 +5,14 @@
 // not the cross-references between fields. The worker can fabricate IDs
 // that don't exist in the wiki, files that aren't in the diff, or rescues
 // that name leaves the worker just rejected. This module is the
-// referential-integrity check that runs after schema validation, before
-// the trim output is committed to the run env.
+// referential-integrity check the runner invokes BEFORE `fsm-commit`
+// (which is where the FSM engine's JSON-Schema validation runs); both
+// gates must pass before the trim outputs land in the run env. So the
+// effective order is: shape (here, then in fsm-commit) → cross-refs
+// (here) → commit. Once `ctxr-dev/fsm#10` (F9 referential-integrity)
+// lands, the FSM engine's declarative `referential_integrity:` block
+// subsumes this; we migrate to the declarative form and delete the
+// bespoke validator.
 //
 // Six violation classes (the original five from #13 plus a stage-A pair check
 // added in round 4 to close a subtle id/path-split fabrication path):
@@ -26,9 +32,6 @@
 // `opts.knownLeafIds` isn't supplied, but the result is cached per-process
 // so successive validations don't re-walk the tree.
 //
-// Once `ctxr-dev/fsm#10` (F9 referential-integrity) lands, the FSM engine's
-// declarative `referential_integrity:` schema block subsumes this; we
-// migrate to the declarative form and delete the bespoke validator.
 
 import { readdirSync, lstatSync, realpathSync, existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";

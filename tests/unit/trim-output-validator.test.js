@@ -1,10 +1,16 @@
 // Tests for the B8 referential-integrity validator. Each violation class
 // gets its own fixture; the validator must surface a specific error per
 // class, and a fully-valid fixture must produce { ok: true, errors: [] }.
+//
+// Hermetic by construction: the test suite builds a synthetic
+// reviewers.wiki/ tree under a per-test-process temp directory and runs
+// every assertion against that. No assumption about which leaf ids the
+// real corpus carries today — wiki reorganizations / renames don't break
+// this suite.
 
-import { test } from "node:test";
+import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -21,19 +27,36 @@ if (existsSync(NONEXISTENT_REPO_ROOT)) {
   throw new Error("test setup failed: NONEXISTENT_REPO_ROOT still exists");
 }
 
-// Use real wiki ids + paths so the file-resolution check (class 2) doesn't
-// false-fail the valid fixture. lang-typescript is committed at
-// reviewers.wiki/formatter-eslint/lang-typescript.md; sec-csrf and
-// sec-idor-and-mass-assignment live under reviewers.wiki/csrf-missing/.
-// Picking three real leaves keeps the fixture self-contained and
-// independent of the wiki's ongoing growth.
-const KNOWN_IDS = ["lang-typescript", "sec-csrf", "sec-idor-and-mass-assignment"];
+// Synthetic wiki: 3 leaves under deterministic paths. Using made-up ids
+// (`fake-lang`, `fake-sec`, `fake-rejected`) keeps the assertions
+// independent of the real corpus.
+let HERMETIC_REPO_ROOT;
+
+function writeLeaf(repoRoot, relPath, id) {
+  const abs = join(repoRoot, "reviewers.wiki", relPath);
+  mkdirSync(join(abs, ".."), { recursive: true });
+  writeFileSync(
+    abs,
+    `---\nid: ${id}\ntype: leaf\n---\n\n# ${id}\n`,
+  );
+}
+
+before(() => {
+  HERMETIC_REPO_ROOT = mkdtempSync(join(tmpdir(), "trim-validator-hermetic-"));
+  writeLeaf(HERMETIC_REPO_ROOT, "cluster-a/fake-lang.md", "fake-lang");
+  writeLeaf(HERMETIC_REPO_ROOT, "cluster-b/fake-sec.md", "fake-sec");
+  writeLeaf(HERMETIC_REPO_ROOT, "cluster-b/fake-rejected.md", "fake-rejected");
+});
+
+after(() => {
+  if (HERMETIC_REPO_ROOT) rmSync(HERMETIC_REPO_ROOT, { recursive: true, force: true });
+});
 
 const VALID_ENV = {
   stage_a_candidates: [
-    { id: "lang-typescript", path: "formatter-eslint/lang-typescript.md", activation_match: ["file_globs"] },
-    { id: "sec-csrf", path: "csrf-missing/sec-csrf.md", activation_match: ["file_globs"] },
-    { id: "sec-idor-and-mass-assignment", path: "csrf-missing/sec-idor-and-mass-assignment.md", activation_match: ["file_globs"] },
+    { id: "fake-lang", path: "cluster-a/fake-lang.md", activation_match: ["file_globs"] },
+    { id: "fake-sec", path: "cluster-b/fake-sec.md", activation_match: ["file_globs"] },
+    { id: "fake-rejected", path: "cluster-b/fake-rejected.md", activation_match: ["file_globs"] },
   ],
   changed_paths: ["src/api/auth.ts", "src/util/jwt.ts"],
 };
@@ -41,25 +64,29 @@ const VALID_ENV = {
 function validOutputs() {
   return {
     picked_leaves: [
-      { id: "lang-typescript", path: "formatter-eslint/lang-typescript.md", justification: "ok", dimensions: ["correctness"] },
-      { id: "sec-csrf", path: "csrf-missing/sec-csrf.md", justification: "ok", dimensions: ["security"] },
+      { id: "fake-lang", path: "cluster-a/fake-lang.md", justification: "ok", dimensions: ["correctness"] },
+      { id: "fake-sec", path: "cluster-b/fake-sec.md", justification: "ok", dimensions: ["security"] },
     ],
-    rejected_leaves: [{ id: "sec-idor-and-mass-assignment", reason: "low signal" }],
+    rejected_leaves: [{ id: "fake-rejected", reason: "low signal" }],
     coverage_rescues: [
-      { file: "src/api/auth.ts", rescued_leaf: "sec-idor-and-mass-assignment", reason: "rescue" },
+      { file: "src/api/auth.ts", rescued_leaf: "fake-rejected", reason: "rescue" },
     ],
   };
 }
 
+function hermeticOpts(extra = {}) {
+  return { repoRoot: HERMETIC_REPO_ROOT, ...extra };
+}
+
 test("validateTrimOutput: a fully-valid fixture passes", () => {
-  const result = validateTrimOutput(validOutputs(), VALID_ENV, { knownLeafIds: KNOWN_IDS });
+  const result = validateTrimOutput(validOutputs(), VALID_ENV, hermeticOpts());
   assert.deepEqual(result, { ok: true, errors: [] });
 });
 
 test("validateTrimOutput: rejects picked_leaves[].id not in wiki (class 1)", () => {
   const out = validOutputs();
   out.picked_leaves[0].id = "nonexistent-leaf-id";
-  const result = validateTrimOutput(out, VALID_ENV, { knownLeafIds: KNOWN_IDS });
+  const result = validateTrimOutput(out, VALID_ENV, hermeticOpts());
   assert.equal(result.ok, false);
   assert.ok(
     result.errors.some((e) => e.includes("nonexistent-leaf-id") && e.includes("reviewers.wiki")),
@@ -71,14 +98,12 @@ test("validateTrimOutput: rejects picked_leaves[].path that doesn't resolve (cla
   const out = validOutputs();
   out.picked_leaves[0].path = "made-up/does-not-exist.md";
   const result = validateTrimOutput(out, VALID_ENV, {
-    knownLeafIds: KNOWN_IDS,
     repoRoot: NONEXISTENT_REPO_ROOT,
+    knownLeafIds: ["fake-lang", "fake-sec", "fake-rejected"],
   });
-  // `knownLeafIds` short-circuits the class-1 wiki walk (the validator
-  // accepts the explicit allow-list as the source of truth), so this
-  // case targets the class-2 path-resolution check exclusively. With a
-  // nonexistent repo root, every wiki-path resolution must fail and
-  // surface a "does not resolve to a real wiki file" error.
+  // knownLeafIds short-circuits class 1 (the validator accepts the
+  // explicit allow-list as the source of truth); the nonexistent
+  // repo root drives every wiki-path resolution to fail (class 2).
   assert.equal(result.ok, false);
   assert.ok(
     result.errors.some((e) => e.includes("does not resolve to a real wiki file")),
@@ -87,45 +112,43 @@ test("validateTrimOutput: rejects picked_leaves[].path that doesn't resolve (cla
 });
 
 test("validateTrimOutput: rejects picked_leaves not in stage_a_candidates (class 3, id mismatch)", () => {
-  // sec-csrf is a real wiki id and resolves to a real file — but it is NOT
+  // fake-sec is a real wiki id and resolves to a real file — but it is NOT
   // in stage_a_candidates for this scenario. Class 1 + class 2 must both
   // pass; class 3 is the only thing catching this fabrication.
   const env = {
     stage_a_candidates: [
-      { id: "lang-typescript", path: "formatter-eslint/lang-typescript.md" },
+      { id: "fake-lang", path: "cluster-a/fake-lang.md" },
     ],
     changed_paths: [],
   };
   const out = {
     picked_leaves: [
-      { id: "sec-csrf", path: "csrf-missing/sec-csrf.md", justification: "x", dimensions: [] },
+      { id: "fake-sec", path: "cluster-b/fake-sec.md", justification: "x", dimensions: [] },
     ],
     rejected_leaves: [],
     coverage_rescues: [],
   };
-  const result = validateTrimOutput(out, env, { knownLeafIds: KNOWN_IDS });
+  const result = validateTrimOutput(out, env, hermeticOpts());
   assert.equal(result.ok, false);
   assert.ok(
     result.errors.some(
-      (e) => e.includes("sec-csrf") && e.includes("not in stage_a_candidates"),
+      (e) => e.includes("fake-sec") && e.includes("not in stage_a_candidates"),
     ),
     `expected a stage-A-candidate membership error, got: ${result.errors.join("; ")}`,
   );
 });
 
 test("validateTrimOutput: rejects picked_leaves with wrong path for the id (class 3, path mismatch)", () => {
-  // Both id (lang-typescript) and path (csrf-missing/sec-csrf.md) are
-  // individually valid wiki entries, but the pair doesn't match: stage_a
-  // declared lang-typescript at formatter-eslint/lang-typescript.md.
-  // Without the pair check, the worker could split id/path across two real
-  // leaves and bypass downstream coverage scoping.
+  // Both id (fake-lang) and path (cluster-b/fake-sec.md) are individually
+  // valid wiki entries, but the pair doesn't match: stage_a declared
+  // fake-lang at cluster-a/fake-lang.md.
   const out = validOutputs();
-  out.picked_leaves[0].path = "csrf-missing/sec-csrf.md";
-  const result = validateTrimOutput(out, VALID_ENV, { knownLeafIds: KNOWN_IDS });
+  out.picked_leaves[0].path = "cluster-b/fake-sec.md";
+  const result = validateTrimOutput(out, VALID_ENV, hermeticOpts());
   assert.equal(result.ok, false);
   assert.ok(
     result.errors.some(
-      (e) => e.includes("lang-typescript") && e.includes("does not match stage_a_candidates entry path"),
+      (e) => e.includes("fake-lang") && e.includes("does not match stage_a_candidates entry path"),
     ),
     `expected an id↔path pair-mismatch error, got: ${result.errors.join("; ")}`,
   );
@@ -136,20 +159,18 @@ test("validateTrimOutput: pair check accepts cosmetic 'reviewers.wiki/' prefix o
   // normalizeWikiPath collapses them. Same effective path must match.
   const env = {
     stage_a_candidates: [
-      { id: "lang-typescript", path: "reviewers.wiki/formatter-eslint/lang-typescript.md" },
+      { id: "fake-lang", path: "reviewers.wiki/cluster-a/fake-lang.md" },
     ],
     changed_paths: [],
   };
   const out = {
     picked_leaves: [
-      { id: "lang-typescript", path: "formatter-eslint/lang-typescript.md", justification: "x", dimensions: [] },
+      { id: "fake-lang", path: "cluster-a/fake-lang.md", justification: "x", dimensions: [] },
     ],
     rejected_leaves: [],
     coverage_rescues: [],
   };
-  const result = validateTrimOutput(out, env, { knownLeafIds: KNOWN_IDS });
-  // Class 2 may still fail if the file isn't on disk (the test uses a real
-  // path), but class 3's pair check must NOT contribute an error here.
+  const result = validateTrimOutput(out, env, hermeticOpts());
   const class3Errors = result.errors.filter((e) =>
     e.includes("not in stage_a_candidates") || e.includes("does not match stage_a_candidates entry path"),
   );
@@ -159,7 +180,7 @@ test("validateTrimOutput: pair check accepts cosmetic 'reviewers.wiki/' prefix o
 test("validateTrimOutput: rejects rejected_leaves[].id not in stage_a_candidates (class 4)", () => {
   const out = validOutputs();
   out.rejected_leaves.push({ id: "phantom-rejected", reason: "?" });
-  const result = validateTrimOutput(out, VALID_ENV, { knownLeafIds: KNOWN_IDS });
+  const result = validateTrimOutput(out, VALID_ENV, hermeticOpts());
   assert.equal(result.ok, false);
   assert.ok(
     result.errors.some(
@@ -172,7 +193,7 @@ test("validateTrimOutput: rejects rejected_leaves[].id not in stage_a_candidates
 test("validateTrimOutput: rejects coverage_rescues[].file not in changed_paths (class 5)", () => {
   const out = validOutputs();
   out.coverage_rescues[0].file = "not-in-the-diff.ts";
-  const result = validateTrimOutput(out, VALID_ENV, { knownLeafIds: KNOWN_IDS });
+  const result = validateTrimOutput(out, VALID_ENV, hermeticOpts());
   assert.equal(result.ok, false);
   assert.ok(
     result.errors.some(
@@ -185,7 +206,7 @@ test("validateTrimOutput: rejects coverage_rescues[].file not in changed_paths (
 test("validateTrimOutput: rejects coverage_rescues[].rescued_leaf not in rejected_leaves (class 6)", () => {
   const out = validOutputs();
   out.coverage_rescues[0].rescued_leaf = "leaf-the-trim-worker-imagined";
-  const result = validateTrimOutput(out, VALID_ENV, { knownLeafIds: KNOWN_IDS });
+  const result = validateTrimOutput(out, VALID_ENV, hermeticOpts());
   assert.equal(result.ok, false);
   assert.ok(
     result.errors.some(
@@ -204,30 +225,24 @@ test("validateTrimOutput: collects ALL violations in a single pass (multi-class)
       { file: "not-in-diff.ts", rescued_leaf: "leaf-the-trim-worker-imagined", reason: "?" },
     ],
   };
-  const result = validateTrimOutput(out, VALID_ENV, { knownLeafIds: KNOWN_IDS });
+  const result = validateTrimOutput(out, VALID_ENV, hermeticOpts());
   assert.equal(result.ok, false);
-  // Expect at least 5 errors (one per class). Path check may add one more.
   assert.ok(result.errors.length >= 5, `expected ≥5 errors, got ${result.errors.length}: ${result.errors.join("; ")}`);
 });
 
 test("validateTrimOutput: non-trim output (no picked_leaves) is a no-op", () => {
-  // The validator only fires for outputs that look like trim output. A
-  // shape-mismatch from another worker should not raise spurious errors.
-  const result = validateTrimOutput({ stage_a_candidates: [] }, VALID_ENV, {
-    knownLeafIds: KNOWN_IDS,
-  });
+  const result = validateTrimOutput({ stage_a_candidates: [] }, VALID_ENV, hermeticOpts());
   assert.deepEqual(result, { ok: true, errors: [] });
 });
 
 test("validateTrimOutput: missing fields on a trim output produce specific errors", () => {
   const out = {
-    picked_leaves: [{}, { id: "sec-jwt-tokens" }], // missing id, missing path
+    picked_leaves: [{}, { id: "fake-other" }], // missing id, missing path
     rejected_leaves: [{}],
     coverage_rescues: [{}],
   };
-  const result = validateTrimOutput(out, VALID_ENV, { knownLeafIds: KNOWN_IDS });
+  const result = validateTrimOutput(out, VALID_ENV, hermeticOpts());
   assert.equal(result.ok, false);
-  // "missing string `id`" hits picked_leaves and rejected_leaves; "missing string `file`" / `rescued_leaf` hit coverage_rescues; path missing on the second picked leaf.
   const joined = result.errors.join(" || ");
   assert.match(joined, /missing string `id`/);
   assert.match(joined, /missing or not a string|does not resolve/);

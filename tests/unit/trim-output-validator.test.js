@@ -60,10 +60,11 @@ test("validateTrimOutput: rejects picked_leaves[].path that doesn't resolve (cla
     knownLeafIds: KNOWN_IDS,
     repoRoot: "/tmp/nonexistent-repo-root-for-test",
   });
-  // With a nonexistent repo root, BOTH path-check (class 2) and id-set
-  // (class 1, because knownLeafIds short-circuits the wiki walk) come into
-  // play differently. The class-2 check is the targeted one — assert at
-  // least one error mentions the bad path.
+  // `knownLeafIds` short-circuits the class-1 wiki walk (the validator
+  // accepts the explicit allow-list as the source of truth), so this
+  // case targets the class-2 path-resolution check exclusively. With a
+  // nonexistent repo root, every wiki-path resolution must fail and
+  // surface a "does not resolve to a real wiki file" error.
   assert.equal(result.ok, false);
   assert.ok(
     result.errors.some((e) => e.includes("does not resolve to a real wiki file")),

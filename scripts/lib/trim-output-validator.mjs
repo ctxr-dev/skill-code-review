@@ -25,33 +25,46 @@
 // migrate to the declarative form and delete the bespoke validator.
 
 import { readdirSync, lstatSync, realpathSync, existsSync, readFileSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-let _wikiIdsCache = null;
+// Cache keyed by realpath of `<repoRoot>/reviewers.wiki`. A single-process
+// run that walks two different repos (tests, multi-repo tooling) gets a
+// per-repo cache rather than reusing the first walk's result.
+const _wikiIdsCache = new Map();
+
+// Helper: a path is "inside" parent iff `relative(parent, child)` is non-
+// empty AND not the parent itself AND doesn't start with `..` AND isn't an
+// absolute path. The absolute-path check matters on Windows: cross-drive
+// `relative()` can return `D:\...` which neither starts with `..` nor with
+// the platform separator. Without isAbsolute the boundary check would
+// pass on a symlink that resolves to a different drive.
+function isInside(parent, child) {
+  const rel = relative(parent, child);
+  if (rel === "" || rel.startsWith("..") || rel.startsWith(sep) || isAbsolute(rel)) {
+    return false;
+  }
+  return true;
+}
 
 // Enumerate the set of leaf ids under reviewers.wiki/ at runtime. A leaf is
 // a `*.md` file (excluding `index.md`) under reviewers.wiki/ whose
 // frontmatter declares `id: <name>`. Symlinks must resolve to real paths
 // inside the wiki — anything pointing outside is skipped.
 export function enumerateWikiLeaves(repoRoot, { useCache = true } = {}) {
-  if (useCache && _wikiIdsCache) return _wikiIdsCache;
   const wikiRoot = resolve(repoRoot, "reviewers.wiki");
   if (!existsSync(wikiRoot)) {
-    const empty = { ids: new Set(), pathsById: new Map() };
-    if (useCache) _wikiIdsCache = empty;
+    const empty = { ids: new Set() };
     return empty;
   }
   let realRoot;
   try {
     realRoot = realpathSync(wikiRoot);
   } catch {
-    const empty = { ids: new Set(), pathsById: new Map() };
-    if (useCache) _wikiIdsCache = empty;
-    return empty;
+    return { ids: new Set() };
   }
+  if (useCache && _wikiIdsCache.has(realRoot)) return _wikiIdsCache.get(realRoot);
   const ids = new Set();
-  const pathsById = new Map();
   const stack = [realRoot];
   const visited = new Set([realRoot]);
   while (stack.length > 0) {
@@ -77,8 +90,7 @@ export function enumerateWikiLeaves(repoRoot, { useCache = true } = {}) {
       } catch {
         continue;
       }
-      const rel = relative(realRoot, realFull);
-      if (rel === "" || rel.startsWith("..") || rel.startsWith(sep)) continue;
+      if (!isInside(realRoot, realFull)) continue;
       if (
         lst.isDirectory() ||
         (lst.isSymbolicLink() && existsSync(realFull) && lstatSync(realFull).isDirectory())
@@ -91,15 +103,11 @@ export function enumerateWikiLeaves(repoRoot, { useCache = true } = {}) {
       if (!ent.name.endsWith(".md")) continue;
       if (ent.name === "index.md") continue;
       const id = readLeafId(realFull);
-      if (id) {
-        ids.add(id);
-        // Store the wiki-relative path for the ↔ id check below.
-        pathsById.set(id, rel);
-      }
+      if (id) ids.add(id);
     }
   }
-  const out = { ids, pathsById };
-  if (useCache) _wikiIdsCache = out;
+  const out = { ids };
+  if (useCache) _wikiIdsCache.set(realRoot, out);
   return out;
 }
 
@@ -130,7 +138,9 @@ function looksLikeTrimOutput(outputs) {
 
 // Resolve a wiki-relative leaf path against the wikiRoot. Mirrors
 // verify-coverage's readLeafGlobs path resolution: try wiki-relative first
-// then repo-relative; reject anything that escapes via realpath.
+// then repo-relative; reject anything that escapes via realpath. Uses the
+// shared isInside() helper so the Windows cross-drive case (where
+// path.relative() returns an absolute path) gets rejected.
 function leafPathExists(repoRoot, leafPath) {
   if (typeof leafPath !== "string" || leafPath.length === 0) return false;
   const wikiRoot = resolve(repoRoot, "reviewers.wiki");
@@ -148,8 +158,7 @@ function leafPathExists(repoRoot, leafPath) {
     } catch {
       continue;
     }
-    const rel = relative(realWiki, real);
-    if (rel.startsWith("..") || rel.startsWith(sep) || rel === "") continue;
+    if (!isInside(realWiki, real)) continue;
     if (lstatSync(real).isFile()) return true;
   }
   return false;

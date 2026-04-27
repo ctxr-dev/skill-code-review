@@ -60,30 +60,32 @@ export default async function verifyCoverage({ env }) {
     }
   }
 
-  // Per-leaf scope narrowing: when a picked leaf carries an
-  // `activation.file_globs[]` block, only credit it for files that match
-  // the globs (matching the orchestrator's "per file covered by ≥2
-  // specialists via file_globs" rule). Leaves with no file_globs (e.g.
-  // focus_only or escalation_from picks) are credited broadly across all
-  // changed files because they don't have a path-shaped scope to narrow
-  // against. This is a tighter contract than the original "every leaf
-  // covers every file" approximation, which made coverage_gaps depend
-  // almost entirely on picked_leaves.length.
+  // Per-leaf scope narrowing using activation_match[] (the actual signal
+  // the tree_descend FSM state emits per leaf, per the response_schema).
+  // The rule:
+  //   - "file_globs" or "keyword_matches" or "structural_signals" or
+  //     "escalation_from" — the activation gate already proved the leaf
+  //     applies to this diff, so source (a) (findings) is the authoritative
+  //     credit signal. We DON'T broadly credit on the picked-leaves pass
+  //     because that would make coverage_gaps depend on picked_leaves.length
+  //     instead of the spec's per-file rule. A leaf earns credit on a file
+  //     only if it actually produced a finding there (source a) OR was
+  //     promoted by a rescue (source c) OR carries activation_match
+  //     containing exactly "focus_only" (no path signal — credit broadly
+  //     because we have no narrower hook).
   for (const leaf of pickedLeaves) {
     if (!leaf.id) continue;
-    const globs = Array.isArray(leaf.activation?.file_globs) ? leaf.activation.file_globs : [];
-    if (globs.length === 0) {
-      for (const file of changedPaths) ensureSet(reviewersByFile, file).add(leaf.id);
-      continue;
-    }
-    for (const file of changedPaths) {
-      for (const glob of globs) {
-        if (typeof glob === "string" && minimatch(file, glob)) {
-          ensureSet(reviewersByFile, file).add(leaf.id);
-          break;
-        }
-      }
-    }
+    const activationMatch = Array.isArray(leaf.activation_match)
+      ? leaf.activation_match
+      : Array.isArray(leaf.activation?.file_globs)
+      ? leaf.activation.file_globs.length > 0
+        ? ["file_globs"]
+        : ["focus_only"]
+      : ["focus_only"];
+    const isFocusOnly =
+      activationMatch.length === 1 && activationMatch[0] === "focus_only";
+    if (!isFocusOnly) continue;
+    for (const file of changedPaths) ensureSet(reviewersByFile, file).add(leaf.id);
   }
 
   // Apply coverage rescues from Step 4 (rescues outside changed_paths are

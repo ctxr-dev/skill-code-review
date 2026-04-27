@@ -19,7 +19,7 @@
 // rather than persisting their own artefacts, so the handlers themselves stay
 // pure.
 
-import { writeFileSync } from "node:fs";
+import { writeFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -40,6 +40,53 @@ function resolveStorageRoot(repoRoot) {
 }
 
 const METHODOLOGY_PRINCIPLES = ["SRP", "OCP", "LSP", "ISP", "DIP", "DRY", "KISS", "YAGNI"];
+
+// Count actual leaf .md files under reviewers.wiki/ at runtime (per
+// report-format.md: "queried at runtime — do not hard-code"). A leaf is a
+// .md file that isn't `index.md`. Walks the tree synchronously; the wiki
+// is small (≤ 1000 files) and this runs once per report.
+function countWikiLeaves(repoRoot) {
+  const root = resolve(repoRoot, "reviewers.wiki");
+  if (!existsSync(root)) return 0;
+  let count = 0;
+  const stack = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const ent of entries) {
+      if (ent.name.startsWith(".")) continue;
+      const full = join(dir, ent.name);
+      if (ent.isDirectory()) {
+        stack.push(full);
+        continue;
+      }
+      if (!ent.isFile() && !ent.isSymbolicLink()) continue;
+      if (!ent.name.endsWith(".md")) continue;
+      if (ent.name === "index.md") continue;
+      try {
+        if (statSync(full).isFile()) count++;
+      } catch {
+        // unreadable entry — skip
+      }
+    }
+  }
+  return count;
+}
+
+let _wikiLeavesCache = null;
+function specialistsTotal(env) {
+  if (Number.isInteger(env.specialists_total)) return env.specialists_total;
+  if (_wikiLeavesCache !== null) return _wikiLeavesCache;
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const repoRoot = resolve(__dirname, "..", "..");
+  _wikiLeavesCache = countWikiLeaves(repoRoot);
+  return _wikiLeavesCache;
+}
 
 // Canonical scope shape from report-format.md: every field present, null when
 // not filtered, array of strings when filtered. Maps args → field names per
@@ -199,7 +246,7 @@ export function buildReportPayload(runId, env) {
       files_changed: Array.isArray(env.changed_paths) ? env.changed_paths.length : 0,
       stack,
       specialists_dispatched: specialistOutputs.length,
-      specialists_total: Number.isInteger(env.specialists_total) ? env.specialists_total : 0,
+      specialists_total: specialistsTotal(env),
       scope: buildScope(argsBag),
     },
     methodology: buildMethodology(env),

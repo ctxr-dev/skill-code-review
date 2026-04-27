@@ -158,7 +158,7 @@ test("handleWorkerStateBrief: env-loader failure surfaces as in-flow fault, not 
   const result = handleWorkerStateBrief(
     { state: "llm_trim", has_worker: true },
     "run-1",
-    { replayMode: "live" },
+    { replayMode: "record" }, // live mode skips env loading entirely
     {
       resolveStorageRoot: () => { throw new Error("fsm config missing"); },
       runEnv: () => assert.fail("must not reach runEnv when resolveStorageRoot threw"),
@@ -245,11 +245,14 @@ test("handleWorkerStateBrief: replay corrupted fixture surfaces as fault, not cr
   assert.match(result.payload.fault.reason, /fixture corrupted/);
 });
 
-test("handleWorkerStateBrief: hash compute failure surfaces as in-flow fault", () => {
+test("handleWorkerStateBrief: hash compute failure (record mode) surfaces as in-flow fault", () => {
+  // Live mode skips hashing entirely (regression-prevention for
+  // non-harness callers); the failure path only fires in record /
+  // replay mode where the hash is actually needed.
   const result = handleWorkerStateBrief(
     { state: "llm_trim", has_worker: true },
     "run-1",
-    { replayMode: "live" },
+    { replayMode: "record" },
     {
       resolveStorageRoot: () => "/tmp",
       runEnv: () => ({}),
@@ -285,22 +288,26 @@ test("handleWorkerStateBrief: record-mode stash failure surfaces as fault", () =
   assert.match(result.payload.fault.reason, /failed to stash pending brief/);
 });
 
-test("handleWorkerStateBrief: live-mode pauses with awaiting_worker even when stash fails", () => {
-  // Stash is best-effort in live mode; a write failure must NOT abort
-  // the run. The helper still returns kind:"pause" / awaiting_worker.
+test("handleWorkerStateBrief: live mode skips env+hash entirely and pauses", () => {
+  // The default live path must NOT touch the env loaders, hash, or
+  // stash. Pre-B7 a live --start didn't read the prompt template or
+  // load run-storage; introducing failure modes for callers who didn't
+  // opt into the harness would regress that. Stub all env-side
+  // dependencies to throw and assert the helper still returns a clean
+  // pause.
   const brief = { state: "llm_trim", has_worker: true };
   const result = handleWorkerStateBrief(
     brief,
     "run-1",
     { replayMode: "live" },
     {
-      resolveStorageRoot: () => "/tmp",
-      runEnv: () => ({}),
-      hashKeyForBrief: () => "e".repeat(64),
-      replayLookup: () => ({ hit: false }),
-      runFsmCommit: () => assert.fail("must not commit"),
-      stashPendingBrief: () => { throw new Error("disk full"); },
-      runDirPath: () => "/tmp/run",
+      resolveStorageRoot: () => assert.fail("live mode must not touch resolveStorageRoot"),
+      runEnv: () => assert.fail("live mode must not touch runEnv"),
+      hashKeyForBrief: () => assert.fail("live mode must not compute hashKey"),
+      replayLookup: () => assert.fail("live mode must not look up replays"),
+      runFsmCommit: () => assert.fail("live mode must not commit"),
+      stashPendingBrief: () => assert.fail("live mode must not stash"),
+      runDirPath: () => assert.fail("live mode must not touch runDirPath"),
       fixturesRoot: "/tmp/fixtures",
     },
   );

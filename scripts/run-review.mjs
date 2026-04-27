@@ -442,6 +442,21 @@ export function handleWorkerStateBrief(brief, runId, opts = {}, _deps = {}) {
   const runDirPathFn = _deps.runDirPath ?? runDirPath;
   const fixturesRoot = _deps.fixturesRoot ?? FIXTURES_ROOT;
 
+  // Live mode (the default) skips the env+hash+stash work entirely. The
+  // hash key and stash only matter for replay/record; running them on
+  // every live worker pause introduces new failure modes (unreadable
+  // prompt template, missing run-storage) for callers who didn't
+  // opt into the harness. The trade-off: a user who goes
+  // `--start --replay-mode=live` and then `--continue
+  // --replay-mode=record` will not have a stash to record against;
+  // record mode is per-run, not retroactive.
+  if (replayMode === "live") {
+    return {
+      kind: "pause",
+      payload: { status: "awaiting_worker", run_id: runId, brief },
+    };
+  }
+
   // resolveStorageRoot reads .fsmrc.json + walks @ctxr/fsm config; runEnv
   // reads the run-storage tree on disk. Either can throw on a missing /
   // corrupt config or storage. Convert to an in-flow fault so the run
@@ -529,26 +544,25 @@ export function handleWorkerStateBrief(brief, runId, opts = {}, _deps = {}) {
     return { kind: "advance", payload: commit.payload };
   }
 
-  // B7 record / live: stash the brief for --continue. Record-mode failures
-  // surface; live-mode stash is best-effort.
+  // B7 record mode: stash the brief for --continue. Stash failures
+  // surface as faults — without the stash, --continue can't persist
+  // the recorded fixture and the user would think record-mode
+  // succeeded when it silently didn't. (Live mode returned early.)
   const dir = runDirPathFn(runId, { storageRoot });
   try {
     stashPendingBriefFn(dir, { state: brief.state, hashKey });
   } catch (err) {
-    if (replayMode === "record") {
-      return {
-        kind: "fault",
-        payload: {
-          status: "fault",
-          run_id: runId,
-          fault: {
-            state: brief.state,
-            reason: `replay-mode=record: failed to stash pending brief: ${err?.message ?? String(err)}`,
-          },
+    return {
+      kind: "fault",
+      payload: {
+        status: "fault",
+        run_id: runId,
+        fault: {
+          state: brief.state,
+          reason: `replay-mode=record: failed to stash pending brief: ${err?.message ?? String(err)}`,
         },
-      };
-    }
-    // Live mode: stash is best-effort bookkeeping; safe to ignore.
+      },
+    };
   }
 
   return {
@@ -710,9 +724,21 @@ async function main() {
     // Recording errors surface as a fault — silent failure here would
     // make later replay-mode runs fail without a clear root cause.
     if (replayMode === "record") {
-      const storageRoot = resolveStorageRoot();
-      const dir = runDirPath(runId, { storageRoot });
-      const stash = readPendingBrief(dir);
+      // resolveStorageRoot / runDirPath / readPendingBrief can throw on
+      // a missing or corrupt .fsmrc.json or a missing run-storage tree.
+      // Wrap in try/catch so the record-mode finalisation surfaces a
+      // structured error instead of falling through to main().catch.
+      let storageRoot, dir, stash;
+      try {
+        storageRoot = resolveStorageRoot();
+        dir = runDirPath(runId, { storageRoot });
+        stash = readPendingBrief(dir);
+      } catch (err) {
+        fail(
+          `replay-mode=record: failed to read run state for fixture persistence: ${err?.message ?? String(err)}`,
+          { run_id: runId },
+        );
+      }
       // No silent skip: a missing/malformed stash means the user thinks
       // they are recording fixtures but nothing would land on disk.
       // Surface via fail() so the run stops loud (emits {status:"error"}

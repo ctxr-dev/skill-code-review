@@ -18,6 +18,8 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
+import { renderReportMarkdown } from "../lib/report-renderer.mjs";
+
 const VALID_FORMATS = new Set(["markdown", "json"]);
 // Severity threshold ordering: anything at or ABOVE the requested level is
 // kept. Index = rank; higher = more severe.
@@ -68,18 +70,21 @@ export function applyScopeFilters(payload, severityThreshold, gateFilter) {
   if (severityThreshold === null && !gateFilter) return payload;
   const filtered = { ...payload };
   if (severityThreshold !== null) {
-    const kept = (payload.findings ?? []).filter(
+    const kept = (payload.issues ?? payload.findings ?? []).filter(
       (f) => (SEVERITY_RANK[f.severity] ?? 0) >= severityThreshold,
     );
-    filtered.findings = kept;
-    // Recompute severity_counts so the emitted payload stays internally
-    // consistent — leaving the unfiltered counts alongside filtered findings
-    // would be a contradiction inside the same report.
+    if (Array.isArray(payload.issues)) filtered.issues = kept;
+    if (Array.isArray(payload.findings)) filtered.findings = kept;
+    // Recompute severity_counts (skill-internal _meta and any legacy
+    // top-level field) so the emitted payload stays internally consistent.
     const counts = { critical: 0, important: 0, minor: 0 };
     for (const f of kept) {
       if (counts[f.severity] !== undefined) counts[f.severity]++;
     }
-    filtered.severity_counts = counts;
+    if (filtered._meta) filtered._meta = { ...filtered._meta, severity_counts: counts };
+    if (Object.prototype.hasOwnProperty.call(payload, "severity_counts")) {
+      filtered.severity_counts = counts;
+    }
   }
   if (gateFilter) {
     filtered.gates = (payload.gates ?? []).filter((g) => gateFilter.has(g.number));
@@ -110,34 +115,46 @@ export default async function emitStdout({ env }) {
   const severityThreshold = parseSeverityThreshold(argsBag["scope-severity"]);
   const gateFilter = parseGateFilter(argsBag["scope-gate"]);
 
-  let body = readReport(runDirPath, format);
-  if (body === null) {
-    process.stderr.write(
-      `(emit_stdout: report file for format=${format} not found under ${runDirPath})\n`,
-    );
-    return {};
-  }
-
-  // Scope filtering only applies to JSON output today — the markdown report
-  // is rendered up-front by Step 10 against the full payload, and re-rendering
-  // it here without the renderer would diverge from the canonical layout. For
-  // markdown, surface a stderr notice when filters were requested but
-  // ignored, so the user knows the flags didn't take effect.
   const filtersRequested = severityThreshold !== null || gateFilter;
-  if (format === "json" && filtersRequested) {
-    try {
-      const parsed = JSON.parse(body);
-      const filtered = applyScopeFilters(parsed, severityThreshold, gateFilter);
-      body = JSON.stringify(filtered, null, 2) + "\n";
-    } catch {
-      // If the JSON is malformed, fall back to emitting it unfiltered rather
-      // than crashing the run; the report file's own validity is Step 10's
-      // responsibility.
+
+  let body;
+  if (filtersRequested) {
+    // Filtering is format-agnostic: read the canonical JSON payload (the
+    // single source of truth produced by Step 10), apply the filters, and
+    // either emit it as JSON or re-render to markdown via the canonical
+    // renderer. The pre-rendered report.md on disk is unfiltered, so reading
+    // it would diverge from --scope-* semantics.
+    const jsonRaw = readReport(runDirPath, "json");
+    if (jsonRaw === null) {
+      process.stderr.write(
+        `(emit_stdout: filtered output requested but report.json not found under ${runDirPath})\n`,
+      );
+      return {};
     }
-  } else if (format !== "json" && filtersRequested) {
-    process.stderr.write(
-      "(emit_stdout: --scope-severity / --scope-gate filters only apply to format=json today)\n",
-    );
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonRaw);
+    } catch {
+      // Malformed report.json — fall back to the pre-rendered file and warn.
+      process.stderr.write(
+        "(emit_stdout: report.json is malformed; falling back to unfiltered output)\n",
+      );
+      body = readReport(runDirPath, format);
+      if (body === null) return {};
+      process.stdout.write(body);
+      if (!body.endsWith("\n")) process.stdout.write("\n");
+      return {};
+    }
+    const filtered = applyScopeFilters(parsed, severityThreshold, gateFilter);
+    body = format === "json" ? JSON.stringify(filtered, null, 2) + "\n" : renderReportMarkdown(filtered);
+  } else {
+    body = readReport(runDirPath, format);
+    if (body === null) {
+      process.stderr.write(
+        `(emit_stdout: report file for format=${format} not found under ${runDirPath})\n`,
+      );
+      return {};
+    }
   }
 
   process.stdout.write(body);

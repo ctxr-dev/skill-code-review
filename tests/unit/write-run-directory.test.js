@@ -1,70 +1,151 @@
 // Smoke tests for buildReportPayload (the pure helper underlying
-// writeRunArtefacts). Full filesystem-level coverage of writeRunArtefacts
-// lives under SC-B7's record/replay harness; these tests pin the payload
-// shape so report.json and the report.md renderer keep agreeing on field
-// names.
+// writeRunArtefacts). The shape under test is the canonical contract from
+// `report-format.md` (the file README.md and code-reviewer.md point users
+// at). Skill-internal context is preserved under `_meta` so the top-level
+// report stays canonical for downstream tools.
+//
+// Filesystem-level coverage of writeRunArtefacts itself lives under SC-B7.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { buildReportPayload } from "../../scripts/inline-states/write-run-directory.mjs";
 
-test("buildReportPayload: passes through verdict-affecting env fields", () => {
+test("buildReportPayload: top-level shape matches report-format.md contract", () => {
   const payload = buildReportPayload("run-1", {
-    repo: "ctxr-dev/skill-code-review",
-    base_sha: "aaa",
-    head_sha: "bbb",
-    args: { format: "markdown" },
-    tier: "sensitive",
-    cap: 30,
-    tier_rationale: "auth keyword",
-    findings: [{ severity: "critical", file: "x.ts" }],
-    severity_counts: { critical: 1, important: 0, minor: 0 },
-    coverage_matrix: [{ file: "x.ts", reviewers: ["sec-jwt-tokens", "lang-typescript"] }],
-    coverage_gaps: [],
-    gates: [{ number: 6, name: "Security & Safety", status: "FAIL" }],
+    base_sha: "abc1234",
+    head_sha: "def5678",
+    args: { format: "markdown", description: "Sprint B hardening" },
+    findings: [
+      {
+        severity: "critical",
+        file: "src/auth.ts",
+        line: 42,
+        title: "SQL injection",
+        description: "string interpolation",
+        impact: "data breach",
+        fix: "parameterise query",
+        principle: "OWASP A03",
+        flagged_by: ["security"],
+      },
+    ],
+    project_profile: { languages: ["typescript"], frameworks: ["express"] },
+    changed_paths: ["src/auth.ts", "src/auth.test.ts"],
+    specialist_outputs: [
+      {
+        id: "security",
+        status: "completed",
+        findings: [{ severity: "critical", title: "SQL injection" }],
+      },
+    ],
+    gates: [
+      { number: 6, name: "Security & Safety", status: "FAIL", blocker_count: 1 },
+    ],
+    coverage_matrix: [{ file: "src/auth.ts", reviewers: ["security", "lang-typescript"] }],
     verdict: "NO-GO",
   });
 
-  assert.equal(payload.run_id, "run-1");
-  assert.equal(payload.repo, "ctxr-dev/skill-code-review");
-  assert.equal(payload.tier, "sensitive");
-  assert.equal(payload.tier_cap, 30);
+  // Top-level fields per the contract
   assert.equal(payload.verdict, "NO-GO");
-  assert.equal(payload.findings.length, 1);
-  assert.equal(payload.severity_counts.critical, 1);
-  assert.equal(payload.degraded_run, false);
+  assert.equal(payload.summary.range.base, "abc1234");
+  assert.equal(payload.summary.range.head, "def5678");
+  assert.equal(payload.summary.mode, "diff");
+  assert.equal(payload.summary.files_changed, 2);
+  assert.deepEqual(payload.summary.stack, ["typescript", "express"]);
+  assert.equal(payload.summary.specialists_dispatched, 1);
+  assert.equal(payload.summary.description, "Sprint B hardening");
+
+  // Methodology defaults to all N/A when env doesn't carry SOLID judgements
+  for (const k of ["SRP", "OCP", "LSP", "ISP", "DIP", "DRY", "KISS", "YAGNI"]) {
+    assert.equal(payload.methodology[k], "N/A");
+  }
+
+  // Issues mapped from findings, with id assigned by enumeration order
+  assert.equal(payload.issues.length, 1);
+  assert.equal(payload.issues[0].id, 1);
+  assert.equal(payload.issues[0].severity, "critical");
+  assert.equal(payload.issues[0].specialist, "security");
+  assert.equal(payload.issues[0].file, "src/auth.ts");
+  assert.equal(payload.issues[0].line, 42);
+
+  // Specialists row: status maps completed-no-blockers → pass; counts
+  // reflect findings buckets.
+  assert.equal(payload.specialists.length, 1);
+  assert.equal(payload.specialists[0].id, "security");
+  assert.equal(payload.specialists[0].status, "fail"); // critical present
+  assert.equal(payload.specialists[0].critical, 1);
+
+  // Gates → canonical { number, name, status, blockers }
+  assert.deepEqual(payload.gates, [
+    { number: 6, name: "Security & Safety", status: "FAIL", blockers: 1 },
+  ]);
+
+  // Coverage carries the matrix forward
+  assert.equal(payload.coverage.length, 1);
+  assert.deepEqual(payload.coverage[0].reviewers, ["security", "lang-typescript"]);
+
+  // _meta preserves skill-internal context (tier, routing) without polluting
+  // the canonical top level.
+  assert.ok(payload._meta);
+  assert.equal(payload._meta.short_circuited, false);
+  assert.equal(payload._meta.degraded_run, false);
 });
 
-test("buildReportPayload: defaults nullable fields when env is sparse", () => {
-  const payload = buildReportPayload("run-2", {});
-  assert.equal(payload.run_id, "run-2");
-  assert.equal(payload.repo, null);
-  assert.equal(payload.base_sha, null);
-  assert.equal(payload.head_sha, null);
-  assert.equal(payload.tier, null);
-  assert.equal(payload.tier_cap, null);
-  assert.deepEqual(payload.args, {});
-  assert.deepEqual(payload.findings, []);
-  assert.deepEqual(payload.severity_counts, { critical: 0, important: 0, minor: 0 });
-  assert.deepEqual(payload.coverage_matrix, []);
-  assert.deepEqual(payload.coverage_gaps, []);
+test("buildReportPayload: scope mapping from args matches the spec", () => {
+  const payload = buildReportPayload("r", {
+    args: {
+      "scope-dir": "src/api,src/util",
+      "scope-lang": "typescript",
+      "scope-severity": "important",
+      "scope-gate": "1,6",
+      full: true,
+    },
+  });
+  assert.equal(payload.summary.mode, "full");
+  assert.deepEqual(payload.summary.scope.dirs, ["src/api", "src/util"]);
+  assert.deepEqual(payload.summary.scope.langs, ["typescript"]);
+  assert.deepEqual(payload.summary.scope.frameworks, null);
+  assert.deepEqual(payload.summary.scope.reviewers, null);
+  assert.deepEqual(payload.summary.scope.severity_filter, ["important"]);
+  assert.deepEqual(payload.summary.scope.gates_filter, ["1", "6"]);
+});
+
+test("buildReportPayload: defaults to canonical empty arrays + null fields when env is sparse", () => {
+  const payload = buildReportPayload("run-empty", {});
+
+  // Required arrays must be present (no omission per the spec).
+  assert.deepEqual(payload.issues, []);
+  assert.deepEqual(payload.strengths, []);
+  assert.deepEqual(payload.tool_results, []);
+  assert.deepEqual(payload.specialists, []);
   assert.deepEqual(payload.gates, []);
+  assert.deepEqual(payload.coverage, []);
+
+  // Summary defaults
+  assert.equal(payload.summary.mode, "diff");
+  assert.equal(payload.summary.files_changed, 0);
+  assert.deepEqual(payload.summary.stack, []);
+  assert.equal(payload.summary.range.base, null);
+  assert.equal(payload.summary.range.head, null);
+  for (const k of ["dirs", "langs", "frameworks", "reviewers", "severity_filter", "gates_filter"]) {
+    assert.equal(payload.summary.scope[k], null);
+  }
+
   assert.equal(payload.verdict, null);
-  assert.equal(payload.degraded_run, false);
-  assert.equal(payload.short_circuited, false);
+  assert.equal(payload._meta.short_circuited, false);
+  assert.equal(payload._meta.degraded_run, false);
 });
 
-test("buildReportPayload: reduces specialist outputs to summary entries", () => {
-  const payload = buildReportPayload("run-3", {
+test("buildReportPayload: specialist row buckets findings by severity", () => {
+  const payload = buildReportPayload("r", {
     specialist_outputs: [
       {
         id: "lang-typescript",
         status: "completed",
-        runtime_ms: 120,
-        tokens_in: 1500,
-        tokens_out: 200,
-        findings: [{ severity: "minor" }, { severity: "important" }],
+        findings: [
+          { severity: "minor", title: "loose typing" },
+          { severity: "important", title: "missing return type" },
+        ],
       },
       {
         id: "fw-express",
@@ -75,36 +156,38 @@ test("buildReportPayload: reduces specialist outputs to summary entries", () => 
     ],
   });
 
-  assert.equal(payload.specialists.length, 2);
   const ts = payload.specialists.find((s) => s.id === "lang-typescript");
-  assert.equal(ts.status, "completed");
-  assert.equal(ts.finding_count, 2);
-  assert.equal(ts.tokens_in, 1500);
+  assert.equal(ts.status, "fail"); // important present → fail
+  assert.equal(ts.minor, 1);
+  assert.equal(ts.important, 1);
+  assert.equal(ts.critical, 0);
+  // key_finding picks the highest-severity title available
+  assert.equal(ts.key_finding, "missing return type");
+
   const ex = payload.specialists.find((s) => s.id === "fw-express");
-  assert.equal(ex.status, "skipped");
-  assert.equal(ex.finding_count, 1);
-  assert.equal(ex.skip_reason, "no express handler files");
+  assert.equal(ex.status, "fail"); // skipped → fail (status ≠ completed)
+  assert.equal(ex.key_finding, "phantom");
 });
 
-test("buildReportPayload: short_circuited and degraded_run booleans coerce", () => {
+test("buildReportPayload: short_circuited and degraded_run flow into _meta", () => {
   const sc = buildReportPayload("r", { short_circuited: true });
-  assert.equal(sc.short_circuited, true);
-  assert.equal(sc.degraded_run, false);
+  assert.equal(sc._meta.short_circuited, true);
+  assert.equal(sc._meta.degraded_run, false);
 
   const dg = buildReportPayload("r", { degraded_run: true });
-  assert.equal(dg.degraded_run, true);
-  assert.equal(dg.short_circuited, false);
+  assert.equal(dg._meta.degraded_run, true);
+  assert.equal(dg._meta.short_circuited, false);
 });
 
-test("buildReportPayload: routing block carries stage_a + stage_b verbatim", () => {
+test("buildReportPayload: routing block preserved under _meta for skill consumers", () => {
   const payload = buildReportPayload("r", {
     stage_a_candidates: [{ id: "a", path: "a.md", activation_match: ["file_globs"] }],
     picked_leaves: [{ id: "a", dimensions: ["correctness"] }],
     rejected_leaves: [{ id: "b", reason: "low signal" }],
     coverage_rescues: [{ file: "x.ts", rescued_leaf: "lang-typescript", reason: "rescue" }],
   });
-  assert.equal(payload.routing.stage_a.candidates.length, 1);
-  assert.equal(payload.routing.stage_b.picked.length, 1);
-  assert.equal(payload.routing.stage_b.rejected.length, 1);
-  assert.equal(payload.routing.stage_b.coverage_rescues.length, 1);
+  assert.equal(payload._meta.routing.stage_a.candidates.length, 1);
+  assert.equal(payload._meta.routing.stage_b.picked.length, 1);
+  assert.equal(payload._meta.routing.stage_b.rejected.length, 1);
+  assert.equal(payload._meta.routing.stage_b.coverage_rescues.length, 1);
 });

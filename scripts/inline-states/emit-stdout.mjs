@@ -23,11 +23,27 @@ const VALID_FORMATS = new Set(["markdown", "json"]);
 // kept. Index = rank; higher = more severe.
 const SEVERITY_RANK = { minor: 1, important: 2, critical: 3 };
 
-export function resolveFormat(argsBag) {
+// Format negotiation per code-reviewer.md / report-format.md:
+//   markdown : human-readable (default for TTYs)
+//   json     : machine-readable
+//   auto     : pick json when stdout is piped, markdown otherwise
+//   yaml     : reserved; no serializer bundled yet — surface a stderr
+//              notice so the user knows the flag was seen but ignored,
+//              and fall back to markdown rather than silently treating it
+//              as the default.
+export function resolveFormat(argsBag, { isTTY = process.stdout.isTTY ?? true } = {}) {
   const requested = argsBag?.format;
   if (typeof requested !== "string") return "markdown";
   const normalised = requested.toLowerCase();
-  return VALID_FORMATS.has(normalised) ? normalised : "markdown";
+  if (VALID_FORMATS.has(normalised)) return normalised;
+  if (normalised === "auto") return isTTY ? "markdown" : "json";
+  if (normalised === "yaml") {
+    process.stderr.write(
+      "(emit_stdout: --format=yaml requested but no YAML serializer is bundled — falling back to markdown)\n",
+    );
+    return "markdown";
+  }
+  return "markdown";
 }
 
 // `--scope-severity <level>` is interpreted as a threshold (per

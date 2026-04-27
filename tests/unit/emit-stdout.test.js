@@ -15,13 +15,23 @@ import {
   applyScopeFilters,
 } from "../../scripts/inline-states/emit-stdout.mjs";
 
-test("resolveFormat: defaults to markdown, accepts json, ignores unknown", () => {
+test("resolveFormat: defaults to markdown, accepts json, normalises case", () => {
   assert.equal(resolveFormat({}), "markdown");
   assert.equal(resolveFormat({ format: "markdown" }), "markdown");
   assert.equal(resolveFormat({ format: "json" }), "json");
   assert.equal(resolveFormat({ format: "JSON" }), "json");
-  assert.equal(resolveFormat({ format: "yaml" }), "markdown"); // unknown → default
   assert.equal(resolveFormat(null), "markdown");
+});
+
+test("resolveFormat: auto picks json when stdout is not a TTY", () => {
+  assert.equal(resolveFormat({ format: "auto" }, { isTTY: false }), "json");
+  assert.equal(resolveFormat({ format: "auto" }, { isTTY: true }), "markdown");
+});
+
+test("resolveFormat: yaml falls back to markdown (no serializer bundled)", () => {
+  // resolveFormat writes a stderr notice for yaml; assert the return value
+  // rather than the side effect.
+  assert.equal(resolveFormat({ format: "yaml" }), "markdown");
 });
 
 test("parseSeverityThreshold: returns the rank floor for valid levels", () => {

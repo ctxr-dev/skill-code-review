@@ -67,5 +67,8 @@ export function renderReportMarkdown(payload) {
     lines.push("");
   }
 
-  return lines.join("\n");
+  // Trail a single newline so the file matches `renderReportJson()`'s
+  // POSIX-friendly "ends in \n" convention. Tools like `cat` and many
+  // editors flag missing-EOF-newline.
+  return lines.join("\n") + "\n";
 }

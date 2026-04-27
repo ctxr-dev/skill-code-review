@@ -114,6 +114,38 @@ test("computeHashKey: same prompt body in CRLF and LF produces the same hash", a
   }
 });
 
+test("computeHashKey: rejects traversal / absolute promptTemplate (defense in depth)", () => {
+  // Even though run-review wraps paths in repoRelativePromptPath first,
+  // computeHashKey is exported and could be called from tooling that
+  // skips that sanitiser. Without this guard, `../../etc/passwd` would
+  // fold the resolved file into the hash.
+  const root = mkdtempSync(join(tmpdir(), "replay-defense-"));
+  try {
+    assert.throws(
+      () =>
+        computeHashKey({
+          state: "s",
+          promptTemplate: "../etc/passwd",
+          inputs: {},
+          repoRoot: root,
+        }),
+      /traversal segments or absolute roots/,
+    );
+    assert.throws(
+      () =>
+        computeHashKey({
+          state: "s",
+          promptTemplate: "/etc/passwd",
+          inputs: {},
+          repoRoot: root,
+        }),
+      /traversal segments or absolute roots/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("computeHashKey: throws when promptTemplate is unreadable under a given repoRoot", () => {
   // A bad promptTemplate path under a real repoRoot must surface — silent
   // empty-content fallback would mask a bug as a systematic replay miss.

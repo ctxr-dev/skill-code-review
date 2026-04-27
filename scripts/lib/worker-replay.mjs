@@ -122,6 +122,20 @@ export function computeHashKey({ state, promptTemplate, inputs, repoRoot }) {
   // hashing only the path — that mode is documented and intentional.
   let promptBody = "";
   if (typeof repoRoot === "string" && typeof promptTemplate === "string" && promptTemplate.length > 0) {
+    // Defense in depth: even though the runner runs paths through
+    // repoRelativePromptPath first, computeHashKey is exported and
+    // could be called from tooling that forgets the upstream sanitiser.
+    // Reject traversal / absolute paths here too so a misuse can't
+    // pull `<repoRoot>/../etc/passwd` into the hash.
+    if (
+      /(^|[\\/])\.\.([\\/]|$)/.test(promptTemplate) ||
+      promptTemplate.startsWith("/") ||
+      /^[A-Za-z]:[\\/]/.test(promptTemplate)
+    ) {
+      throw new Error(
+        `computeHashKey: promptTemplate must be a repo-relative path with no traversal segments or absolute roots; got ${JSON.stringify(promptTemplate)}`,
+      );
+    }
     const candidate = resolve(repoRoot, promptTemplate);
     try {
       promptBody = readFileSync(candidate, "utf8");

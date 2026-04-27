@@ -36,6 +36,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { loadConfig, resolveSettings, runEnv } from "@ctxr/fsm";
 
+import { validateTrimOutput } from "./lib/trim-output-validator.mjs";
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "..");
 const INLINE_STATES_DIR = resolve(__dirname, "inline-states");
@@ -443,6 +445,25 @@ async function main() {
       fail(`--run-id must be lowercase alnum + dashes, 3-64 chars; got: ${runId}`);
     }
     const outputs = readJsonFile(outputsFile, "--outputs-file");
+
+    // B8 referential-integrity: when the worker output looks like trim
+    // output (`picked_leaves[]` present), validate cross-references against
+    // the run env BEFORE handing it to fsm-commit. JSON-Schema only checks
+    // shape; the trim worker can fabricate ids / paths / files that pass
+    // the schema but break downstream consumers. Abort here on any
+    // violation rather than let a bad trim output corrupt the env.
+    if (outputs && Array.isArray(outputs.picked_leaves)) {
+      const storageRoot = resolveStorageRoot();
+      const env = runEnv(runId, { storageRoot });
+      const v = validateTrimOutput(outputs, env, { repoRoot: REPO_ROOT });
+      if (!v.ok) {
+        fail(
+          `llm_trim referential-integrity validation failed: ${v.errors.join("; ")}`,
+          { state: "llm_trim", violations: v.errors },
+        );
+      }
+    }
+
     const commit = runFsmCommit({ runId, outputs });
     if (!commit.ok) {
       fail(`fsm-commit failed: ${commit.error}`, { raw: commit.raw });

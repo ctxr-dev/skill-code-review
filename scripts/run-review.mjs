@@ -79,7 +79,7 @@ export function runTrimValidationGate(runId, outputs, _deps = {}) {
     return {
       ok: false,
       message: `llm_trim referential-integrity validation failed: ${v.errors.join("; ")}`,
-      details: { state: "llm_trim", violations: v.errors },
+      details: { state: "llm_trim", run_id: runId, violations: v.errors },
     };
   }
   return { ok: true };

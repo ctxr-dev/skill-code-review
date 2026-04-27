@@ -194,7 +194,11 @@ function looksLikeTrimOutput(outputs) {
 function leafPathExists(repoRoot, leafPath) {
   if (typeof leafPath !== "string" || leafPath.length === 0) return false;
   if (!leafPath.endsWith(".md")) return false;
-  const base = leafPath.split("/").pop();
+  // Split on both POSIX `/` and Windows `\` so `cluster-a\index.md`
+  // (a worker output created on Windows) still gets caught by the
+  // leaf-only check. Without this, a worker on Windows could submit
+  // `cluster-a\index.md` and bypass the index.md/dotfile guards.
+  const base = leafPath.split(/[/\\]+/).pop();
   if (!base || base === "index.md" || base.startsWith(".")) return false;
   const wikiRoot = resolve(repoRoot, "reviewers.wiki");
   let realWiki;

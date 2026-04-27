@@ -179,20 +179,22 @@ test("runTrimValidationGate: aborts on validation errors with violation details"
   assert.equal(result.ok, false);
   assert.match(result.message, /referential-integrity validation failed/);
   assert.equal(result.details.state, "llm_trim");
+  assert.equal(result.details.run_id, "run-1", "run_id must be present in validation-failure details for fault-trace correlation");
   assert.ok(Array.isArray(result.details.violations));
   assert.ok(result.details.violations.length > 0);
 });
 
-test("runTrimValidationGate: clean trim output passes", () => {
-  // A trim output whose picked leaf matches stage_a_candidates by
-  // {id, path} and resolves to a wiki file we don't have on disk
-  // (path-resolution is class 2) should report a class-2 violation but
-  // not crash. We're just asserting the happy path returns an `ok`
-  // shape without throwing — the validator's correctness is covered by
-  // its own test suite.
+test("runTrimValidationGate: null outputs treated as no-op (gate doesn't fire)", () => {
+  // The gate only validates outputs that look like trim output. `null`
+  // is the explicit no-op input — the runner can call this gate from
+  // every --continue without first sniffing the worker's identity, and
+  // anything that isn't a trim shape (including null/undefined or a
+  // different worker's payload) falls through without touching the env
+  // loaders. The validator's own correctness is covered by its
+  // dedicated test suite.
   const result = runTrimValidationGate(
     "run-1",
-    null, // null is treated as no-op
+    null,
     {
       resolveStorageRoot: () => "/tmp",
       runEnv: () => ({}),

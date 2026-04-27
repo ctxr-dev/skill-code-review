@@ -11,7 +11,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { validateTrimOutput } from "../../scripts/lib/trim-output-validator.mjs";
@@ -34,7 +34,7 @@ let HERMETIC_REPO_ROOT;
 
 function writeLeaf(repoRoot, relPath, id) {
   const abs = join(repoRoot, "reviewers.wiki", relPath);
-  mkdirSync(join(abs, ".."), { recursive: true });
+  mkdirSync(dirname(abs), { recursive: true });
   writeFileSync(
     abs,
     `---\nid: ${id}\ntype: leaf\n---\n\n# ${id}\n`,

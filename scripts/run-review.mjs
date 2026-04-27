@@ -307,7 +307,13 @@ async function main() {
 }
 
 // Gate the auto-run on "this is the entrypoint" so unit tests can import
-// helpers from this module without firing the FSM loop.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((err) => fail(`unhandled error: ${err.stack || err.message}`));
+// helpers from this module without firing the FSM loop. `process.argv[1]`
+// is sometimes relative (e.g. `node scripts/run-review.mjs`); resolve it
+// to an absolute path before pathToFileURL — pathToFileURL throws on
+// relative inputs.
+if (process.argv[1]) {
+  const entryUrl = pathToFileURL(resolve(process.argv[1])).href;
+  if (import.meta.url === entryUrl) {
+    main().catch((err) => fail(`unhandled error: ${err.stack || err.message}`));
+  }
 }

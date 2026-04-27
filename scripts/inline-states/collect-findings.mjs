@@ -79,7 +79,10 @@ export default async function collectFindings({ env }) {
     const aLine = a.line ?? 0;
     const bLine = b.line ?? 0;
     if (aLine !== bLine) return aLine - bLine;
-    return normaliseTitle(a.title) < normaliseTitle(b.title) ? -1 : 1;
+    const aTitle = normaliseTitle(a.title);
+    const bTitle = normaliseTitle(b.title);
+    if (aTitle === bTitle) return 0;
+    return aTitle < bTitle ? -1 : 1;
   });
 
   const severityCounts = { critical: 0, important: 0, minor: 0 };

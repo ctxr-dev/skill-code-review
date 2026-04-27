@@ -81,10 +81,11 @@ export function repoRelativePromptPath(briefPath) {
   if (
     /(^|[\\/])\.\.([\\/]|$)/.test(briefPath) ||
     briefPath.startsWith("/") ||
+    briefPath.startsWith("\\") ||
     /^[A-Za-z]:[\\/]/.test(briefPath)
   ) {
     throw new Error(
-      `repoRelativePromptPath: traversal / absolute paths are rejected; got ${JSON.stringify(briefPath)}`,
+      `repoRelativePromptPath: traversal / absolute / UNC paths are rejected; got ${JSON.stringify(briefPath)}`,
     );
   }
   // Already repo-relative (starts with `fsm/`) → pass through unchanged.
@@ -592,8 +593,8 @@ async function main() {
     }
     const brief = start.payload;
     // Read replay-mode from the runner-level CLI flag only. Pulling it
-     // from argsBag would forward it into env.args (the FSM run env),
-     // which makes the worker hash differ between record vs replay.
+    // from argsBag would forward it into env.args (the FSM run env),
+    // which makes the worker hash differ between record vs replay.
     const replayMode = resolveReplayMode(
       { "replay-mode": args["replay-mode"] },
       {
@@ -625,13 +626,15 @@ async function main() {
     }
     const outputs = readJsonFile(outputsFile, "--outputs-file");
 
-    // --replay-mode must be passed on EACH --continue invocation. The
-    // runner is stateless across CLI calls; if --start was invoked with
-    // --replay-mode=record but a subsequent --continue omitted the flag,
-    // those outputs would silently NOT be recorded. Callers driving the
-    // record/replay flow should set the same mode on every call. (A
-    // future enhancement could persist the mode in the run dir's
-    // manifest, but for now per-call is the documented contract.)
+    // --replay-mode SHOULD be passed on EACH --continue invocation. The
+    // runner is stateless across CLI calls and the flag defaults to
+    // "live" when omitted; if --start was invoked with
+    // --replay-mode=record but a subsequent --continue omitted the
+    // flag, those outputs would silently NOT be recorded. Callers
+    // driving the record/replay flow should set the same mode on every
+    // call. (A future enhancement could persist the mode in the run
+    // dir's manifest so --continue infers it; for now per-call is the
+    // documented contract.)
     const replayMode = resolveReplayMode(
       { "replay-mode": args["replay-mode"] },
       {
@@ -694,8 +697,8 @@ async function main() {
 
   fail(
     "Usage:\n" +
-      "  run-review.mjs --start --base <sha> --head <sha> [--args-file <path>]\n" +
-      "  run-review.mjs --continue --run-id <id> --outputs-file <path>",
+      "  run-review.mjs --start --base <sha> --head <sha> [--args-file <path>] [--replay-mode <live|record|replay>]\n" +
+      "  run-review.mjs --continue --run-id <id> --outputs-file <path> [--replay-mode <live|record|replay>]",
   );
 }
 

@@ -114,33 +114,29 @@ test("computeHashKey: same prompt body in CRLF and LF produces the same hash", a
   }
 });
 
-test("computeHashKey: rejects traversal / absolute promptTemplate (defense in depth)", () => {
+test("computeHashKey: rejects traversal / absolute / UNC promptTemplate (defense in depth)", () => {
   // Even though run-review wraps paths in repoRelativePromptPath first,
   // computeHashKey is exported and could be called from tooling that
-  // skips that sanitiser. Without this guard, `../../etc/passwd` would
-  // fold the resolved file into the hash.
+  // skips that sanitiser. Without these guards, `../../etc/passwd` (or
+  // a Windows-rooted / UNC path) would fold the resolved file into the
+  // hash. Cover POSIX absolute, Windows drive-letter, leading-backslash,
+  // and UNC variants in one parameterised pass.
   const root = mkdtempSync(join(tmpdir(), "replay-defense-"));
   try {
-    assert.throws(
-      () =>
-        computeHashKey({
-          state: "s",
-          promptTemplate: "../etc/passwd",
-          inputs: {},
-          repoRoot: root,
-        }),
-      /traversal segments or absolute roots/,
-    );
-    assert.throws(
-      () =>
-        computeHashKey({
-          state: "s",
-          promptTemplate: "/etc/passwd",
-          inputs: {},
-          repoRoot: root,
-        }),
-      /traversal segments or absolute roots/,
-    );
+    const bad = [
+      "../etc/passwd",
+      "/etc/passwd",
+      "C:\\Windows\\System32",
+      "\\Windows\\System32",
+      "\\\\server\\share\\file",
+    ];
+    for (const promptTemplate of bad) {
+      assert.throws(
+        () => computeHashKey({ state: "s", promptTemplate, inputs: {}, repoRoot: root }),
+        /traversal segments or absolute/,
+        `expected throw for promptTemplate=${JSON.stringify(promptTemplate)}`,
+      );
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

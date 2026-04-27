@@ -136,11 +136,17 @@ test("repoRelativePromptPath: rejects path traversal and absolute paths", () => 
   // The hashing harness reads `<repoRoot>/<promptTemplate>`; without
   // these guards a tampered FSM YAML could pull arbitrary files into
   // the recorded fixture's content fingerprint.
-  assert.throws(() => repoRelativePromptPath("../etc/passwd"), /traversal/);
-  assert.throws(() => repoRelativePromptPath("workers/../../etc/passwd"), /traversal/);
-  assert.throws(() => repoRelativePromptPath("/etc/passwd"), /absolute/);
-  assert.throws(() => repoRelativePromptPath("C:\\Windows\\System32"), /absolute/);
-  assert.throws(() => repoRelativePromptPath("..\\evil.md"), /traversal/);
+  assert.throws(() => repoRelativePromptPath("../etc/passwd"), /traversal|absolute/);
+  assert.throws(() => repoRelativePromptPath("workers/../../etc/passwd"), /traversal|absolute/);
+  assert.throws(() => repoRelativePromptPath("/etc/passwd"), /traversal|absolute/);
+  assert.throws(() => repoRelativePromptPath("C:\\Windows\\System32"), /traversal|absolute/);
+  assert.throws(() => repoRelativePromptPath("..\\evil.md"), /traversal|absolute/);
+  // Windows leading-backslash and UNC forms must also be rejected:
+  // `\Windows\...` and `\\server\share\...` get normalized into
+  // `<repoRoot>\Windows\...` / similar by path.resolve on Windows,
+  // which escapes the intended repo-relative scope.
+  assert.throws(() => repoRelativePromptPath("\\Windows\\System32"), /traversal|absolute|UNC/);
+  assert.throws(() => repoRelativePromptPath("\\\\server\\share\\file"), /traversal|absolute|UNC/);
 });
 
 test("isValidGitRef: rejects shell metacharacters, leading dash, overlong", () => {

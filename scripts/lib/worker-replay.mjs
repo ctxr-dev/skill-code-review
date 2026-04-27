@@ -130,10 +130,11 @@ export function computeHashKey({ state, promptTemplate, inputs, repoRoot }) {
     if (
       /(^|[\\/])\.\.([\\/]|$)/.test(promptTemplate) ||
       promptTemplate.startsWith("/") ||
+      promptTemplate.startsWith("\\") ||
       /^[A-Za-z]:[\\/]/.test(promptTemplate)
     ) {
       throw new Error(
-        `computeHashKey: promptTemplate must be a repo-relative path with no traversal segments or absolute roots; got ${JSON.stringify(promptTemplate)}`,
+        `computeHashKey: promptTemplate must be a repo-relative path with no traversal segments or absolute / UNC roots; got ${JSON.stringify(promptTemplate)}`,
       );
     }
     const candidate = resolve(repoRoot, promptTemplate);

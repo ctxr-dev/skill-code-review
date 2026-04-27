@@ -324,5 +324,6 @@ test("reproducibility: full inline pipeline twice on sensitive fixture", async (
   // driver.
   assert.equal(manifest.readiness.verdict, "NO-GO");
   const gate6 = manifest.readiness.gates.find((g) => g.number === 6);
+  assert.ok(gate6, "Gate 6 (Security & Safety) must exist in the gates array");
   assert.equal(gate6.status, "FAIL");
 });

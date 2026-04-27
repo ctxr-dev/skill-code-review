@@ -167,7 +167,13 @@ test("buildReportPayload: specialist row buckets findings by severity", () => {
 
   const ex = payload.specialists.find((s) => s.id === "fw-express");
   assert.equal(ex.status, "fail");
-  assert.equal(ex.key_finding, "phantom");
+  // Skipped specialists' findings are intentionally discarded (per the
+  // pipeline contract: only completed specialists contribute findings).
+  // key_finding falls through to skip_reason instead.
+  assert.equal(ex.key_finding, "no express handler files");
+  assert.equal(ex.critical, 0);
+  assert.equal(ex.important, 0);
+  assert.equal(ex.minor, 0);
 });
 
 test("buildReportPayload: tool row maps `output` to `output_summary` for canonical shape", () => {

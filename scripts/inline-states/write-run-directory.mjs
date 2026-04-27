@@ -97,7 +97,13 @@ function buildIssue(finding, idx) {
 }
 
 function buildSpecialistRow(s) {
-  const findings = Array.isArray(s.findings) ? s.findings : [];
+  // Skipped / errored specialists do NOT contribute findings to the report
+  // surface (per the pipeline contract: only completed specialists' findings
+  // flow through collect-findings). Zero out their counts to avoid leaking
+  // phantom severities into the report's specialist summary even when a
+  // worker stub left a `findings: [...]` array on a non-completed status.
+  const isCompleted = s.status === "completed";
+  const findings = isCompleted && Array.isArray(s.findings) ? s.findings : [];
   let critical = 0;
   let important = 0;
   let minor = 0;
@@ -109,7 +115,7 @@ function buildSpecialistRow(s) {
   // Canonical field is `status` ∈ {pass, fail} per the spec. Map skipped /
   // error to fail (the report still surfaces them in the worker section, but
   // they don't get to claim PASS).
-  const ok = s.status === "completed" && critical === 0 && important === 0;
+  const ok = isCompleted && critical === 0 && important === 0;
   return {
     id: s.id,
     status: ok ? "pass" : "fail",

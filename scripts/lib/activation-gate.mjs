@@ -76,7 +76,13 @@ export function evaluateActivation({ leaves, changed_paths, project_profile, dif
 
   // First pass: file_globs / keyword_matches / structural_signals.
   for (const leaf of inputLeaves) {
-    const activation = leaf?.activation ?? {};
+    // Leaves without a string `id` would key the Map under `undefined` (or
+    // some non-canonical primitive), collapsing distinct leaves into one
+    // entry and producing wrong activation results. Skip them — the corpus
+    // contract is that every leaf has a stable kebab-case `id`; anything
+    // else is a malformed input we shouldn't paper over silently.
+    if (typeof leaf?.id !== "string" || leaf.id === "") continue;
+    const activation = leaf.activation ?? {};
     const fired = [];
     if (fileGlobsMatch(activation.file_globs, changedPaths)) fired.push("file_globs");
     if (keywordMatches(activation.keyword_matches, diff_text)) fired.push("keyword_matches");
@@ -96,8 +102,11 @@ export function evaluateActivation({ leaves, changed_paths, project_profile, dif
     changed = false;
     iterations++;
     for (const leaf of inputLeaves) {
+      // Same id-validity guard as the first pass — keeps the Map keyed by
+      // the canonical leaf id only.
+      if (typeof leaf?.id !== "string" || leaf.id === "") continue;
       if (activated.has(leaf.id)) continue;
-      const escalateFrom = leaf?.activation?.escalation_from;
+      const escalateFrom = leaf.activation?.escalation_from;
       if (!Array.isArray(escalateFrom) || escalateFrom.length === 0) continue;
       const triggered = escalateFrom.some((parentId) => activated.has(parentId));
       if (triggered) {

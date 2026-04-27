@@ -50,10 +50,15 @@ export function parseArgs(argv) {
   const args = {};
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
+    // POSIX `--` terminates option parsing; everything after is positional.
+    // Treating it as an option (which the naive startsWith("--") check
+    // does) would create an `args[""]` entry and swallow the trailing
+    // positionals.
+    if (a === "--") break;
     if (!a.startsWith("--")) continue;
     const key = a.slice(2);
     const next = argv[i + 1];
-    if (next === undefined || next.startsWith("--")) {
+    if (next === undefined || next === "--" || next.startsWith("--")) {
       args[key] = true;
       continue;
     }
@@ -71,8 +76,11 @@ function emit(payload) {
 // allowlist: SHAs are hex-only, refs are alnum / dash / underscore / slash /
 // dot. Reject anything containing shell metacharacters so values can't
 // inject into downstream `git` invocations even if the engine forwards them
-// to a shell context.
-const GIT_REF_PATTERN = /^[A-Za-z0-9_./-]{1,255}$/;
+// to a shell context. Also reject refs that START with `-`: even with
+// metacharacters scrubbed, `-something` would be parsed by `git` as an
+// option (`-n`, `--upload-pack=...`, etc.) and turn into option injection
+// if any downstream call lacks a `--` separator before the ref.
+const GIT_REF_PATTERN = /^(?!-)[A-Za-z0-9_./-]{1,255}$/;
 export function isValidGitRef(value) {
   return typeof value === "string" && GIT_REF_PATTERN.test(value);
 }

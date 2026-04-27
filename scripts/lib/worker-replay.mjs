@@ -212,16 +212,22 @@ export function fixturePath(fixturesRoot, state, hashKey) {
   return join(fixturesRoot, state, `${hashKey}.json`);
 }
 
-// Look up a recorded fixture. Returns the parsed outputs object on hit,
-// null on a true cache miss (fixture file does not exist). Read errors
-// and JSON parse errors throw so the caller can distinguish "no
-// fixture recorded" (the harmless replay miss case) from "fixture
+// Look up a recorded fixture. Returns a structured result so a true
+// cache miss (no file on disk) is unambiguously distinguishable from a
+// legitimate fixture whose recorded `outputs` is null.
+//
+//   { hit: false }              — fixture file does not exist
+//   { hit: true, outputs: ... } — fixture loaded; outputs may be any
+//                                 JSON value, including null
+//
+// Read errors and JSON parse errors throw so the caller can distinguish
+// "no fixture recorded" (the harmless replay miss case) from "fixture
 // recorded but corrupted" (a hard error that masquerading as a miss
 // would silently regress the replay). Replay mode in run-review.mjs
 // turns the throw into a structured fault.
 export function replayLookup(fixturesRoot, state, hashKey) {
   const path = fixturePath(fixturesRoot, state, hashKey);
-  if (!existsSync(path)) return null;
+  if (!existsSync(path)) return { hit: false };
   let raw;
   try {
     raw = readFileSync(path, "utf8");
@@ -241,13 +247,12 @@ export function replayLookup(fixturesRoot, state, hashKey) {
   // Each fixture stores both the original meta (for debugging) and the
   // worker's outputs. The replay path returns just `outputs`; meta is
   // optional and only present when the file was written by recordOutputs.
-  // Use Object.hasOwn for property presence (not a truthiness check) so
-  // a fixture that legitimately recorded `outputs: null` still returns
-  // null instead of falling back to the wrapping `{outputs, meta}` object.
+  // Use Object.hasOwn for property presence so a fixture that legitimately
+  // recorded `outputs: null` is preserved (not collapsed into a miss).
   if (parsed && typeof parsed === "object" && Object.hasOwn(parsed, "outputs")) {
-    return parsed.outputs;
+    return { hit: true, outputs: parsed.outputs };
   }
-  return parsed;
+  return { hit: true, outputs: parsed };
 }
 
 // Persist worker outputs to the fixtures tree. Returns the absolute path

@@ -142,12 +142,16 @@ test("computeHashKey: rejects traversal / absolute / UNC promptTemplate (defense
   }
 });
 
-test("computeHashKey: rejects symlink that escapes repoRoot", async () => {
+test("computeHashKey: rejects symlink that escapes repoRoot", { skip: process.platform === "win32" ? "symlinkSync requires admin/Developer Mode on Windows" : false }, async () => {
   // Even a sanitised `fsm/workers/p.md` could target a symlink whose
   // realpath resolves outside the repo. Without the realpath boundary
   // check, a tampered prompt symlink would let an attacker fold
   // arbitrary file contents (e.g. /etc/passwd) into the hash and the
   // recorded fixture's content fingerprint.
+  //
+  // Windows: skip — fs.symlinkSync(file) requires admin / Developer
+  // Mode and most contributors will hit EPERM. The realpath boundary
+  // check itself is platform-agnostic; POSIX coverage is sufficient.
   const { mkdirSync, writeFileSync, symlinkSync, mkdtempSync } = await import("node:fs");
   const { tmpdir: td } = await import("node:os");
   const outsideDir = mkdtempSync(join(td(), "replay-outside-"));
@@ -156,7 +160,12 @@ test("computeHashKey: rejects symlink that escapes repoRoot", async () => {
   const repoRoot = makeTmpDir();
   try {
     mkdirSync(join(repoRoot, "fsm", "workers"), { recursive: true });
-    symlinkSync(outsideFile, join(repoRoot, "fsm", "workers", "leaky.md"));
+    try {
+      symlinkSync(outsideFile, join(repoRoot, "fsm", "workers", "leaky.md"));
+    } catch (err) {
+      if (err.code === "EPERM") return; // sandboxed runner without symlink permission
+      throw err;
+    }
     assert.throws(
       () =>
         computeHashKey({
@@ -239,17 +248,38 @@ test("recordOutputs + replayLookup: round-trip on disk", () => {
     });
     assert.ok(existsSync(written));
     const replayed = replayLookup(root, "llm_trim", hashKey);
-    assert.deepEqual(replayed, outputs);
+    assert.deepEqual(replayed, { hit: true, outputs });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("replayLookup: returns null on cache miss", () => {
+test("replayLookup: cache miss returns {hit: false}", () => {
   const root = makeTmpDir();
   try {
     const replayed = replayLookup(root, "llm_trim", "0".repeat(64));
-    assert.equal(replayed, null);
+    assert.deepEqual(replayed, { hit: false });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("replayLookup: legitimately-recorded null outputs distinguish from cache miss", async () => {
+  // A fixture written with `{ outputs: null }` must replay as
+  // {hit:true, outputs:null}, NOT collapse into a {hit:false} miss.
+  // Without the structured result shape, the caller can't tell these
+  // apart and replay-mode would silently retry a fixture that was
+  // legitimately recorded as null.
+  const root = makeTmpDir();
+  try {
+    const hashKey = "9".repeat(64);
+    const path = fixturePath(root, "llm_trim", hashKey);
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    const { dirname: dn } = await import("node:path");
+    mkdirSync(dn(path), { recursive: true });
+    writeFileSync(path, '{"outputs": null}\n', "utf8");
+    const replayed = replayLookup(root, "llm_trim", hashKey);
+    assert.deepEqual(replayed, { hit: true, outputs: null });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -331,7 +361,7 @@ test("end-to-end: record then replay produces structurally identical output", ()
     const first = replayLookup(root, "llm_trim", hashKey);
     const second = replayLookup(root, "llm_trim", hashKey);
     assert.deepEqual(first, second);
-    assert.deepEqual(first, fixture);
+    assert.deepEqual(first, { hit: true, outputs: fixture });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

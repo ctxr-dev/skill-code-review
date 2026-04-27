@@ -442,8 +442,27 @@ export function handleWorkerStateBrief(brief, runId, opts = {}, _deps = {}) {
   const runDirPathFn = _deps.runDirPath ?? runDirPath;
   const fixturesRoot = _deps.fixturesRoot ?? FIXTURES_ROOT;
 
-  const storageRoot = resolveStorageRootFn();
-  const env = runEnvFn(runId, { storageRoot });
+  // resolveStorageRoot reads .fsmrc.json + walks @ctxr/fsm config; runEnv
+  // reads the run-storage tree on disk. Either can throw on a missing /
+  // corrupt config or storage. Convert to an in-flow fault so the run
+  // stops cleanly instead of crashing out as a top-level {status:"error"}.
+  let storageRoot, env;
+  try {
+    storageRoot = resolveStorageRootFn();
+    env = runEnvFn(runId, { storageRoot });
+  } catch (err) {
+    return {
+      kind: "fault",
+      payload: {
+        status: "fault",
+        run_id: runId,
+        fault: {
+          state: brief.state,
+          reason: `failed to load run env: ${err?.message ?? String(err)}`,
+        },
+      },
+    };
+  }
 
   // hashKeyForBrief can throw when the prompt template is unreadable.
   let hashKey;
@@ -482,7 +501,7 @@ export function handleWorkerStateBrief(brief, runId, opts = {}, _deps = {}) {
         },
       };
     }
-    if (cached === null) {
+    if (!cached.hit) {
       return {
         kind: "fault",
         payload: {
@@ -496,7 +515,7 @@ export function handleWorkerStateBrief(brief, runId, opts = {}, _deps = {}) {
         },
       };
     }
-    const commit = runFsmCommitFn({ runId, outputs: cached });
+    const commit = runFsmCommitFn({ runId, outputs: cached.outputs });
     if (!commit.ok) {
       return {
         kind: "fault",

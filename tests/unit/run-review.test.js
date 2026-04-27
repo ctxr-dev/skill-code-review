@@ -150,6 +150,30 @@ test("repoRelativePromptPath: rejects path traversal and absolute paths", () => 
   assert.throws(() => repoRelativePromptPath("\\\\server\\share\\file"), /traversal|absolute|UNC/);
 });
 
+test("handleWorkerStateBrief: env-loader failure surfaces as in-flow fault, not crash", () => {
+  // resolveStorageRoot reads .fsmrc.json + fsm config; runEnv reads
+  // run-storage on disk. Either can throw on a missing/corrupt config
+  // or storage tree. The helper must wrap them so failures convert to
+  // {kind:"fault"} instead of bubbling out as a top-level error.
+  const result = handleWorkerStateBrief(
+    { state: "llm_trim", has_worker: true },
+    "run-1",
+    { replayMode: "live" },
+    {
+      resolveStorageRoot: () => { throw new Error("fsm config missing"); },
+      runEnv: () => assert.fail("must not reach runEnv when resolveStorageRoot threw"),
+      hashKeyForBrief: () => assert.fail("must not reach hashKey"),
+      replayLookup: () => assert.fail("must not reach replay"),
+      runFsmCommit: () => assert.fail("must not commit"),
+      stashPendingBrief: () => {},
+      runDirPath: () => "/tmp/run",
+      fixturesRoot: "/tmp/fixtures",
+    },
+  );
+  assert.equal(result.kind, "fault");
+  assert.match(result.payload.fault.reason, /failed to load run env/);
+});
+
 test("handleWorkerStateBrief: replay HIT auto-commits and advances", () => {
   // Replay returns a recorded fixture; the helper must run fsm-commit
   // and return kind:"advance" with the new payload, never emitting
@@ -164,7 +188,7 @@ test("handleWorkerStateBrief: replay HIT auto-commits and advances", () => {
       resolveStorageRoot: () => "/tmp",
       runEnv: () => ({}),
       hashKeyForBrief: () => "a".repeat(64),
-      replayLookup: () => recordedOutputs,
+      replayLookup: () => ({ hit: true, outputs: recordedOutputs }),
       runFsmCommit: ({ runId, outputs }) => {
         assert.equal(runId, "run-1");
         assert.deepEqual(outputs, recordedOutputs);
@@ -188,7 +212,7 @@ test("handleWorkerStateBrief: replay MISS faults with hash_key in details", () =
       resolveStorageRoot: () => "/tmp",
       runEnv: () => ({}),
       hashKeyForBrief: () => "b".repeat(64),
-      replayLookup: () => null,
+      replayLookup: () => ({ hit: false }),
       runFsmCommit: () => assert.fail("must not commit on a miss"),
       stashPendingBrief: () => {},
       runDirPath: () => "/tmp/run",
@@ -250,7 +274,7 @@ test("handleWorkerStateBrief: record-mode stash failure surfaces as fault", () =
       resolveStorageRoot: () => "/tmp",
       runEnv: () => ({}),
       hashKeyForBrief: () => "d".repeat(64),
-      replayLookup: () => null,
+      replayLookup: () => ({ hit: false }),
       runFsmCommit: () => assert.fail("must not commit"),
       stashPendingBrief: () => { throw new Error("disk full"); },
       runDirPath: () => "/tmp/run",
@@ -273,7 +297,7 @@ test("handleWorkerStateBrief: live-mode pauses with awaiting_worker even when st
       resolveStorageRoot: () => "/tmp",
       runEnv: () => ({}),
       hashKeyForBrief: () => "e".repeat(64),
-      replayLookup: () => null,
+      replayLookup: () => ({ hit: false }),
       runFsmCommit: () => assert.fail("must not commit"),
       stashPendingBrief: () => { throw new Error("disk full"); },
       runDirPath: () => "/tmp/run",

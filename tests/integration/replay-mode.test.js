@@ -66,7 +66,7 @@ test("integration: record → two replays produce identical outputs (parsed and 
     const a = replayLookup(fixturesRoot, "llm_trim", hashKey);
     const b = replayLookup(fixturesRoot, "llm_trim", hashKey);
     assert.deepEqual(a, b, "two replays must agree (parsed)");
-    assert.deepEqual(a, recordedOutputs);
+    assert.deepEqual(a, { hit: true, outputs: recordedOutputs });
 
     // Byte-level stability: re-record the same fixture with keys in a
     // different insertion order and confirm the on-disk file is
@@ -101,7 +101,7 @@ test("integration: prompt content edit invalidates the recorded hash", () => {
       hashKey: hashV1,
       outputs: { picked_leaves: [], rejected_leaves: [], coverage_rescues: [] },
     });
-    assert.ok(replayLookup(fixturesRoot, "llm_trim", hashV1));
+    assert.equal(replayLookup(fixturesRoot, "llm_trim", hashV1).hit, true);
 
     // Edit the prompt body — the path is the same, but the content
     // changed, so the hash MUST change. Same inputs, same state, same
@@ -113,9 +113,9 @@ test("integration: prompt content edit invalidates the recorded hash", () => {
     );
     const hashV2 = computeHashKey({ state: "llm_trim", promptTemplate, inputs, repoRoot });
     assert.notEqual(hashV1, hashV2, "hash must change when the prompt body changes");
-    assert.equal(
+    assert.deepEqual(
       replayLookup(fixturesRoot, "llm_trim", hashV2),
-      null,
+      { hit: false },
       "prompt drift must produce a replay miss, not a stale hit",
     );
   } finally {
@@ -144,7 +144,7 @@ test("integration: input change → different hash → replay miss", () => {
       repoRoot,
     });
     assert.notEqual(hashA, hashB);
-    assert.equal(replayLookup(fixturesRoot, "llm_trim", hashB), null);
+    assert.deepEqual(replayLookup(fixturesRoot, "llm_trim", hashB), { hit: false });
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }

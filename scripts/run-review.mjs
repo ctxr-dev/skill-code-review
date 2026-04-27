@@ -34,7 +34,7 @@ import { dirname, join, resolve } from "node:path";
 import { tmpdir, platform } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { loadConfig, resolveSettings, runEnv, runDirPath } from "@ctxr/fsm";
+import { resolveSettings, runEnv, runDirPath } from "@ctxr/fsm";
 
 import {
   resolveReplayMode,
@@ -70,6 +70,23 @@ const FSM_YAML_DIR_REL = "fsm";
 
 export function repoRelativePromptPath(briefPath) {
   if (typeof briefPath !== "string" || briefPath.length === 0) return "";
+  // Reject absolute paths and any traversal segment up front. The hashing
+  // harness reads `<repoRoot>/<promptTemplate>`; without these guards a
+  // brief carrying `../etc/passwd` or `/abs/path` would let a tampered
+  // FSM YAML pull arbitrary files into the hash (and into the recorded
+  // fixture's content fingerprint). Legitimate shapes are
+  // `workers/<role>.md` (FSM-yaml-relative) or `fsm/workers/<role>.md`
+  // (already repo-relative). Throw rather than silently sanitize so a
+  // malformed brief surfaces immediately.
+  if (
+    /(^|[\\/])\.\.([\\/]|$)/.test(briefPath) ||
+    briefPath.startsWith("/") ||
+    /^[A-Za-z]:[\\/]/.test(briefPath)
+  ) {
+    throw new Error(
+      `repoRelativePromptPath: traversal / absolute paths are rejected; got ${JSON.stringify(briefPath)}`,
+    );
+  }
   // Already repo-relative (starts with `fsm/`) → pass through unchanged.
   // Otherwise prepend the FSM-YAML directory so paths like
   // `workers/project-scanner.md` become `fsm/workers/project-scanner.md`.
@@ -101,9 +118,15 @@ const REPO_ROOT = resolve(__dirname, "..");
 const INLINE_STATES_DIR = resolve(__dirname, "inline-states");
 
 function resolveStorageRoot() {
-  const config = loadConfig(REPO_ROOT);
-  const settings = resolveSettings(config, { fsmName: "code-reviewer" });
-  return resolve(REPO_ROOT, settings.storage_root);
+  // @ctxr/fsm exposes resolveSettings(cliArgs, cwd) — cliArgs is the
+  // selector ({fsmName, fsmPath, storageRoot, sessionId}), cwd is the
+  // directory to resolve the .fsmrc.json relative to. resolveSettings
+  // calls loadConfig internally; the caller does NOT pre-load. Earlier
+  // rounds of this file had it backwards (loadConfig({cwd: REPO_ROOT})
+  // and resolveSettings(config, {...})), which was hidden because this
+  // function is only on the --continue path.
+  const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
+  return resolve(REPO_ROOT, settings.storageRoot);
 }
 
 export function parseArgs(argv) {

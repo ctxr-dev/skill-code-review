@@ -162,34 +162,41 @@ export function fixturePath(fixturesRoot, state, hashKey) {
 }
 
 // Look up a recorded fixture. Returns the parsed outputs object on hit,
-// null on miss. Caller decides whether to fault (replay mode) or fall
-// through to live dispatch (live / record).
+// null on a true cache miss (fixture file does not exist). Read errors
+// and JSON parse errors throw so the caller can distinguish "no
+// fixture recorded" (the harmless replay miss case) from "fixture
+// recorded but corrupted" (a hard error that masquerading as a miss
+// would silently regress the replay). Replay mode in run-review.mjs
+// turns the throw into a structured fault.
 export function replayLookup(fixturesRoot, state, hashKey) {
   const path = fixturePath(fixturesRoot, state, hashKey);
   if (!existsSync(path)) return null;
   let raw;
   try {
     raw = readFileSync(path, "utf8");
-  } catch {
-    return null;
+  } catch (err) {
+    throw new Error(
+      `replayLookup: fixture exists at ${path} but is unreadable (${err.code ?? err.message}). Delete or fix the fixture, then re-record.`,
+    );
   }
+  let parsed;
   try {
-    const parsed = JSON.parse(raw);
-    // Each fixture stores both the original meta (for debugging) and the
-    // worker's outputs. The replay path returns just `outputs`; meta is
-    // optional and only present when the file was written by recordOutputs.
-    // Use Object.hasOwn for property presence (not a truthiness check) so
-    // a fixture that legitimately recorded `outputs: null` still returns
-    // null instead of falling back to the wrapping `{outputs, meta}`
-    // object — the call site can distinguish "no fixture" (return null
-    // from existsSync miss) from "fixture exists, output is null".
-    if (parsed && typeof parsed === "object" && Object.hasOwn(parsed, "outputs")) {
-      return parsed.outputs;
-    }
-    return parsed;
-  } catch {
-    return null;
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(
+      `replayLookup: fixture at ${path} is invalid JSON (${err.message}). Delete or fix the fixture, then re-record.`,
+    );
   }
+  // Each fixture stores both the original meta (for debugging) and the
+  // worker's outputs. The replay path returns just `outputs`; meta is
+  // optional and only present when the file was written by recordOutputs.
+  // Use Object.hasOwn for property presence (not a truthiness check) so
+  // a fixture that legitimately recorded `outputs: null` still returns
+  // null instead of falling back to the wrapping `{outputs, meta}` object.
+  if (parsed && typeof parsed === "object" && Object.hasOwn(parsed, "outputs")) {
+    return parsed.outputs;
+  }
+  return parsed;
 }
 
 // Persist worker outputs to the fixtures tree. Returns the absolute path

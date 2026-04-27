@@ -164,6 +164,24 @@ test("replayLookup: returns null on cache miss", () => {
   }
 });
 
+test("replayLookup: throws on corrupted JSON (distinct from cache miss)", async () => {
+  // A corrupted fixture must not silently masquerade as a cache miss —
+  // replay-mode needs to fault loud on stale/bad fixtures so the user
+  // can re-record. Returning null here would silently regress replay.
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const { dirname: dn } = await import("node:path");
+  const root = makeTmpDir();
+  try {
+    const hashKey = "d".repeat(64);
+    const path = fixturePath(root, "llm_trim", hashKey);
+    mkdirSync(dn(path), { recursive: true });
+    writeFileSync(path, "{not valid json", "utf8");
+    assert.throws(() => replayLookup(root, "llm_trim", hashKey), /invalid JSON/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("recordOutputs: file is pretty-printed JSON with trailing newline", () => {
   const root = makeTmpDir();
   try {

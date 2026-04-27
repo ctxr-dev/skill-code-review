@@ -120,11 +120,27 @@ test("repoRelativePromptPath: projects FSM-yaml-relative paths to repo-relative 
     repoRelativePromptPath("workers/trim-candidates.md"),
     "fsm/workers/trim-candidates.md",
   );
+  // Already repo-relative → pass through unchanged.
+  assert.equal(
+    repoRelativePromptPath("fsm/workers/trim-candidates.md"),
+    "fsm/workers/trim-candidates.md",
+  );
   // Empty / non-string inputs project to the empty string (the harness
   // treats that as "no prompt body" and only hashes the path component).
   assert.equal(repoRelativePromptPath(""), "");
   assert.equal(repoRelativePromptPath(null), "");
   assert.equal(repoRelativePromptPath(undefined), "");
+});
+
+test("repoRelativePromptPath: rejects path traversal and absolute paths", () => {
+  // The hashing harness reads `<repoRoot>/<promptTemplate>`; without
+  // these guards a tampered FSM YAML could pull arbitrary files into
+  // the recorded fixture's content fingerprint.
+  assert.throws(() => repoRelativePromptPath("../etc/passwd"), /traversal/);
+  assert.throws(() => repoRelativePromptPath("workers/../../etc/passwd"), /traversal/);
+  assert.throws(() => repoRelativePromptPath("/etc/passwd"), /absolute/);
+  assert.throws(() => repoRelativePromptPath("C:\\Windows\\System32"), /absolute/);
+  assert.throws(() => repoRelativePromptPath("..\\evil.md"), /traversal/);
 });
 
 test("isValidGitRef: rejects shell metacharacters, leading dash, overlong", () => {

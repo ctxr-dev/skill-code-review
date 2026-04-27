@@ -12,8 +12,8 @@ You do NOT review code yourself — you scan, route, collect, deduplicate, verif
 |---|---|---|
 | State machine | [`fsm/code-reviewer.fsm.yaml`](fsm/code-reviewer.fsm.yaml) | Authoritative state transitions, preconditions, outputs, worker response schemas. |
 | Runner | [`scripts/run-review.mjs`](scripts/run-review.mjs) | Drives the FSM end-to-end via `@ctxr/fsm`'s `fsm-next` / `fsm-commit` CLIs. Dispatches inline-state handlers, pauses on workers. |
-| Inline-state handlers | [`scripts/inline-states/*.mjs`](scripts/inline-states/) | Pure deterministic implementations of each non-worker step. |
-| Worker prompts | [`fsm/workers/*.md`](fsm/workers/) | LLM-judgement steps (tree-descender, trim-candidates, specialist-runner, etc.). |
+| Inline-state handlers | [`scripts/inline-states/*.mjs`](scripts/inline-states/) | Deterministic implementations of each non-worker step. (Most are pure-in/pure-out; `write-run-directory` and `emit-stdout` intentionally perform side effects — filesystem writes and stdout/stderr — but each remains byte-deterministic given identical inputs.) |
+| Worker prompts | [`fsm/workers/*.md`](fsm/workers/) | LLM-judgement steps (project-scanner, tree-descender, trim-candidates, tool-runner, specialist-coordinator). |
 | Activation gate | [`scripts/lib/activation-gate.mjs`](scripts/lib/activation-gate.mjs) | Deterministic file_globs / keyword_matches / structural_signals / escalation_from evaluation invoked by the tree-descender worker. |
 | Report shape | [`report-format.md`](report-format.md) | Canonical JSON / markdown report contract — what `report.json` and `report.md` look like. |
 
@@ -43,7 +43,7 @@ The orchestrator runs as eleven sequential steps. Each step has defined inputs a
 
 ## Step 1: Deep Project Scan
 
-> **Action body for FSM state `scan_project`.** Worker: [`fsm/workers/scan-project.md`](fsm/workers/scan-project.md). The runner is authoritative; this prose documents intent.
+> **Action body for FSM state `scan_project`.** Worker: [`fsm/workers/project-scanner.md`](fsm/workers/project-scanner.md) (role: `project-scanner`). The runner is authoritative; this prose documents intent.
 
 Build a **Project Profile** that every later step consumes. Respect `scope-*` arguments.
 
@@ -253,7 +253,7 @@ If `scope-framework=<f1>,<f2>,...` is set: restrict the descent to leaves whose 
 
 ## Step 4: LLM Trim
 
-> **Action body for FSM state `llm_trim`.** Worker: [`fsm/workers/trim-candidates.md`](fsm/workers/trim-candidates.md). Worker output is then validated for referential integrity by [`scripts/lib/trim-output-validator.mjs`](scripts/lib/trim-output-validator.mjs) (SC-B8) — fabricated `picked_leaves[].id`, `coverage_rescues[].file`, etc. abort the run before downstream consumers see them. The runner is authoritative; this prose documents intent.
+> **Action body for FSM state `llm_trim`.** Worker: [`fsm/workers/trim-candidates.md`](fsm/workers/trim-candidates.md) (role: `trim-candidates`). Once SC-B8 ([`#13`](https://github.com/ctxr-dev/skill-code-review/issues/13)) lands, `scripts/lib/trim-output-validator.mjs` will run after the worker output and abort the run on fabricated `picked_leaves[].id`, `coverage_rescues[].file`, etc. The runner is authoritative; this prose documents intent.
 
 Pick the final K = `cap` leaves from Step 3's candidates with explicit per-pick justifications. One sub-agent dispatch (or inline reasoning).
 
@@ -300,7 +300,7 @@ The full picked + rejected output goes into `manifest.json` under `routing.stage
 
 ## Step 5: Tool Discovery
 
-> **Action body for FSM state `tool_discovery`.** Worker: [`fsm/workers/tool-discovery.md`](fsm/workers/tool-discovery.md). The runner is authoritative; this prose documents intent.
+> **Action body for FSM state `tool_discovery`.** Worker: [`fsm/workers/tool-runner.md`](fsm/workers/tool-runner.md) (role: `tool-runner`). The runner is authoritative; this prose documents intent.
 
 Collect external tools declared by the picked leaves. Run available tools before specialist dispatch so their output flows into specialist prompts.
 
@@ -320,7 +320,7 @@ Collect external tools declared by the picked leaves. Run available tools before
 
 ## Step 6: Dispatch Specialists
 
-> **Action body for FSM state `dispatch_specialists`.** Worker: [`fsm/workers/specialist-runner.md`](fsm/workers/specialist-runner.md) (one invocation per picked leaf, dispatched in parallel by the runner). The runner is authoritative; this prose documents intent.
+> **Action body for FSM state `dispatch_specialists`.** Worker: [`fsm/workers/specialist-coordinator.md`](fsm/workers/specialist-coordinator.md) (role: `specialist-coordinator`) — a single coordinator worker that fans out one Agent dispatch per picked leaf and aggregates the results. The runner is authoritative; this prose documents intent.
 
 Run all picked leaves in parallel as Agent sub-tasks.
 

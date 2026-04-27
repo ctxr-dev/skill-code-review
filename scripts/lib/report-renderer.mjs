@@ -68,9 +68,14 @@ function renderMethodologyTable(payload) {
 }
 
 function fileLink(file, line) {
+  // The report.md lives under `.skill-code-review/<shard>/<run-id>/`, three
+  // levels deep from the repo root. A relative link like `src/x.ts#L42`
+  // resolves to `.skill-code-review/<shard>/<run-id>/src/x.ts` (which doesn't
+  // exist) when GitHub / IDEs follow it. Use a leading `../../../` so the
+  // link resolves to the repo-root path the user actually expects.
   if (!file) return "—";
   if (line === null || line === undefined) return `\`${file}\``;
-  return `[${file}:${line}](${file}#L${line})`;
+  return `[${file}:${line}](../../../${file}#L${line})`;
 }
 
 function renderIssuesSection(issues) {

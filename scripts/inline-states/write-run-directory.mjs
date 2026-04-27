@@ -82,10 +82,14 @@ function buildMethodology(env) {
 // collect-findings' sort).
 function buildIssue(finding, idx) {
   const flaggedBy = Array.isArray(finding.flagged_by) ? finding.flagged_by : [];
+  // Specialist attribution: prefer the dedup `winner` (the specialist whose
+  // finding fields actually won — they own the severity / title / impact /
+  // fix that we're surfacing). Fall back to the lex-first flagged_by entry
+  // when winner isn't carried (legacy callers that hand-craft findings).
   return {
     id: idx + 1,
     severity: finding.severity ?? null,
-    specialist: flaggedBy[0] ?? null,
+    specialist: finding.winner ?? flaggedBy[0] ?? null,
     file: finding.file ?? null,
     line: finding.line ?? null,
     title: finding.title ?? null,

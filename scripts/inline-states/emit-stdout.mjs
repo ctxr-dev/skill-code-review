@@ -34,18 +34,23 @@ const SEVERITY_RANK = { minor: 1, important: 2, critical: 3 };
 //              and fall back to markdown rather than silently treating it
 //              as the default.
 export function resolveFormat(argsBag, { isTTY = process.stdout.isTTY ?? true } = {}) {
-  const requested = argsBag?.format;
-  if (typeof requested !== "string") return "markdown";
-  const normalised = requested.toLowerCase();
-  if (VALID_FORMATS.has(normalised)) return normalised;
-  if (normalised === "auto") return isTTY ? "markdown" : "json";
-  if (normalised === "yaml") {
+  // Per report-format.md the default is `auto`: emit markdown for direct
+  // user invocation, JSON when dispatched as a subagent / piped consumer.
+  // We can't introspect "subagent vs user" from inside the runner, so
+  // approximate "user" as a TTY stdout and "tool / subagent" as non-TTY.
+  const raw = argsBag?.format;
+  const requested = typeof raw === "string" ? raw.toLowerCase() : "auto";
+  if (VALID_FORMATS.has(requested)) return requested;
+  if (requested === "auto") return isTTY ? "markdown" : "json";
+  if (requested === "yaml") {
     process.stderr.write(
       "(emit_stdout: --format=yaml requested but no YAML serializer is bundled — falling back to markdown)\n",
     );
     return "markdown";
   }
-  return "markdown";
+  // Unknown value — same fallback as auto in a non-TTY environment so
+  // tool consumers don't accidentally get a markdown blob piped at them.
+  return isTTY ? "markdown" : "json";
 }
 
 // `--scope-severity <level>` is interpreted as a threshold (per

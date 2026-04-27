@@ -61,18 +61,31 @@ export default async function collectFindings({ env }) {
       const sourceIds = new Set(existing?.flagged_by ?? []);
       sourceIds.add(specialist.id);
       // Stamp __origin so the tie-breaker can compare even on the first
-      // encounter (before the merged record has a flagged_by[]).
+      // encounter (before the merged record has a flagged_by[]). Persist
+      // it onto the merged record as `__winner` so downstream consumers
+      // (write-run-directory's buildIssue) can attribute the issue to the
+      // specialist whose finding fields actually won the dedup, instead of
+      // having to guess `flagged_by[0]` (which is lex-sorted, not order
+      // of arrival).
       const fStamped = { ...f, __origin: specialist.id };
       const winner = existing ? pickWinner(existing, fStamped) : fStamped;
       const { __origin, ...winnerOut } = winner;
       merged.set(key, {
         ...winnerOut,
         flagged_by: [...sourceIds].sort(),
+        __winner: __origin ?? specialist.id,
       });
     }
   }
 
-  const findings = [...merged.values()].sort((a, b) => {
+  const findings = [...merged.values()].map((f) => {
+    // Strip the dedup-internal __winner from the user-visible field set,
+    // but project it onto a stable `winner` field so downstream code can
+    // attribute the finding without needing to know about the internal
+    // bookkeeping name.
+    const { __winner, ...rest } = f;
+    return __winner ? { ...rest, winner: __winner } : rest;
+  }).sort((a, b) => {
     const sevDiff = (SEVERITY_RANK[b.severity] ?? 0) - (SEVERITY_RANK[a.severity] ?? 0);
     if (sevDiff !== 0) return sevDiff;
     if (a.file !== b.file) return a.file < b.file ? -1 : 1;

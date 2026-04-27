@@ -93,20 +93,31 @@ test("parseFsmCliResult: valid JSON stdout returns parsed payload", () => {
   assert.equal(out.payload.status, "awaiting_worker");
 });
 
-test("isValidGitRef: accepts SHAs, branches, tags", () => {
+test("isValidGitRef: accepts SHAs, branches, tags, revspecs", () => {
   assert.equal(isValidGitRef("abc1234"), true);
   assert.equal(isValidGitRef("HEAD"), true);
   assert.equal(isValidGitRef("origin/main"), true);
   assert.equal(isValidGitRef("v1.2.3"), true);
   assert.equal(isValidGitRef("feat/sprint-b-hardening"), true);
-  assert.equal(isValidGitRef("HEAD~1"), false); // ~ is rejected (shell special)
+  // git revspec syntax accepted by the orchestrator spec:
+  assert.equal(isValidGitRef("HEAD~1"), true);
+  assert.equal(isValidGitRef("HEAD^"), true);
+  assert.equal(isValidGitRef("commit^2"), true);
+  assert.equal(isValidGitRef("branch@{1.day.ago}"), true);
 });
 
-test("isValidGitRef: rejects shell metacharacters and overlong inputs", () => {
+test("isValidGitRef: rejects shell metacharacters, leading dash, overlong", () => {
   assert.equal(isValidGitRef("abc; rm -rf /"), false);
   assert.equal(isValidGitRef("abc`whoami`"), false);
   assert.equal(isValidGitRef("abc$(whoami)"), false);
   assert.equal(isValidGitRef("abc | cat"), false);
+  assert.equal(isValidGitRef("abc with space"), false);
+  assert.equal(isValidGitRef("abc'quote"), false);
+  assert.equal(isValidGitRef('abc"dquote'), false);
+  // Leading-dash → option injection risk; rejected even though everything
+  // else is alphanumeric.
+  assert.equal(isValidGitRef("-n"), false);
+  assert.equal(isValidGitRef("-upload-pack=evil"), false);
   assert.equal(isValidGitRef(""), false);
   assert.equal(isValidGitRef(null), false);
   assert.equal(isValidGitRef(undefined), false);

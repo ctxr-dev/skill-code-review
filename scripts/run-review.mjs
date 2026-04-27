@@ -200,6 +200,14 @@ export function parseArgs(argv) {
     // positionals.
     if (a === "--") break;
     if (!a.startsWith("--")) continue;
+    // Support both `--key value` and `--key=value` forms. The latter is
+    // what most CLIs accept by convention, and our docs show that shape.
+    const eq = a.indexOf("=");
+    if (eq !== -1) {
+      const key = a.slice(2, eq);
+      args[key] = a.slice(eq + 1);
+      continue;
+    }
     const key = a.slice(2);
     const next = argv[i + 1];
     if (next === undefined || next === "--" || next.startsWith("--")) {

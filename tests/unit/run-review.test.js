@@ -37,6 +37,12 @@ test("parseArgs: bare --flag (no value) becomes boolean true", () => {
   assert.equal(args.continue, true);
 });
 
+test("parseArgs: supports --key=value syntax in addition to --key value", () => {
+  const args = parseArgs(["node", "run-review.mjs", "--replay-mode=record", "--base=abc"]);
+  assert.equal(args["replay-mode"], "record");
+  assert.equal(args.base, "abc");
+});
+
 test("parseArgs: ignores positional args before --", () => {
   const args = parseArgs(["node", "run-review.mjs", "extra", "--key", "v"]);
   assert.equal(args.key, "v");

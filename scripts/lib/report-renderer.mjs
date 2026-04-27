@@ -18,7 +18,7 @@ function severityCountsFromIssues(issues) {
 
 function bullet(label, value) {
   if (value === null || value === undefined || value === "") return null;
-  return `| **${label}** | ${value} |`;
+  return `| **${label}** | ${mdCell(value)} |`;
 }
 
 function renderVerdictTable(payload) {
@@ -156,7 +156,7 @@ function renderToolResults(tools) {
       t.status === "skipped" && t.reason
         ? `SKIP (${t.reason})`
         : (t.status ?? "—").toUpperCase();
-    out.push(`| ${mdCell(t.name)} | ${status} | ${t.findings ?? "—"} | ${mdCell(t.specialist)} |`);
+    out.push(`| ${mdCell(t.name)} | ${mdCell(status)} | ${t.findings ?? "—"} | ${mdCell(t.specialist)} |`);
   }
   out.push("");
   return out;

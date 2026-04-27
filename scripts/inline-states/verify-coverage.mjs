@@ -26,8 +26,6 @@
 //   (c) coverage_rescues — each rescue maps a file → leaf that was promoted
 //       precisely to lift that file's coverage.
 
-import { minimatch } from "../lib/minimatch-shim.mjs";
-
 function ensureSet(map, key) {
   let s = map.get(key);
   if (!s) {

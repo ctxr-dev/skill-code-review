@@ -78,9 +78,12 @@ function countWikiLeaves(repoRoot) {
   return count;
 }
 
+// Always derive from the wiki at runtime per report-format.md; we
+// deliberately do NOT honour env.specialists_total so a caller cannot
+// emit a non-canonical / stale value through the report. The result is
+// cached per-process for repeated report writes.
 let _wikiLeavesCache = null;
-function specialistsTotal(env) {
-  if (Number.isInteger(env.specialists_total)) return env.specialists_total;
+function specialistsTotal() {
   if (_wikiLeavesCache !== null) return _wikiLeavesCache;
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const repoRoot = resolve(__dirname, "..", "..");
@@ -246,7 +249,7 @@ export function buildReportPayload(runId, env) {
       files_changed: Array.isArray(env.changed_paths) ? env.changed_paths.length : 0,
       stack,
       specialists_dispatched: specialistOutputs.length,
-      specialists_total: specialistsTotal(env),
+      specialists_total: specialistsTotal(),
       scope: buildScope(argsBag),
     },
     methodology: buildMethodology(env),

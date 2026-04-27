@@ -44,11 +44,35 @@ export const FIXTURES_ROOT = resolve(__replay_dirname, "..", "..", "tests", "fix
 
 export const VALID_REPLAY_MODES = new Set(["live", "record", "replay"]);
 
-export function resolveReplayMode(argsBag) {
-  const raw = argsBag?.["replay-mode"];
-  if (typeof raw !== "string") return "live";
+// Resolve --replay-mode. Default (flag absent) is "live". A bare flag
+// (parseArgs sets `args["replay-mode"] = true`) or a non-string value
+// is treated as a misuse and surfaced via `onInvalid` so the runner can
+// fail fast — silently falling back to "live" would let a user run in
+// what they believe is record mode while nothing lands on disk.
+//
+// Unknown but non-empty string values are also treated as invalid for
+// the same reason. The set of accepted values is fixed; a typo (e.g.
+// `--replay-mode=recordd`) should fail loud.
+export function resolveReplayMode(argsBag, { onInvalid } = {}) {
+  if (argsBag === null || argsBag === undefined) return "live";
+  const raw = argsBag["replay-mode"];
+  if (raw === undefined) return "live";
+  if (typeof raw !== "string") {
+    if (typeof onInvalid === "function") {
+      onInvalid(
+        `--replay-mode requires a value: one of ${[...VALID_REPLAY_MODES].join(", ")} (got bare flag)`,
+      );
+    }
+    return "live";
+  }
   const norm = raw.trim().toLowerCase();
-  return VALID_REPLAY_MODES.has(norm) ? norm : "live";
+  if (VALID_REPLAY_MODES.has(norm)) return norm;
+  if (typeof onInvalid === "function") {
+    onInvalid(
+      `--replay-mode must be one of ${[...VALID_REPLAY_MODES].join(", ")} (got: ${JSON.stringify(raw)})`,
+    );
+  }
+  return "live";
 }
 
 // Canonical JSON: stable key ordering at every level so two runs with the
@@ -163,6 +187,12 @@ export function replayLookup(fixturesRoot, state, hashKey) {
 
 // Persist worker outputs to the fixtures tree. Returns the absolute path
 // the fixture was written to so the caller can log / surface it.
+//
+// The payload is canonicalized (keys sorted at every object level) before
+// stringification so re-recording semantically identical outputs produces
+// byte-identical files regardless of which order the worker emitted keys.
+// Without this, two correct runs against the same brief would generate
+// noisy diffs when refreshing fixtures.
 export function recordOutputs(
   fixturesRoot,
   { state, hashKey, outputs, meta = null },
@@ -170,7 +200,7 @@ export function recordOutputs(
   const path = fixturePath(fixturesRoot, state, hashKey);
   mkdirSync(dirname(path), { recursive: true });
   const payload = meta === null ? { outputs } : { meta, outputs };
-  writeFileSync(path, JSON.stringify(payload, null, 2) + "\n");
+  writeFileSync(path, JSON.stringify(canonicalize(payload), null, 2) + "\n");
   return path;
 }
 

@@ -498,7 +498,12 @@ async function main() {
     // Read replay-mode from the runner-level CLI flag only. Pulling it
      // from argsBag would forward it into env.args (the FSM run env),
      // which makes the worker hash differ between record vs replay.
-    const replayMode = resolveReplayMode({ "replay-mode": args["replay-mode"] });
+    const replayMode = resolveReplayMode(
+      { "replay-mode": args["replay-mode"] },
+      {
+        onInvalid: (msg) => fail(msg, { flag: "--replay-mode" }),
+      },
+    );
     emit(await loop(brief, brief.run_id, { replayMode }));
     return;
   }
@@ -531,7 +536,12 @@ async function main() {
     // record/replay flow should set the same mode on every call. (A
     // future enhancement could persist the mode in the run dir's
     // manifest, but for now per-call is the documented contract.)
-    const replayMode = resolveReplayMode({ "replay-mode": args["replay-mode"] });
+    const replayMode = resolveReplayMode(
+      { "replay-mode": args["replay-mode"] },
+      {
+        onInvalid: (msg) => fail(msg, { flag: "--replay-mode" }),
+      },
+    );
 
     const commit = runFsmCommit({ runId, outputs });
     if (!commit.ok) {

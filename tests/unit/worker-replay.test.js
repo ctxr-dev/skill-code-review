@@ -25,14 +25,23 @@ function makeTmpDir() {
   return mkdtempSync(join(tmpdir(), "worker-replay-test-"));
 }
 
-test("resolveReplayMode: defaults to live, accepts record/replay, ignores unknown", () => {
+test("resolveReplayMode: defaults to live, accepts record/replay (case-insensitive)", () => {
   assert.equal(resolveReplayMode({}), "live");
   assert.equal(resolveReplayMode({ "replay-mode": "live" }), "live");
   assert.equal(resolveReplayMode({ "replay-mode": "record" }), "record");
   assert.equal(resolveReplayMode({ "replay-mode": "replay" }), "replay");
   assert.equal(resolveReplayMode({ "replay-mode": "REPLAY" }), "replay");
-  assert.equal(resolveReplayMode({ "replay-mode": "garbage" }), "live");
   assert.equal(resolveReplayMode(null), "live");
+});
+
+test("resolveReplayMode: invokes onInvalid for bare flag and unknown values", () => {
+  const calls = [];
+  const onInvalid = (msg) => calls.push(msg);
+  assert.equal(resolveReplayMode({ "replay-mode": true }, { onInvalid }), "live");
+  assert.equal(resolveReplayMode({ "replay-mode": "garbage" }, { onInvalid }), "live");
+  assert.equal(calls.length, 2);
+  assert.match(calls[0], /bare flag/);
+  assert.match(calls[1], /must be one of/);
 });
 
 test("computeHashKey: same inputs → same hash; any input change → different hash", () => {
@@ -160,7 +169,7 @@ test("stash / read / clear pending-brief lifecycle", () => {
   }
 });
 
-test("end-to-end: record then replay produces byte-identical output", () => {
+test("end-to-end: record then replay produces structurally identical output", () => {
   const root = makeTmpDir();
   try {
     const hashKey = computeHashKey({
@@ -179,11 +188,38 @@ test("end-to-end: record then replay produces byte-identical output", () => {
     };
     recordOutputs(root, { state: "llm_trim", hashKey, outputs: fixture });
 
-    // Two replays — both must return byte-identical outputs.
+    // Two replays — both must return the same parsed value. (Replay
+    // returns parsed JSON; raw-byte equality of the on-disk fixture is
+    // exercised by the dedicated test below.)
     const first = replayLookup(root, "llm_trim", hashKey);
     const second = replayLookup(root, "llm_trim", hashKey);
     assert.deepEqual(first, second);
     assert.deepEqual(first, fixture);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("recordOutputs: re-recording the same outputs in different key order writes byte-identical files", () => {
+  // The determinism contract for the on-disk fixture is byte-level: a
+  // worker that emits the same logical outputs in a different key
+  // insertion order must produce the same bytes after canonicalization.
+  const root = makeTmpDir();
+  try {
+    const hashKey = "c".repeat(64);
+    const a = recordOutputs(root, {
+      state: "tree_descend",
+      hashKey,
+      outputs: { picked: [{ id: "a", path: "a.md", dimensions: ["correctness"] }], rejected: [] },
+    });
+    const bytesA = readFileSync(a);
+    const b = recordOutputs(root, {
+      state: "tree_descend",
+      hashKey,
+      outputs: { rejected: [], picked: [{ dimensions: ["correctness"], path: "a.md", id: "a" }] },
+    });
+    const bytesB = readFileSync(b);
+    assert.equal(bytesA.equals(bytesB), true, "canonicalized records must be byte-identical");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

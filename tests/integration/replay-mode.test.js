@@ -2,21 +2,22 @@
 //
 // We exercise the harness's record→replay round-trip without a live
 // runner spawn (which would require @ctxr/fsm CLIs + a worker dispatcher
-// in the loop). The harness's contract is purely "given the same hash
-// key, replay returns byte-identical fixture content"; this integration
-// test seeds two fixtures via the public record API and asserts replay
-// reproduces them across two consecutive lookups, mirroring the issue's
-// acceptance criteria ("invoke the runner twice in replay mode against
-// the recorded fixtures; assert identical end-state").
+// in the loop). The harness's contract is "given the same hash key,
+// replay returns byte-identical fixture content"; this integration test
+// seeds a fixture via the public record API and asserts replay
+// reproduces it across two consecutive lookups (parsed equality) AND
+// that the on-disk fixture is byte-stable when re-recorded with
+// reordered keys, mirroring the issue's acceptance criteria.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
   computeHashKey,
+  fixturePath,
   recordOutputs,
   replayLookup,
 } from "../../scripts/lib/worker-replay.mjs";
@@ -33,7 +34,7 @@ function makeTmpRepo() {
   return root;
 }
 
-test("integration: record → two replays produce byte-identical outputs", () => {
+test("integration: record → two replays produce identical outputs (parsed and on-disk byte-stable)", () => {
   const repoRoot = makeTmpRepo();
   const fixturesRoot = join(repoRoot, "fixtures");
   try {
@@ -64,8 +65,24 @@ test("integration: record → two replays produce byte-identical outputs", () =>
 
     const a = replayLookup(fixturesRoot, "llm_trim", hashKey);
     const b = replayLookup(fixturesRoot, "llm_trim", hashKey);
-    assert.deepEqual(a, b, "two replays must be byte-identical");
+    assert.deepEqual(a, b, "two replays must agree (parsed)");
     assert.deepEqual(a, recordedOutputs);
+
+    // Byte-level stability: re-record the same fixture with keys in a
+    // different insertion order and confirm the on-disk file is
+    // byte-identical (canonicalization sorts keys).
+    const reordered = {
+      coverage_rescues: [],
+      rejected_leaves: [{ reason: "no http handlers in diff", id: "sec-csrf" }],
+      picked_leaves: [
+        { dimensions: ["correctness"], path: "lang-typescript.md", id: "lang-typescript", justification: "ts present" },
+      ],
+    };
+    const path1 = fixturePath(fixturesRoot, "llm_trim", hashKey);
+    const bytes1 = readFileSync(path1);
+    recordOutputs(fixturesRoot, { state: "llm_trim", hashKey, outputs: reordered });
+    const bytes2 = readFileSync(path1);
+    assert.equal(bytes1.equals(bytes2), true, "on-disk fixture must be byte-identical after reorder");
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }

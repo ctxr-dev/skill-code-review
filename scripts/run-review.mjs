@@ -108,18 +108,25 @@ function fsmBin(name) {
 // Each spawnSync needs a tiny scratch JSON file passed via --args-file or
 // --outputs-file. Write into a single per-process temp dir and clean it up at
 // exit so we don't leak `run-review-*` directories under the OS temp dir on
-// long sessions.
-const SCRATCH_DIR = mkdtempSync(join(tmpdir(), "run-review-"));
-process.on("exit", () => {
-  try {
-    rmSync(SCRATCH_DIR, { recursive: true, force: true });
-  } catch {
-    // best-effort cleanup; never block process exit on a temp-dir hiccup.
-  }
-});
+// long sessions. Lazy-create on first use so importing this module from
+// tests / other tooling (which never invokes the runner) doesn't allocate
+// a temp directory.
+let _scratchDir = null;
+function getScratchDir() {
+  if (_scratchDir) return _scratchDir;
+  _scratchDir = mkdtempSync(join(tmpdir(), "run-review-"));
+  process.on("exit", () => {
+    try {
+      rmSync(_scratchDir, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup; never block process exit on a temp-dir hiccup.
+    }
+  });
+  return _scratchDir;
+}
 
 function runFsmNextStart({ baseSha, headSha, argsBag }) {
-  const argsFile = join(SCRATCH_DIR, "args.json");
+  const argsFile = join(getScratchDir(), "args.json");
   writeFileSync(argsFile, JSON.stringify(argsBag ?? {}));
   const result = spawnSync(
     fsmBin("fsm-next"),
@@ -140,7 +147,7 @@ function runFsmNextStart({ baseSha, headSha, argsBag }) {
 }
 
 function runFsmCommit({ runId, outputs }) {
-  const outputsFile = join(SCRATCH_DIR, `outputs-${runId}-${Date.now()}.json`);
+  const outputsFile = join(getScratchDir(), `outputs-${runId}-${Date.now()}.json`);
   writeFileSync(outputsFile, JSON.stringify(outputs ?? {}));
   const result = spawnSync(
     fsmBin("fsm-commit"),

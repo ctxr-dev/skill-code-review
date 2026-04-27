@@ -44,12 +44,16 @@ export default async function verifyCoverage({ env }) {
   const changedPaths = Array.isArray(env.changed_paths) ? env.changed_paths : [];
 
   const reviewersByFile = new Map();
+  const changedPathSet = new Set(changedPaths);
   for (const file of changedPaths) {
     ensureSet(reviewersByFile, file);
   }
 
   for (const finding of findings) {
     if (!finding.file) continue;
+    // Ignore findings whose file is not in changed_paths — a hallucinated
+    // out-of-diff path would otherwise surface as a phantom coverage row.
+    if (!changedPathSet.has(finding.file)) continue;
     const set = ensureSet(reviewersByFile, finding.file);
     for (const leafId of finding.flagged_by ?? []) {
       set.add(leafId);
@@ -64,16 +68,8 @@ export default async function verifyCoverage({ env }) {
     }
   }
 
-  // Apply coverage rescues from Step 4: each rescue explicitly promotes a
-  // leaf to lift a specific file's coverage. The runner / earlier states have
-  // already added the rescued leaf to `picked_leaves` so source (b) above
-  // already counts it; this loop is defensive against rescues that name a
-  // leaf NOT in `picked_leaves` (e.g. because the trim worker emitted a
-  // rescue but the leaf was filtered downstream). Rescues that name a file
-  // outside `changed_paths` are ignored — the report only tracks coverage
-  // for files actually in the diff, so a rescue on an unrelated file would
-  // surface a phantom row in the matrix.
-  const changedPathSet = new Set(changedPaths);
+  // Apply coverage rescues from Step 4 (rescues outside changed_paths are
+  // ignored, same reasoning as findings above).
   for (const rescue of coverageRescues) {
     if (!rescue?.file || !rescue?.rescued_leaf) continue;
     if (!changedPathSet.has(rescue.file)) continue;

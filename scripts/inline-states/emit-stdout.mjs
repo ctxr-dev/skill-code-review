@@ -19,7 +19,9 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 const VALID_FORMATS = new Set(["markdown", "json"]);
-const VALID_SEVERITIES = new Set(["critical", "important", "minor"]);
+// Severity threshold ordering: anything at or ABOVE the requested level is
+// kept. Index = rank; higher = more severe.
+const SEVERITY_RANK = { minor: 1, important: 2, critical: 3 };
 
 function resolveFormat(argsBag) {
   const requested = argsBag?.format;
@@ -28,17 +30,13 @@ function resolveFormat(argsBag) {
   return VALID_FORMATS.has(normalised) ? normalised : "markdown";
 }
 
-// Parse comma-separated allow-lists. Empty / undefined / unrecognised tokens
-// → no filter (return null so callers can early-out).
-function parseSeverityFilter(raw) {
+// `--scope-severity <level>` is interpreted as a threshold (per
+// code-reviewer.md / report-format.md): findings AT OR ABOVE the requested
+// rank are kept. Returns the minimum rank to keep, or null when no filter.
+function parseSeverityThreshold(raw) {
   if (typeof raw !== "string" || raw.trim() === "") return null;
-  const set = new Set(
-    raw
-      .split(",")
-      .map((s) => s.trim().toLowerCase())
-      .filter((s) => VALID_SEVERITIES.has(s)),
-  );
-  return set.size > 0 ? set : null;
+  const rank = SEVERITY_RANK[raw.trim().toLowerCase()];
+  return Number.isInteger(rank) ? rank : null;
 }
 
 function parseGateFilter(raw) {
@@ -50,13 +48,22 @@ function parseGateFilter(raw) {
   return tokens.length > 0 ? new Set(tokens) : null;
 }
 
-function applyScopeFilters(payload, severityFilter, gateFilter) {
-  if (!severityFilter && !gateFilter) return payload;
+function applyScopeFilters(payload, severityThreshold, gateFilter) {
+  if (severityThreshold === null && !gateFilter) return payload;
   const filtered = { ...payload };
-  if (severityFilter) {
-    filtered.findings = (payload.findings ?? []).filter((f) =>
-      severityFilter.has(f.severity),
+  if (severityThreshold !== null) {
+    const kept = (payload.findings ?? []).filter(
+      (f) => (SEVERITY_RANK[f.severity] ?? 0) >= severityThreshold,
     );
+    filtered.findings = kept;
+    // Recompute severity_counts so the emitted payload stays internally
+    // consistent — leaving the unfiltered counts alongside filtered findings
+    // would be a contradiction inside the same report.
+    const counts = { critical: 0, important: 0, minor: 0 };
+    for (const f of kept) {
+      if (counts[f.severity] !== undefined) counts[f.severity]++;
+    }
+    filtered.severity_counts = counts;
   }
   if (gateFilter) {
     filtered.gates = (payload.gates ?? []).filter((g) => gateFilter.has(g.number));
@@ -84,7 +91,7 @@ export default async function emitStdout({ env }) {
 
   const argsBag = env.args ?? {};
   const format = resolveFormat(argsBag);
-  const severityFilter = parseSeverityFilter(argsBag["scope-severity"]);
+  const severityThreshold = parseSeverityThreshold(argsBag["scope-severity"]);
   const gateFilter = parseGateFilter(argsBag["scope-gate"]);
 
   let body = readReport(runDirPath, format);
@@ -100,17 +107,18 @@ export default async function emitStdout({ env }) {
   // it here without the renderer would diverge from the canonical layout. For
   // markdown, surface a stderr notice when filters were requested but
   // ignored, so the user knows the flags didn't take effect.
-  if (format === "json" && (severityFilter || gateFilter)) {
+  const filtersRequested = severityThreshold !== null || gateFilter;
+  if (format === "json" && filtersRequested) {
     try {
       const parsed = JSON.parse(body);
-      const filtered = applyScopeFilters(parsed, severityFilter, gateFilter);
+      const filtered = applyScopeFilters(parsed, severityThreshold, gateFilter);
       body = JSON.stringify(filtered, null, 2) + "\n";
     } catch {
       // If the JSON is malformed, fall back to emitting it unfiltered rather
       // than crashing the run; the report file's own validity is Step 10's
       // responsibility.
     }
-  } else if (format !== "json" && (severityFilter || gateFilter)) {
+  } else if (format !== "json" && filtersRequested) {
     process.stderr.write(
       "(emit_stdout: --scope-severity / --scope-gate filters only apply to format=json today)\n",
     );

@@ -56,10 +56,38 @@ function projectBriefInputs(brief, env) {
   return out;
 }
 
+// In the FSM YAML, prompt_template paths are written relative to the FSM
+// YAML's own directory (e.g. `workers/project-scanner.md`), not relative
+// to the repo root. computeHashKey expects a path relative to repoRoot
+// when reading the prompt body, so the runner projects the brief's path
+// into a repo-relative one before calling it.
+//
+// The FSM YAML for this project lives at `fsm/code-reviewer.fsm.yaml`
+// (configured in .fsmrc.json). Hardcoding the prefix here is simpler
+// than going through loadConfig/resolveSettings every call AND keeps
+// this helper purely synchronous + testable without a config gate.
+const FSM_YAML_DIR_REL = "fsm";
+
+export function repoRelativePromptPath(briefPath) {
+  if (typeof briefPath !== "string" || briefPath.length === 0) return "";
+  // Already repo-relative (starts with `fsm/`) → pass through unchanged.
+  // Otherwise prepend the FSM-YAML directory so paths like
+  // `workers/project-scanner.md` become `fsm/workers/project-scanner.md`.
+  const norm = briefPath.split(/[/\\]+/).join("/");
+  if (norm.startsWith(`${FSM_YAML_DIR_REL}/`) || norm === FSM_YAML_DIR_REL) {
+    return norm;
+  }
+  return `${FSM_YAML_DIR_REL}/${norm}`;
+}
+
 function hashKeyForBrief(brief, env) {
+  const briefPath = brief?.prompt_template ?? brief?.worker?.prompt_template ?? "";
   return computeHashKey({
     state: brief?.state,
-    promptTemplate: brief?.prompt_template ?? brief?.worker?.prompt_template ?? "",
+    // Project the FSM-yaml-relative path to a repo-relative one so
+    // computeHashKey's `resolve(repoRoot, promptTemplate)` finds the
+    // actual prompt file under fsm/workers/.
+    promptTemplate: repoRelativePromptPath(briefPath),
     inputs: projectBriefInputs(brief, env),
     // Pass repoRoot so the harness reads the prompt body and includes its
     // SHA in the hash — editing the prose without renaming the file
@@ -73,7 +101,7 @@ const REPO_ROOT = resolve(__dirname, "..");
 const INLINE_STATES_DIR = resolve(__dirname, "inline-states");
 
 function resolveStorageRoot() {
-  const config = loadConfig({ cwd: REPO_ROOT });
+  const config = loadConfig(REPO_ROOT);
   const settings = resolveSettings(config, { fsmName: "code-reviewer" });
   return resolve(REPO_ROOT, settings.storage_root);
 }

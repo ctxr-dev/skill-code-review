@@ -12,6 +12,7 @@ import {
   parseFsmCliResult,
   stateIdToModuleName,
   isValidGitRef,
+  repoRelativePromptPath,
 } from "../../scripts/run-review.mjs";
 
 test("parseArgs: --flag value pairs become entries", () => {
@@ -104,6 +105,26 @@ test("isValidGitRef: accepts SHAs, branches, tags, revspecs", () => {
   assert.equal(isValidGitRef("HEAD^"), true);
   assert.equal(isValidGitRef("commit^2"), true);
   assert.equal(isValidGitRef("branch@{1.day.ago}"), true);
+});
+
+test("repoRelativePromptPath: projects FSM-yaml-relative paths to repo-relative ones", () => {
+  // brief.prompt_template values are relative to the FSM YAML's own
+  // directory (e.g. `workers/project-scanner.md`). The hashing harness
+  // expects repo-relative paths (`fsm/workers/project-scanner.md`) so
+  // it can read the prompt body. This pure helper does the projection.
+  assert.equal(
+    repoRelativePromptPath("workers/project-scanner.md"),
+    "fsm/workers/project-scanner.md",
+  );
+  assert.equal(
+    repoRelativePromptPath("workers/trim-candidates.md"),
+    "fsm/workers/trim-candidates.md",
+  );
+  // Empty / non-string inputs project to the empty string (the harness
+  // treats that as "no prompt body" and only hashes the path component).
+  assert.equal(repoRelativePromptPath(""), "");
+  assert.equal(repoRelativePromptPath(null), "");
+  assert.equal(repoRelativePromptPath(undefined), "");
 });
 
 test("isValidGitRef: rejects shell metacharacters, leading dash, overlong", () => {

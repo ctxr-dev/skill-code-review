@@ -174,10 +174,39 @@ test("validateTrimOutput: rejects picked_leaves with wrong path for the id (clas
   assert.equal(result.ok, false);
   assert.ok(
     result.errors.some(
-      (e) => e.includes("fake-lang") && e.includes("does not match stage_a_candidates entry path"),
+      (e) => e.includes("fake-lang") && e.includes("does not match any stage_a_candidates entry path"),
     ),
     `expected an id↔path pair-mismatch error, got: ${result.errors.join("; ")}`,
   );
+});
+
+test("validateTrimOutput: pair check is order-independent under duplicate stage_a ids", () => {
+  // stage_a_candidates is a list, not a map. The same id may legitimately
+  // appear with multiple paths. The pair check must accept ANY declared
+  // {id, path} pair — a Map keyed only by id would have been
+  // order-dependent (last write wins) and could mis-match a picked leaf
+  // against the wrong path.
+  const env = {
+    stage_a_candidates: [
+      { id: "fake-lang", path: "cluster-a/fake-lang.md" },
+      { id: "fake-lang", path: "cluster-b/fake-lang.md" },
+    ],
+    changed_paths: [],
+  };
+  // Picking the SECOND declared path must pass even though a Map keyed
+  // only by id would have remembered the first.
+  const out = {
+    picked_leaves: [
+      { id: "fake-lang", path: "cluster-b/fake-lang.md", justification: "x", dimensions: [] },
+    ],
+    rejected_leaves: [],
+    coverage_rescues: [],
+  };
+  const result = validateTrimOutput(out, env, hermeticOpts());
+  const class3Errors = result.errors.filter((e) =>
+    e.includes("not in stage_a_candidates") || e.includes("does not match"),
+  );
+  assert.deepEqual(class3Errors, [], `duplicate stage_a id pair check must succeed: ${result.errors.join("; ")}`);
 });
 
 test("validateTrimOutput: pair check accepts cosmetic 'reviewers.wiki/' prefix on stage_a path", () => {

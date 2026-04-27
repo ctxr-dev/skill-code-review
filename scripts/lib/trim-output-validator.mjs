@@ -237,15 +237,24 @@ export function validateTrimOutput(outputs, env, opts = {}) {
   const stageACandidateIds = new Set(
     stageACandidates.map((c) => c?.id).filter((id) => typeof id === "string"),
   );
-  // Build an id → normalized-path index for the stage-A pair check (3).
-  // Stage-A entries can carry either a wiki-relative path
-  // (`lang-typescript.md`) or a repo-relative one (`reviewers.wiki/lang-
-  // typescript.md`); normalizeWikiPath collapses both shapes so the
-  // comparison doesn't false-positive on a cosmetic prefix difference.
-  const stageAPathById = new Map();
+  // Build a Set of normalized {id, path} pairs for the stage-A pair check
+  // (3). The schema doesn't guarantee unique stage-A ids — Stage-A is a
+  // list, not a map — so a Map keyed only by id would be order-dependent
+  // (the last write wins) and could mis-match a picked leaf against the
+  // wrong path. Use a Set of `<id>\u001f<normalized-path>` tokens so any
+  // declared {id, path} pair from stage-A satisfies the check.
+  // normalizeWikiPath collapses the two corpus shapes (wiki-relative
+  // `lang-typescript.md` vs repo-relative `reviewers.wiki/lang-typescript.md`)
+  // so a cosmetic prefix doesn't false-positive.
+  const stageAPairs = new Set();
+  const stageAPathsById = new Map(); // id → array of normalized paths, for diagnostics only
   for (const cand of stageACandidates) {
     if (cand && typeof cand.id === "string" && typeof cand.path === "string") {
-      stageAPathById.set(cand.id, normalizeWikiPath(cand.path));
+      const np = normalizeWikiPath(cand.path);
+      stageAPairs.add(`${cand.id}\u001f${np}`);
+      const arr = stageAPathsById.get(cand.id) ?? [];
+      if (!arr.includes(np)) arr.push(np);
+      stageAPathsById.set(cand.id, arr);
     }
   }
   const rejectedIds = new Set(
@@ -295,11 +304,12 @@ export function validateTrimOutput(outputs, env, opts = {}) {
       );
       continue;
     }
-    const expected = stageAPathById.get(leaf.id);
     const got = normalizeWikiPath(leaf.path);
-    if (expected !== undefined && expected !== got) {
+    if (!stageAPairs.has(`${leaf.id}\u001f${got}`)) {
+      const declared = stageAPathsById.get(leaf.id) ?? [];
       errors.push(
-        `picked_leaves[id=${leaf.id}].path "${leaf.path}" does not match stage_a_candidates entry path "${expected}"`,
+        `picked_leaves[id=${leaf.id}].path "${leaf.path}" does not match any stage_a_candidates entry path for that id ` +
+          `(declared: [${declared.map((p) => `"${p}"`).join(", ")}])`,
       );
     }
   }

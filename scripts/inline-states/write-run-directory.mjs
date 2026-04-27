@@ -137,12 +137,18 @@ function buildGateRow(g) {
 }
 
 function buildToolRow(t) {
+  // Canonical fields per report-format.md JSON Schema:
+  // { name, status, findings, specialist, output_summary?, reason? }.
+  // The FSM tool_discovery worker emits `output` (not output_summary) and
+  // does not currently emit a `specialist` association — accept both shapes
+  // and surface them under the canonical names so the report stays portable
+  // regardless of which worker produced the row.
   return {
     name: t.name ?? null,
     status: t.status ?? null,
     findings: t.findings ?? null,
     specialist: t.specialist ?? null,
-    output_summary: t.output_summary ?? null,
+    output_summary: t.output_summary ?? t.output ?? null,
     ...(t.status === "skipped" && t.reason !== undefined ? { reason: t.reason } : {}),
   };
 }
@@ -162,8 +168,12 @@ export function buildReportPayload(runId, env) {
         ...(Array.isArray(env.project_profile?.frameworks) ? env.project_profile.frameworks : []),
       ];
 
+  // Strict canonical top level per report-format.md JSON Schema: exactly
+  // { verdict, summary, methodology, issues, strengths, tool_results,
+  // specialists, gates, coverage }. No additional keys (run_id lives in
+  // manifest.json; skill-internal context like tier / routing /
+  // short_circuited belongs in the FSM trace, not the canonical report).
   return {
-    run_id: runId,
     verdict: env.verdict ?? null,
     summary: {
       description: env.description ?? argsBag.description ?? null,
@@ -188,26 +198,6 @@ export function buildReportPayload(runId, env) {
       file: row.file,
       reviewers: Array.isArray(row.reviewers) ? row.reviewers : [],
     })),
-    // Skill-internal context preserved as a sub-object so the canonical
-    // top-level shape stays clean. Manifest consumers and downstream tooling
-    // that want this can read it; the contract surface above is unaffected.
-    _meta: {
-      tier: env.tier ?? null,
-      tier_cap: env.cap ?? null,
-      tier_rationale: env.tier_rationale ?? null,
-      short_circuited: Boolean(env.short_circuited),
-      degraded_run: Boolean(env.degraded_run),
-      severity_counts: env.severity_counts ?? { critical: 0, important: 0, minor: 0 },
-      coverage_gaps: Array.isArray(env.coverage_gaps) ? env.coverage_gaps : [],
-      routing: {
-        stage_a: { candidates: env.stage_a_candidates ?? [] },
-        stage_b: {
-          picked: env.picked_leaves ?? [],
-          rejected: env.rejected_leaves ?? [],
-          coverage_rescues: env.coverage_rescues ?? [],
-        },
-      },
-    },
   };
 }
 
@@ -226,14 +216,33 @@ export function writeRunArtefacts(runId, env) {
   writeFileSync(reportJsonPath, renderReportJson(reportPayload));
   writeFileSync(reportMdPath, renderReportMarkdown(reportPayload));
 
+  // The manifest carries the run_id, the engine-side execution record, and
+  // the skill-internal context that report.json deliberately does NOT carry
+  // (per the canonical report-format.md JSON Schema).
   const existingManifest = readManifest(runId, { storageRoot }) ?? {};
   writeManifest(
     runId,
     {
       ...existingManifest,
+      run_id: runId,
       verdict: reportPayload.verdict,
       report_path: reportMdPath,
       report_json_path: reportJsonPath,
+      tier: env.tier ?? null,
+      tier_cap: env.cap ?? null,
+      tier_rationale: env.tier_rationale ?? null,
+      short_circuited: Boolean(env.short_circuited),
+      degraded_run: Boolean(env.degraded_run),
+      severity_counts: env.severity_counts ?? { critical: 0, important: 0, minor: 0 },
+      coverage_gaps: Array.isArray(env.coverage_gaps) ? env.coverage_gaps : [],
+      routing: {
+        stage_a: { candidates: env.stage_a_candidates ?? [] },
+        stage_b: {
+          picked: env.picked_leaves ?? [],
+          rejected: env.rejected_leaves ?? [],
+          coverage_rescues: env.coverage_rescues ?? [],
+        },
+      },
     },
     { storageRoot },
   );

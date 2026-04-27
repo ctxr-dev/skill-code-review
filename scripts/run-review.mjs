@@ -67,6 +67,16 @@ function emit(payload) {
   process.stdout.write(JSON.stringify(payload) + "\n");
 }
 
+// Validate a git ref / SHA per code-reviewer.md's argument-parsing
+// allowlist: SHAs are hex-only, refs are alnum / dash / underscore / slash /
+// dot. Reject anything containing shell metacharacters so values can't
+// inject into downstream `git` invocations even if the engine forwards them
+// to a shell context.
+const GIT_REF_PATTERN = /^[A-Za-z0-9_./-]{1,255}$/;
+export function isValidGitRef(value) {
+  return typeof value === "string" && GIT_REF_PATTERN.test(value);
+}
+
 // Read + parse JSON from a path, surfacing missing-file / invalid-JSON as
 // structured `{status:"error"}` instead of letting the exception escape
 // to main().catch and emit a generic "unhandled error".
@@ -301,6 +311,12 @@ async function main() {
     const headSha = args.head ?? args["head-sha"];
     if (!baseSha || !headSha) {
       fail("--start requires --base <sha> and --head <sha>");
+    }
+    if (!isValidGitRef(baseSha)) {
+      fail(`--base must be a valid git ref/SHA (alnum/dash/underscore/slash/dot, ≤255 chars); got: ${baseSha}`);
+    }
+    if (!isValidGitRef(headSha)) {
+      fail(`--head must be a valid git ref/SHA (alnum/dash/underscore/slash/dot, ≤255 chars); got: ${headSha}`);
     }
     let argsBag = {};
     if (args["args-file"]) {

@@ -1,8 +1,10 @@
 // Smoke tests for buildReportPayload (the pure helper underlying
 // writeRunArtefacts). The shape under test is the canonical contract from
 // `report-format.md` (the file README.md and code-reviewer.md point users
-// at). Skill-internal context is preserved under `_meta` so the top-level
-// report stays canonical for downstream tools.
+// at): exactly { verdict, summary, methodology, issues, strengths,
+// tool_results, specialists, gates, coverage } at top level — no extra
+// keys. Skill-internal context (tier, routing, short_circuited) lives in
+// manifest.json instead.
 //
 // Filesystem-level coverage of writeRunArtefacts itself lives under SC-B7.
 
@@ -11,11 +13,32 @@ import assert from "node:assert/strict";
 
 import { buildReportPayload } from "../../scripts/inline-states/write-run-directory.mjs";
 
-test("buildReportPayload: top-level shape matches report-format.md contract", () => {
+const CANONICAL_TOP_LEVEL_KEYS = [
+  "verdict",
+  "summary",
+  "methodology",
+  "issues",
+  "strengths",
+  "tool_results",
+  "specialists",
+  "gates",
+  "coverage",
+];
+
+test("buildReportPayload: top-level keys exactly match report-format.md", () => {
+  const payload = buildReportPayload("run-1", {});
+  assert.deepEqual(
+    Object.keys(payload).sort(),
+    [...CANONICAL_TOP_LEVEL_KEYS].sort(),
+    "report.json must contain exactly the canonical top-level keys (no run_id, no _meta, no skill-internal extras)",
+  );
+});
+
+test("buildReportPayload: full env produces canonical issues + specialists + gates", () => {
   const payload = buildReportPayload("run-1", {
     base_sha: "abc1234",
     head_sha: "def5678",
-    args: { format: "markdown", description: "Sprint B hardening" },
+    args: { description: "Sprint B hardening" },
     findings: [
       {
         severity: "critical",
@@ -45,7 +68,6 @@ test("buildReportPayload: top-level shape matches report-format.md contract", ()
     verdict: "NO-GO",
   });
 
-  // Top-level fields per the contract
   assert.equal(payload.verdict, "NO-GO");
   assert.equal(payload.summary.range.base, "abc1234");
   assert.equal(payload.summary.range.head, "def5678");
@@ -55,12 +77,10 @@ test("buildReportPayload: top-level shape matches report-format.md contract", ()
   assert.equal(payload.summary.specialists_dispatched, 1);
   assert.equal(payload.summary.description, "Sprint B hardening");
 
-  // Methodology defaults to all N/A when env doesn't carry SOLID judgements
   for (const k of ["SRP", "OCP", "LSP", "ISP", "DIP", "DRY", "KISS", "YAGNI"]) {
     assert.equal(payload.methodology[k], "N/A");
   }
 
-  // Issues mapped from findings, with id assigned by enumeration order
   assert.equal(payload.issues.length, 1);
   assert.equal(payload.issues[0].id, 1);
   assert.equal(payload.issues[0].severity, "critical");
@@ -68,27 +88,17 @@ test("buildReportPayload: top-level shape matches report-format.md contract", ()
   assert.equal(payload.issues[0].file, "src/auth.ts");
   assert.equal(payload.issues[0].line, 42);
 
-  // Specialists row: status maps completed-no-blockers → pass; counts
-  // reflect findings buckets.
   assert.equal(payload.specialists.length, 1);
   assert.equal(payload.specialists[0].id, "security");
-  assert.equal(payload.specialists[0].status, "fail"); // critical present
+  assert.equal(payload.specialists[0].status, "fail");
   assert.equal(payload.specialists[0].critical, 1);
 
-  // Gates → canonical { number, name, status, blockers }
   assert.deepEqual(payload.gates, [
     { number: 6, name: "Security & Safety", status: "FAIL", blockers: 1 },
   ]);
 
-  // Coverage carries the matrix forward
   assert.equal(payload.coverage.length, 1);
   assert.deepEqual(payload.coverage[0].reviewers, ["security", "lang-typescript"]);
-
-  // _meta preserves skill-internal context (tier, routing) without polluting
-  // the canonical top level.
-  assert.ok(payload._meta);
-  assert.equal(payload._meta.short_circuited, false);
-  assert.equal(payload._meta.degraded_run, false);
 });
 
 test("buildReportPayload: scope mapping from args matches the spec", () => {
@@ -110,18 +120,14 @@ test("buildReportPayload: scope mapping from args matches the spec", () => {
   assert.deepEqual(payload.summary.scope.gates_filter, ["1", "6"]);
 });
 
-test("buildReportPayload: defaults to canonical empty arrays + null fields when env is sparse", () => {
+test("buildReportPayload: sparse env yields canonical empty arrays + null fields", () => {
   const payload = buildReportPayload("run-empty", {});
-
-  // Required arrays must be present (no omission per the spec).
   assert.deepEqual(payload.issues, []);
   assert.deepEqual(payload.strengths, []);
   assert.deepEqual(payload.tool_results, []);
   assert.deepEqual(payload.specialists, []);
   assert.deepEqual(payload.gates, []);
   assert.deepEqual(payload.coverage, []);
-
-  // Summary defaults
   assert.equal(payload.summary.mode, "diff");
   assert.equal(payload.summary.files_changed, 0);
   assert.deepEqual(payload.summary.stack, []);
@@ -130,10 +136,7 @@ test("buildReportPayload: defaults to canonical empty arrays + null fields when 
   for (const k of ["dirs", "langs", "frameworks", "reviewers", "severity_filter", "gates_filter"]) {
     assert.equal(payload.summary.scope[k], null);
   }
-
   assert.equal(payload.verdict, null);
-  assert.equal(payload._meta.short_circuited, false);
-  assert.equal(payload._meta.degraded_run, false);
 });
 
 test("buildReportPayload: specialist row buckets findings by severity", () => {
@@ -155,39 +158,28 @@ test("buildReportPayload: specialist row buckets findings by severity", () => {
       },
     ],
   });
-
   const ts = payload.specialists.find((s) => s.id === "lang-typescript");
-  assert.equal(ts.status, "fail"); // important present → fail
+  assert.equal(ts.status, "fail");
   assert.equal(ts.minor, 1);
   assert.equal(ts.important, 1);
   assert.equal(ts.critical, 0);
-  // key_finding picks the highest-severity title available
   assert.equal(ts.key_finding, "missing return type");
 
   const ex = payload.specialists.find((s) => s.id === "fw-express");
-  assert.equal(ex.status, "fail"); // skipped → fail (status ≠ completed)
+  assert.equal(ex.status, "fail");
   assert.equal(ex.key_finding, "phantom");
 });
 
-test("buildReportPayload: short_circuited and degraded_run flow into _meta", () => {
-  const sc = buildReportPayload("r", { short_circuited: true });
-  assert.equal(sc._meta.short_circuited, true);
-  assert.equal(sc._meta.degraded_run, false);
-
-  const dg = buildReportPayload("r", { degraded_run: true });
-  assert.equal(dg._meta.degraded_run, true);
-  assert.equal(dg._meta.short_circuited, false);
-});
-
-test("buildReportPayload: routing block preserved under _meta for skill consumers", () => {
+test("buildReportPayload: tool row maps `output` to `output_summary` for canonical shape", () => {
   const payload = buildReportPayload("r", {
-    stage_a_candidates: [{ id: "a", path: "a.md", activation_match: ["file_globs"] }],
-    picked_leaves: [{ id: "a", dimensions: ["correctness"] }],
-    rejected_leaves: [{ id: "b", reason: "low signal" }],
-    coverage_rescues: [{ file: "x.ts", rescued_leaf: "lang-typescript", reason: "rescue" }],
+    tool_results: [
+      { name: "tsc", status: "pass", findings: 0, output: "0 errors" },
+      { name: "npm-audit", status: "skipped", reason: "not installed" },
+    ],
   });
-  assert.equal(payload._meta.routing.stage_a.candidates.length, 1);
-  assert.equal(payload._meta.routing.stage_b.picked.length, 1);
-  assert.equal(payload._meta.routing.stage_b.rejected.length, 1);
-  assert.equal(payload._meta.routing.stage_b.coverage_rescues.length, 1);
+  const tsc = payload.tool_results.find((t) => t.name === "tsc");
+  assert.equal(tsc.output_summary, "0 errors");
+  const audit = payload.tool_results.find((t) => t.name === "npm-audit");
+  assert.equal(audit.reason, "not installed");
+  assert.equal(audit.status, "skipped");
 });

@@ -11,6 +11,7 @@ import {
   parseArgs,
   parseFsmCliResult,
   stateIdToModuleName,
+  isValidGitRef,
 } from "../../scripts/run-review.mjs";
 
 test("parseArgs: --flag value pairs become entries", () => {
@@ -90,4 +91,27 @@ test("parseFsmCliResult: valid JSON stdout returns parsed payload", () => {
   assert.equal(out.ok, true);
   assert.equal(out.payload.run_id, "abc");
   assert.equal(out.payload.status, "awaiting_worker");
+});
+
+test("isValidGitRef: accepts SHAs, branches, tags", () => {
+  assert.equal(isValidGitRef("abc1234"), true);
+  assert.equal(isValidGitRef("HEAD"), true);
+  assert.equal(isValidGitRef("origin/main"), true);
+  assert.equal(isValidGitRef("v1.2.3"), true);
+  assert.equal(isValidGitRef("feat/sprint-b-hardening"), true);
+  assert.equal(isValidGitRef("HEAD~1"), false); // ~ is rejected (shell special)
+});
+
+test("isValidGitRef: rejects shell metacharacters and overlong inputs", () => {
+  assert.equal(isValidGitRef("abc; rm -rf /"), false);
+  assert.equal(isValidGitRef("abc`whoami`"), false);
+  assert.equal(isValidGitRef("abc$(whoami)"), false);
+  assert.equal(isValidGitRef("abc | cat"), false);
+  assert.equal(isValidGitRef(""), false);
+  assert.equal(isValidGitRef(null), false);
+  assert.equal(isValidGitRef(undefined), false);
+  assert.equal(isValidGitRef(123), false);
+  // Length cap (255 chars) — anything longer should be rejected.
+  assert.equal(isValidGitRef("a".repeat(256)), false);
+  assert.equal(isValidGitRef("a".repeat(255)), true);
 });

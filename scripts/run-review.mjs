@@ -120,10 +120,26 @@ function runFsmCommit({ runId, outputs }) {
 }
 
 function parseFsmCliResult(result, label) {
+  if (result.error) {
+    return {
+      ok: false,
+      error: `${label} spawn failed: ${result.error.code || ""} ${result.error.message}`.trim(),
+      raw: result.stdout,
+    };
+  }
+  if (result.signal) {
+    return {
+      ok: false,
+      error: `${label} terminated by signal ${result.signal}`,
+      raw: result.stdout,
+    };
+  }
   if (result.status !== 0) {
     return {
       ok: false,
-      error: result.stderr?.trim() || `${label} exited ${result.status}`,
+      error:
+        result.stderr?.trim() ||
+        `${label} exited with status ${result.status === null ? "null" : result.status}`,
       raw: result.stdout,
     };
   }

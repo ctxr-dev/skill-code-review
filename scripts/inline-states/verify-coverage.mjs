@@ -69,9 +69,14 @@ export default async function verifyCoverage({ env }) {
   // already added the rescued leaf to `picked_leaves` so source (b) above
   // already counts it; this loop is defensive against rescues that name a
   // leaf NOT in `picked_leaves` (e.g. because the trim worker emitted a
-  // rescue but the leaf was filtered downstream).
+  // rescue but the leaf was filtered downstream). Rescues that name a file
+  // outside `changed_paths` are ignored — the report only tracks coverage
+  // for files actually in the diff, so a rescue on an unrelated file would
+  // surface a phantom row in the matrix.
+  const changedPathSet = new Set(changedPaths);
   for (const rescue of coverageRescues) {
     if (!rescue?.file || !rescue?.rescued_leaf) continue;
+    if (!changedPathSet.has(rescue.file)) continue;
     ensureSet(reviewersByFile, rescue.file).add(rescue.rescued_leaf);
   }
 

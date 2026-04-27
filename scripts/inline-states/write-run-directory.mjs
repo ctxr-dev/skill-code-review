@@ -31,9 +31,9 @@ function resolveStorageRoot(repoRoot) {
 }
 
 export default async function writeRunDirectory({ brief, env }) {
-  // `import.meta.dirname` is Node ≥ 21 only; the rest of the runner uses the
-  // portable `dirname(fileURLToPath(import.meta.url))` form, so do the same
-  // here for consistency and pre-21 portability.
+  // Use the portable ESM idiom (matches the rest of the runner) instead of
+  // newer-Node-only convenience fields, so the handler runs across the Node
+  // versions our CI matrix accepts.
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const repoRoot = resolve(__dirname, "..", "..");
   const storageRoot = resolveStorageRoot(repoRoot);
@@ -77,7 +77,7 @@ export default async function writeRunDirectory({ brief, env }) {
     degraded_run: Boolean(env.degraded_run),
   };
 
-  writeFileSync(`${dir}/report.json`, JSON.stringify(reportPayload, null, 2) + "\n");
+  writeFileSync(`${dir}/report.json`, renderReportJson(reportPayload));
   writeFileSync(`${dir}/report.md`, renderReportMarkdown(reportPayload));
 
   const existingManifest = readManifest(runId, { storageRoot }) ?? {};

@@ -1,13 +1,14 @@
 // synthesize-release-readiness.mjs — deterministic implementation of FSM state Step 9.
 //
-// Inputs (from env):
+// Verdict-affecting inputs (from env):
 //   - findings               : deduped findings from Step 7 (each carries `flagged_by[]`)
 //   - picked_leaves          : { id, path, justification, dimensions[] }[]
-//   - coverage_gaps          : string[] (from Step 8; informational detail, surfaced
-//                              in the report payload but NOT consulted for verdict —
-//                              the engine-enforced signal is `coverage_rule_violated`)
 //   - coverage_rule_violated : boolean (from Step 8 — degrades verdict to NO-GO when true,
 //                              per B4 hard enforcement)
+//
+// (`coverage_gaps` from Step 8 is read upstream by `write-run-directory` for the
+// report payload only; this state does not consult it. The engine-enforced
+// signal is `coverage_rule_violated`.)
 //
 // Outputs:
 //   - gates   : 8 entries each shaped { number, name, status, contributing_leaves[], blocker_count }

@@ -27,6 +27,7 @@
     "report-format.md",
     "reviewers.wiki/",
     "fsm/",
+    "scripts/",
     ".fsmrc.json",
     "README.md",
     "LICENSE"

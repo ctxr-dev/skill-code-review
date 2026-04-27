@@ -34,7 +34,7 @@ import { dirname, join, resolve } from "node:path";
 import { tmpdir, platform } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { loadConfig, resolveSettings, runEnv } from "@ctxr/fsm";
+import { resolveSettings, runEnv } from "@ctxr/fsm";
 
 import { validateTrimOutput } from "./lib/trim-output-validator.mjs";
 
@@ -78,9 +78,12 @@ const REPO_ROOT = resolve(__dirname, "..");
 const INLINE_STATES_DIR = resolve(__dirname, "inline-states");
 
 function resolveStorageRoot() {
-  const config = loadConfig({ cwd: REPO_ROOT });
-  const settings = resolveSettings(config, { fsmName: "code-reviewer" });
-  return resolve(REPO_ROOT, settings.storage_root);
+  // @ctxr/fsm exposes resolveSettings(cliArgs, cwd) — cliArgs is the
+  // selector ({fsmName, fsmPath, ...}), cwd resolves .fsmrc.json.
+  // resolveSettings calls loadConfig internally; the caller does NOT
+  // pre-load. Returns { fsmPath, storageRoot, ... } in camelCase.
+  const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
+  return resolve(REPO_ROOT, settings.storageRoot);
 }
 
 export function parseArgs(argv) {

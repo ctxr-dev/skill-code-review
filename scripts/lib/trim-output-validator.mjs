@@ -4,15 +4,20 @@
 // JSON-Schema validation only checks the SHAPE of the trim worker's output,
 // not the cross-references between fields. The worker can fabricate IDs
 // that don't exist in the wiki, files that aren't in the diff, or rescues
-// that name leaves the worker just rejected. This module is the
-// referential-integrity check the runner invokes BEFORE `fsm-commit`
-// (which is where the FSM engine's JSON-Schema validation runs); both
-// gates must pass before the trim outputs land in the run env. So the
-// effective order is: shape (here, then in fsm-commit) → cross-refs
-// (here) → commit. Once `ctxr-dev/fsm#10` (F9 referential-integrity)
-// lands, the FSM engine's declarative `referential_integrity:` block
-// subsumes this; we migrate to the declarative form and delete the
-// bespoke validator.
+// that name leaves the worker just rejected. This module performs ONLY
+// the cross-reference checks (with minimal type guarding to make the
+// individual lookups safe); it deliberately does not duplicate the
+// JSON-Schema shape gate.
+//
+// Runner ordering on --continue: this validator runs first, then
+// fsm-commit applies the declarative JSON-Schema gate. So the effective
+// order is: cross-refs (here) → schema (fsm-commit) → commit. Both
+// gates must pass before the trim outputs land in the run env. If
+// either one fires, the run aborts with a structured error.
+//
+// Once `ctxr-dev/fsm#10` (F9 referential-integrity) lands, the FSM
+// engine's declarative `referential_integrity:` block subsumes this;
+// we migrate to the declarative form and delete the bespoke validator.
 //
 // Six violation classes (the original five from #13 plus a stage-A pair check
 // added in round 4 to close a subtle id/path-split fabrication path):

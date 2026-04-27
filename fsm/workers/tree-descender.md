@@ -18,12 +18,9 @@ Execute Step 3 of `code-reviewer.md` (Tree Descent):
    - Keep branches that are partially or wholly relevant.
    - Keep cross-cutting branches (security, correctness, tests, docs, performance) when ANY part of the diff plausibly triggers their concerns.
 3. **Sub-category descent** — for each retained branch, read its `index.md`. If `entries[].type == "index"`, descend further; otherwise treat them as leaves.
-4. **Leaf activation gate** — for each candidate leaf, evaluate its `activation:` block against the diff:
-   - `file_globs` against `changed_paths`.
-   - `keyword_matches` against the diff body (read with `Bash` if you need to grep).
-   - `structural_signals` against `project_profile`.
-   - `escalation_from`: if any listed reviewer is already a candidate, add this one too.
-   ANY signal match → mark as a candidate. If a leaf has no `activation:` block, mark it iff its parent subcategory was retained AND its `focus` is itself a clear match.
+4. **Leaf activation gate** — `activation:` block evaluation (`file_globs`, `keyword_matches`, `structural_signals`, `escalation_from`) is deterministic. Invoke the helper [`scripts/lib/activation-gate.mjs`](../../scripts/lib/activation-gate.mjs) directly from this worker (import its `evaluateActivation({leaves, changed_paths, project_profile, diff_text})` and feed it the leaves you've descended to). Use the returned `activated[]` set as the candidate list and carry through the `descent_signals` map verbatim into each candidate's `activation_match[]`. The worker only does semantic descent (focus matching) by hand; the boolean activation logic is not LLM judgement. Lifting the activation gate up into the runner so the worker just consumes a precomputed `activated_leaves[]` from env lands under the B6 reframe.
+
+   For leaves with NO `activation:` block, mark them iff their parent subcategory was retained AND their `focus` is itself a clear match against the diff. Emit `activation_match: ["focus_only"]` for these leaves — the FSM schema accepts `focus_only` as a first-class signal alongside `file_globs`, `keyword_matches`, `structural_signals`, and `escalation_from`, and it requires the array to be non-empty.
 
 ## Output (JSON, schema-validated)
 

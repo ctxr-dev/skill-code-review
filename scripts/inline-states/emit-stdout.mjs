@@ -5,20 +5,17 @@
 //   - args         : the orchestrator's arg bag (carries `--format` if any)
 //
 // Outputs: none (FSM-side `outputs: []`). Side effect: prints the report
-// payload to stdout in the requested format and a manifest pointer at the end
-// so callers can chase the artefacts on disk.
+// payload to stdout in the requested format. For markdown we append a
+// `# manifest: <path>` pointer so a human (or shell pipeline) can chase the
+// on-disk artefacts; for json we keep stdout valid JSON and emit the manifest
+// pointer to stderr instead.
 //
-// Format selection: `--format` ∈ {markdown (default), json, yaml}. We keep
-// YAML behind a YAML lib check rather than introducing a runtime dep — when
-// no YAML serializer is available we fall back to JSON with a one-line
-// notice so the run isn't surprised.
+// Format selection: `--format` ∈ {markdown (default), json}. YAML is reserved
+// for a future PR that bundles a serializer.
 
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
-// `yaml` was advertised in earlier drafts but the runner doesn't bundle a
-// YAML serializer. Drop it from the valid set rather than silently fall back
-// to JSON — surfaces the gap explicitly. Re-add once a serializer is wired.
 const VALID_FORMATS = new Set(["markdown", "json"]);
 
 function resolveFormat(argsBag) {
@@ -40,7 +37,7 @@ function readReport(runDirPath, format) {
 export default async function emitStdout({ env }) {
   const runDirPath = env.run_dir_path;
   if (!runDirPath) {
-    process.stdout.write(
+    process.stderr.write(
       "(emit_stdout: no run_dir_path in env — Step 10 may have been skipped)\n",
     );
     return {};
@@ -50,7 +47,7 @@ export default async function emitStdout({ env }) {
   const format = resolveFormat(argsBag);
   const body = readReport(runDirPath, format);
   if (body === null) {
-    process.stdout.write(
+    process.stderr.write(
       `(emit_stdout: report file for format=${format} not found under ${runDirPath})\n`,
     );
     return {};
@@ -58,6 +55,14 @@ export default async function emitStdout({ env }) {
 
   process.stdout.write(body);
   if (!body.endsWith("\n")) process.stdout.write("\n");
-  process.stdout.write(`# manifest: ${join(runDirPath, "manifest.json")}\n`);
+  // Manifest pointer: append to stdout for markdown (it's a human-friendly
+  // trailer that doesn't break grep / less); send to stderr for json so the
+  // primary stdout stays valid JSON for downstream parsers.
+  const manifestLine = `# manifest: ${join(runDirPath, "manifest.json")}\n`;
+  if (format === "markdown") {
+    process.stdout.write(manifestLine);
+  } else {
+    process.stderr.write(manifestLine);
+  }
   return {};
 }

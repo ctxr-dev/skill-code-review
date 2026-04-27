@@ -29,10 +29,10 @@
 // handler emits a `fault` so callers can react uniformly.
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync, mkdtempSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdtempSync, existsSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
+import { tmpdir, platform } from "node:os";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { loadConfig, resolveSettings, runEnv } from "@ctxr/fsm";
 
@@ -73,19 +73,36 @@ function fail(message, extra = {}) {
 }
 
 // Locate the @ctxr/fsm CLIs through the local node_modules. Hard-fail if the
-// dep isn't installed — the runner cannot work without it.
+// dep isn't installed — the runner cannot work without it. On Windows npm
+// installs `.cmd` shims under .bin; try the bare name first, then the .cmd
+// fallback, so the lookup is portable.
 function fsmBin(name) {
-  const candidate = join(REPO_ROOT, "node_modules", ".bin", name);
-  if (!existsSync(candidate)) {
-    fail(
-      `@ctxr/fsm CLI not found: ${candidate}. Run \`npm install\` to fetch the dep.`,
-    );
+  const base = join(REPO_ROOT, "node_modules", ".bin", name);
+  if (existsSync(base)) return base;
+  if (platform() === "win32") {
+    const cmd = `${base}.cmd`;
+    if (existsSync(cmd)) return cmd;
   }
-  return candidate;
+  fail(
+    `@ctxr/fsm CLI not found: ${base}${platform() === "win32" ? "(.cmd)" : ""}. Run \`npm install\` to fetch the dep.`,
+  );
 }
 
+// Each spawnSync needs a tiny scratch JSON file passed via --args-file or
+// --outputs-file. Write into a single per-process temp dir and clean it up at
+// exit so we don't leak `run-review-*` directories under the OS temp dir on
+// long sessions.
+const SCRATCH_DIR = mkdtempSync(join(tmpdir(), "run-review-"));
+process.on("exit", () => {
+  try {
+    rmSync(SCRATCH_DIR, { recursive: true, force: true });
+  } catch {
+    // best-effort cleanup; never block process exit on a temp-dir hiccup.
+  }
+});
+
 function runFsmNextStart({ baseSha, headSha, argsBag }) {
-  const argsFile = join(mkdtempSync(join(tmpdir(), "run-review-")), "args.json");
+  const argsFile = join(SCRATCH_DIR, "args.json");
   writeFileSync(argsFile, JSON.stringify(argsBag ?? {}));
   const result = spawnSync(
     fsmBin("fsm-next"),
@@ -106,10 +123,7 @@ function runFsmNextStart({ baseSha, headSha, argsBag }) {
 }
 
 function runFsmCommit({ runId, outputs }) {
-  const outputsFile = join(
-    mkdtempSync(join(tmpdir(), "run-review-")),
-    "outputs.json",
-  );
+  const outputsFile = join(SCRATCH_DIR, `outputs-${runId}-${Date.now()}.json`);
   writeFileSync(outputsFile, JSON.stringify(outputs ?? {}));
   const result = spawnSync(
     fsmBin("fsm-commit"),
@@ -180,7 +194,9 @@ async function dispatchInlineState(brief, runId) {
         `worker state in the FSM YAML.`,
     };
   }
-  const mod = await import(modulePath);
+  // ESM dynamic import on Windows refuses raw absolute paths; convert to a
+  // file:// URL so the same call works on POSIX and Windows.
+  const mod = await import(pathToFileURL(modulePath).href);
   if (typeof mod.default !== "function") {
     return {
       ok: false,

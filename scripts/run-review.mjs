@@ -433,7 +433,23 @@ async function loop(brief, runId, { replayMode = "live" } = {}) {
     if (current.has_worker) {
       const storageRoot = resolveStorageRoot();
       const env = runEnv(runId, { storageRoot });
-      const hashKey = hashKeyForBrief(current, env);
+      // hashKeyForBrief can throw when the prompt template is unreadable
+      // (a misconfigured FSM YAML). Convert to an in-flow fault for the
+      // current state instead of letting the exception bubble out as an
+      // unhandled top-level {status:"error"}.
+      let hashKey;
+      try {
+        hashKey = hashKeyForBrief(current, env);
+      } catch (err) {
+        return {
+          status: "fault",
+          run_id: runId,
+          fault: {
+            state: current.state,
+            reason: `hash key compute failed: ${err?.message ?? String(err)}`,
+          },
+        };
+      }
 
       // B7 replay mode: try to satisfy the worker call from a recorded
       // fixture. On hit, auto-commit the recorded outputs and continue
@@ -441,7 +457,23 @@ async function loop(brief, runId, { replayMode = "live" } = {}) {
       // a fault — silent fall-through to live dispatch would defeat the
       // determinism the harness exists to provide.
       if (replayMode === "replay") {
-        const cached = replayLookup(FIXTURES_ROOT, current.state, hashKey);
+        // replayLookup throws on corrupted/unreadable fixtures; convert
+        // those to in-flow faults so the run stops cleanly instead of
+        // crashing out as a top-level error.
+        let cached;
+        try {
+          cached = replayLookup(FIXTURES_ROOT, current.state, hashKey);
+        } catch (err) {
+          return {
+            status: "fault",
+            run_id: runId,
+            fault: {
+              state: current.state,
+              reason: `replay-mode fixture corrupted: ${err?.message ?? String(err)}`,
+              hash_key: hashKey,
+            },
+          };
+        }
         if (cached === null) {
           return {
             status: "fault",
@@ -469,11 +501,24 @@ async function loop(brief, runId, { replayMode = "live" } = {}) {
       // the captured outputs. Live mode also stashes (cheap, harmless) so
       // a subsequent --replay-mode=record on --continue still works
       // without requiring the original --start to have set the flag.
+      // In RECORD mode the stash is load-bearing — without it --continue
+      // can't persist the fixture — so a stash failure under record-mode
+      // must surface, not get swallowed.
       const dir = runDirPath(runId, { storageRoot });
       try {
         stashPendingBrief(dir, { state: current.state, hashKey });
-      } catch {
-        // Stash is best-effort bookkeeping; never fail the run on it.
+      } catch (err) {
+        if (replayMode === "record") {
+          return {
+            status: "fault",
+            run_id: runId,
+            fault: {
+              state: current.state,
+              reason: `replay-mode=record: failed to stash pending brief: ${err?.message ?? String(err)}`,
+            },
+          };
+        }
+        // Live mode: stash is best-effort bookkeeping; safe to ignore.
       }
 
       return { status: "awaiting_worker", run_id: runId, brief: current };
@@ -612,8 +657,9 @@ async function main() {
       const stash = readPendingBrief(dir);
       // No silent skip: a missing/malformed stash means the user thinks
       // they are recording fixtures but nothing would land on disk.
-      // Surface as a structured fault so the harness fails loud, not
-      // quiet — that is the entire point of record mode.
+      // Surface via fail() so the run stops loud (emits {status:"error"}
+      // and exits non-zero) — silent record-mode would be worse than no
+      // record mode at all.
       if (!(stash && typeof stash.state === "string" && typeof stash.hashKey === "string")) {
         fail(
           "replay-mode=record: missing or invalid pending-brief stash; cannot persist fixture",

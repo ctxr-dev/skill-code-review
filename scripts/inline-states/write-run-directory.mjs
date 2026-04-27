@@ -130,16 +130,28 @@ function buildMethodology(env) {
 // Map an internal finding (env.findings[i]) into the canonical issue shape.
 // `id` is assigned by enumeration order (which is already deterministic from
 // collect-findings' sort).
+const VALID_SEVERITIES = new Set(["critical", "important", "minor"]);
+
 function buildIssue(finding, idx) {
   const flaggedBy = Array.isArray(finding.flagged_by) ? finding.flagged_by : [];
   // Specialist attribution: prefer the dedup `winner` (the specialist whose
   // finding fields actually won — they own the severity / title / impact /
   // fix that we're surfacing). Fall back to the lex-first flagged_by entry
-  // when winner isn't carried (legacy callers that hand-craft findings).
+  // (sort defensively here — collect-findings already sorts on write but
+  // a hand-crafted finding might not) when winner isn't carried.
+  const sortedFlagged = [...flaggedBy].sort();
+  // report-format.md requires issues[].severity ∈ {critical, important, minor}.
+  // Anything else is a contract violation upstream — fail fast rather than
+  // emit a non-canonical issue row.
+  if (!VALID_SEVERITIES.has(finding.severity)) {
+    throw new Error(
+      `buildIssue: finding.severity must be one of ${[...VALID_SEVERITIES].join(", ")}; got: ${JSON.stringify(finding.severity)} (idx ${idx})`,
+    );
+  }
   return {
     id: idx + 1,
-    severity: finding.severity ?? null,
-    specialist: finding.winner ?? flaggedBy[0] ?? null,
+    severity: finding.severity,
+    specialist: finding.winner ?? sortedFlagged[0] ?? null,
     file: finding.file ?? null,
     line: finding.line ?? null,
     title: finding.title ?? null,

@@ -40,7 +40,8 @@ export function renderReportMarkdown(payload) {
     lines.push("## Findings");
     lines.push("");
     for (const f of payload.findings) {
-      const where = f.line ? `${f.file}:${f.line}` : f.file;
+      const where =
+        f.line === null || f.line === undefined ? f.file : `${f.file}:${f.line}`;
       lines.push(`### [${f.severity?.toUpperCase() ?? "?"}] ${f.title}`);
       lines.push(`*${where}* — flagged by ${(f.flagged_by ?? []).join(", ") || "(unknown)"}`);
       lines.push("");

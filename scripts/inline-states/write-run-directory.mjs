@@ -9,6 +9,13 @@
 // The directory itself is provisioned by `@ctxr/fsm`'s storage helpers when
 // the run started; we only fill in the report files. The trace + lock files
 // already live there from earlier states.
+//
+// `writeRunArtefacts` is exported so any caller that wants to materialise the
+// same artefacts without going through the FSM dispatch (e.g. ad-hoc scripts)
+// can reuse the writer. The two edge states (`short_circuit_exit` and
+// `stage_a_empty`) now route through this state in the FSM transition graph
+// rather than persisting their own artefacts, so the handlers themselves stay
+// pure.
 
 import { writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -30,17 +37,8 @@ function resolveStorageRoot(repoRoot) {
   return resolve(repoRoot, settings.storage_root);
 }
 
-export default async function writeRunDirectory({ brief, env }) {
-  // Use the portable ESM idiom (matches the rest of the runner) instead of
-  // newer-Node-only convenience fields, so the handler runs across the Node
-  // versions our CI matrix accepts.
-  const __dirname = dirname(fileURLToPath(import.meta.url));
-  const repoRoot = resolve(__dirname, "..", "..");
-  const storageRoot = resolveStorageRoot(repoRoot);
-  const runId = brief.run_id;
-  const dir = runDirPath(runId, { storageRoot });
-
-  const reportPayload = {
+function buildReportPayload(runId, env) {
+  return {
     run_id: runId,
     repo: env.repo ?? null,
     base_sha: env.base_sha ?? null,
@@ -76,6 +74,17 @@ export default async function writeRunDirectory({ brief, env }) {
     verdict: env.verdict ?? null,
     degraded_run: Boolean(env.degraded_run),
   };
+}
+
+// Shared writer reused by Step 10 and by the two short-circuit edge states.
+// Returns the run-dir path that was materialised.
+export function writeRunArtefacts(runId, env) {
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const repoRoot = resolve(__dirname, "..", "..");
+  const storageRoot = resolveStorageRoot(repoRoot);
+  const dir = runDirPath(runId, { storageRoot });
+
+  const reportPayload = buildReportPayload(runId, env);
 
   writeFileSync(`${dir}/report.json`, renderReportJson(reportPayload));
   writeFileSync(`${dir}/report.md`, renderReportMarkdown(reportPayload));
@@ -92,5 +101,10 @@ export default async function writeRunDirectory({ brief, env }) {
     { storageRoot },
   );
 
+  return dir;
+}
+
+export default async function writeRunDirectory({ brief, env }) {
+  const dir = writeRunArtefacts(brief.run_id, env);
   return { run_dir_path: dir };
 }

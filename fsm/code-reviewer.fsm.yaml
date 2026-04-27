@@ -399,7 +399,7 @@ fsm:
     # Reached when risk_tier_triage detects trivial diff with no signal.
     # Skips the rest of the pipeline; emits empty findings + GO verdict.
     - id: short_circuit_exit
-      purpose: "Trivial diff with no risk signal: emit empty findings, write manifest, GO verdict."
+      purpose: "Trivial diff with no risk signal: emit empty findings, GO verdict; then route through write_run_directory."
       preconditions:
         - "tier == 'trivial'"
       outputs:
@@ -409,19 +409,19 @@ fsm:
         - coverage_gaps
         - gates
         - verdict
-        - run_dir_path
+        - short_circuited
       post_validations:
         - "verdict == 'GO'"
         - "len(findings) == 0"
       transitions:
-        - to: emit_stdout
+        - to: write_run_directory
           when: always
 
     # Reached when tree_descend produces 0 candidates on a non-trivial diff.
     # Emits a coverage-gap warning and proceeds to a CONDITIONAL verdict —
     # the FSM cannot say GO without ANY review on a non-trivial diff.
     - id: stage_a_empty
-      purpose: "Non-trivial diff with empty Stage A candidates: log routing anomaly, emit CONDITIONAL."
+      purpose: "Non-trivial diff with empty Stage A candidates: log routing anomaly, emit CONDITIONAL; then route through write_run_directory."
       preconditions:
         - "stage_a_candidates is empty"
       outputs:
@@ -431,13 +431,12 @@ fsm:
         - coverage_gaps
         - gates
         - verdict
-        - run_dir_path
         - degraded_run
       post_validations:
         - "verdict == 'CONDITIONAL'"
         - "degraded_run == true"
       transitions:
-        - to: emit_stdout
+        - to: write_run_directory
           when: always
 
     # Final state. The FSM Orchestrator returns to Main Session.

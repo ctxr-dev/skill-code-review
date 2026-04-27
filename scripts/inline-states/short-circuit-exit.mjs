@@ -1,7 +1,10 @@
 // short-circuit-exit.mjs — deterministic implementation of FSM edge state.
 //
 // Reached when risk-tier-triage detects a trivial diff with no risk signal AND
-// no scope override. Skips Steps 3-9 entirely; emits empty findings + GO.
+// no scope override. Skips Steps 3-9 entirely; emits empty findings + GO and
+// then transitions to `write_run_directory` so the run directory is still
+// materialised before `emit_stdout`. Keeping this handler pure (no filesystem
+// I/O) lets unit + integration tests run it without a writable storage root.
 
 export default async function shortCircuitExit() {
   return {
@@ -17,7 +20,7 @@ export default async function shortCircuitExit() {
       blocker_count: 0,
     })),
     verdict: "GO",
-    run_dir_path: null,
+    short_circuited: true,
   };
 }
 

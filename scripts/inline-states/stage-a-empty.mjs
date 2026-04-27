@@ -3,7 +3,10 @@
 // Reached when tree-descend produces 0 candidates on a non-trivial diff.
 // Routing anomaly: the FSM cannot say GO without any review on a non-trivial
 // diff, so we emit CONDITIONAL with degraded_run=true and an explicit
-// coverage gap on every changed file.
+// coverage gap on every changed file. Then transitions to
+// `write_run_directory` so the run directory still gets materialised before
+// `emit_stdout`. Keeping this handler pure (no filesystem I/O) lets unit +
+// integration tests run it without a writable storage root.
 
 const GATE_NAMES = [
   "SOLID & Clean Code",
@@ -31,7 +34,6 @@ export default async function stageAEmpty({ env }) {
       blocker_count: 0,
     })),
     verdict: "CONDITIONAL",
-    run_dir_path: null,
     degraded_run: true,
   };
 }

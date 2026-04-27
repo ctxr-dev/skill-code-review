@@ -34,7 +34,37 @@ import { dirname, join, resolve } from "node:path";
 import { tmpdir, platform } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { loadConfig, resolveSettings, runEnv } from "@ctxr/fsm";
+import { loadConfig, resolveSettings, runEnv, runDirPath } from "@ctxr/fsm";
+
+import {
+  resolveReplayMode,
+  computeHashKey,
+  replayLookup,
+  recordOutputs,
+  stashPendingBrief,
+  readPendingBrief,
+  clearPendingBrief,
+  defaultFixturesRoot,
+} from "./lib/worker-replay.mjs";
+
+const FIXTURES_ROOT = defaultFixturesRoot(import.meta.url);
+
+// Project the FSM brief's declared inputs out of the run env so the hash
+// key only depends on what the worker actually sees, not the full env.
+function projectBriefInputs(brief, env) {
+  const names = Array.isArray(brief?.inputs) ? brief.inputs : [];
+  const out = {};
+  for (const name of names) out[name] = env?.[name];
+  return out;
+}
+
+function hashKeyForBrief(brief, env) {
+  return computeHashKey({
+    state: brief?.state,
+    promptTemplate: brief?.prompt_template ?? brief?.worker?.prompt_template ?? "",
+    inputs: projectBriefInputs(brief, env),
+  });
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "..");
@@ -91,6 +121,7 @@ const ALLOWED_ARGS_KEYS = new Set([
   "mode",
   "description",
   "max-reviewers",
+  "replay-mode",
 ]);
 function validateArgsBag(bag) {
   if (bag === null || typeof bag !== "object" || Array.isArray(bag)) {
@@ -330,7 +361,7 @@ async function dispatchInlineState(brief, runId) {
 
 // Drive the loop from a starting brief: walk inline states, pause on workers,
 // stop on terminal. Returns the final status payload to emit.
-async function loop(brief, runId) {
+async function loop(brief, runId, { replayMode = "live" } = {}) {
   let current = brief;
   while (true) {
     if (current.status === "terminal") {
@@ -342,13 +373,51 @@ async function loop(brief, runId) {
       };
     }
     if (current.has_worker) {
-      // The runner does not pre-compute activation-gate signals into the env
-      // here — the tree-descender worker prose instructs the LLM to invoke
-      // `scripts/lib/activation-gate.mjs` itself today. Lifting that
-      // pre-compute up to the runner (so any worker can consume
-      // activated_leaves[] from env without an LLM hop) is part of the B6
-      // reframe (#11). For now this branch is intentionally a thin
-      // pass-through.
+      const storageRoot = resolveStorageRoot();
+      const env = runEnv(runId, { storageRoot });
+      const hashKey = hashKeyForBrief(current, env);
+
+      // B7 replay mode: try to satisfy the worker call from a recorded
+      // fixture. On hit, auto-commit the recorded outputs and continue
+      // the loop without ever emitting awaiting_worker. On miss, return
+      // a fault — silent fall-through to live dispatch would defeat the
+      // determinism the harness exists to provide.
+      if (replayMode === "replay") {
+        const cached = replayLookup(FIXTURES_ROOT, current.state, hashKey);
+        if (cached === null) {
+          return {
+            status: "fault",
+            run_id: runId,
+            fault: {
+              state: current.state,
+              reason: `replay-mode miss: no fixture for state="${current.state}" hashKey=${hashKey.slice(0, 12)}...`,
+              hash_key: hashKey,
+            },
+          };
+        }
+        const commit = runFsmCommit({ runId, outputs: cached });
+        if (!commit.ok) {
+          return {
+            status: "fault",
+            run_id: runId,
+            fault: { state: current.state, reason: commit.error, details: commit.raw },
+          };
+        }
+        current = commit.payload;
+        continue;
+      }
+
+      // B7 record mode: stash the brief so --continue knows where to file
+      // the captured outputs. Live mode also stashes (cheap, harmless) so
+      // a subsequent --replay-mode=record on --continue still works
+      // without requiring the original --start to have set the flag.
+      const dir = runDirPath(runId, { storageRoot });
+      try {
+        stashPendingBrief(dir, { state: current.state, hashKey });
+      } catch {
+        // Stash is best-effort bookkeeping; never fail the run on it.
+      }
+
       return { status: "awaiting_worker", run_id: runId, brief: current };
     }
     const dispatch = await dispatchInlineState(current, runId);
@@ -419,7 +488,8 @@ async function main() {
       fail(`fsm-next --new-run failed: ${start.error}`, { raw: start.raw });
     }
     const brief = start.payload;
-    emit(await loop(brief, brief.run_id));
+    const replayMode = resolveReplayMode({ "replay-mode": args["replay-mode"] ?? argsBag["replay-mode"] });
+    emit(await loop(brief, brief.run_id, { replayMode }));
     return;
   }
 
@@ -443,11 +513,36 @@ async function main() {
       fail(`--run-id must be lowercase alnum + dashes, 3-64 chars; got: ${runId}`);
     }
     const outputs = readJsonFile(outputsFile, "--outputs-file");
+    const replayMode = resolveReplayMode({ "replay-mode": args["replay-mode"] });
+
+    // B7 record mode: persist the worker outputs we just received under
+    // the hash key the runner stashed when it emitted awaiting_worker.
+    // Done BEFORE fsm-commit so a commit failure doesn't leave a
+    // half-recorded fixture without its corresponding env update.
+    if (replayMode === "record") {
+      try {
+        const storageRoot = resolveStorageRoot();
+        const dir = runDirPath(runId, { storageRoot });
+        const stash = readPendingBrief(dir);
+        if (stash && typeof stash.state === "string" && typeof stash.hashKey === "string") {
+          recordOutputs(FIXTURES_ROOT, {
+            state: stash.state,
+            hashKey: stash.hashKey,
+            outputs,
+            meta: { recorded_at: new Date().toISOString(), run_id: runId },
+          });
+          clearPendingBrief(dir);
+        }
+      } catch {
+        // Recording is opt-in instrumentation; never fail the run on it.
+      }
+    }
+
     const commit = runFsmCommit({ runId, outputs });
     if (!commit.ok) {
       fail(`fsm-commit failed: ${commit.error}`, { raw: commit.raw });
     }
-    emit(await loop(commit.payload, runId));
+    emit(await loop(commit.payload, runId, { replayMode }));
     return;
   }
 

@@ -37,12 +37,20 @@ function dedupKey(finding) {
 //      finding always carries `flagged_by[]` after the first merge — but on
 //      the first encounter `flagged_by` may not exist; fall back to the
 //      hosting specialist's id captured at the call site).
+// Tie-breaker MUST be a stable property of the finding record itself, not
+// derived from a value that the caller mutates between merges. flagged_by
+// is recomputed as the sorted union of source ids on every merge, so its
+// [0] entry shifts as more specialists flag the same row — using it for
+// tie-break would let the "winner" fields (title / impact / fix) change
+// over time and break determinism. Use the persisted __winner / __origin
+// stamp on each record instead. The finding that arrived first carries the
+// id of the specialist that produced it, and that id never changes.
 function pickWinner(a, b) {
   const aSev = SEVERITY_RANK[a.severity] ?? 0;
   const bSev = SEVERITY_RANK[b.severity] ?? 0;
   if (aSev !== bSev) return aSev > bSev ? a : b;
-  const aOrigin = ((a.flagged_by ?? [])[0] ?? a.__origin ?? "");
-  const bOrigin = ((b.flagged_by ?? [])[0] ?? b.__origin ?? "");
+  const aOrigin = a.__winner ?? a.__origin ?? "";
+  const bOrigin = b.__winner ?? b.__origin ?? "";
   return aOrigin <= bOrigin ? a : b;
 }
 

@@ -72,6 +72,16 @@ function emit(payload) {
   process.stdout.write(JSON.stringify(payload) + "\n");
 }
 
+// Validate a run id per @ctxr/fsm's run-id format: lowercase alnum + dashes
+// only, fixed length range. Anything else (especially `/` or `..`) would
+// let `path.join(SCRATCH_DIR, ...)` escape the scratch directory when the
+// id is interpolated into a filename, opening a path-traversal that could
+// overwrite arbitrary files in `--continue` mode.
+const RUN_ID_PATTERN = /^[a-z0-9][a-z0-9-]{2,63}$/;
+export function isValidRunId(value) {
+  return typeof value === "string" && RUN_ID_PATTERN.test(value);
+}
+
 // Validate a git ref / SHA / revspec per code-reviewer.md's argument-parsing
 // allowlist. Accept the full git revspec character set the spec calls out:
 // alnum + `_./-@^~{}:` (the last few support `HEAD~1`, `branch@{1.day.ago}`,
@@ -168,7 +178,12 @@ function runFsmNextStart({ baseSha, headSha, argsBag }) {
 }
 
 function runFsmCommit({ runId, outputs }) {
-  const outputsFile = join(getScratchDir(), `outputs-${runId}-${Date.now()}.json`);
+  // Defence-in-depth: the runId here came from main()'s --start (assigned
+  // by fsm-next) or --continue (validated by isValidRunId before reaching
+  // this point). Sanitise once more so a bad path can never form regardless
+  // of caller. Replace anything outside the run-id alphabet with `_`.
+  const safeRunId = String(runId).replace(/[^a-zA-Z0-9-]/g, "_").slice(0, 64);
+  const outputsFile = join(getScratchDir(), `outputs-${safeRunId}-${Date.now()}.json`);
   writeFileSync(outputsFile, JSON.stringify(outputs ?? {}));
   const result = spawnSync(
     fsmBin("fsm-commit"),
@@ -348,6 +363,11 @@ async function main() {
     const outputsFile = args["outputs-file"];
     if (!runId || !outputsFile) {
       fail("--continue requires --run-id <id> and --outputs-file <path>");
+    }
+    if (!isValidRunId(runId)) {
+      // Reject path-traversal payloads (`../`, `/etc/passwd`, …) before
+      // `runId` can land in a filename inside SCRATCH_DIR.
+      fail(`--run-id must be lowercase alnum + dashes, 3-64 chars; got: ${runId}`);
     }
     const outputs = readJsonFile(outputsFile, "--outputs-file");
     const commit = runFsmCommit({ runId, outputs });

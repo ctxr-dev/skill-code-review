@@ -61,6 +61,11 @@ function countWikiLeaves(repoRoot) {
   }
   let count = 0;
   const stack = [realRoot];
+  // Track visited real directories so a symlink cycle (or a symlink that
+  // resolves back to a parent / sibling we already walked) can't trap us
+  // in an infinite loop or double-count files. realRoot itself goes in
+  // first so a symlink resolving back to the wiki root short-circuits.
+  const visited = new Set([realRoot]);
   while (stack.length > 0) {
     const dir = stack.pop();
     let entries;
@@ -88,8 +93,13 @@ function countWikiLeaves(repoRoot) {
         continue;
       }
       const rel = relative(realRoot, realFull);
-      if (rel.startsWith("..") || rel.startsWith(sep)) continue;
+      // Reject anything escaping the wiki AND reject the wiki root itself
+      // (rel === "" means the symlink resolved back to the wiki root,
+      // which would re-traverse the whole tree).
+      if (rel === "" || rel.startsWith("..") || rel.startsWith(sep)) continue;
       if (lst.isDirectory() || (lst.isSymbolicLink() && existsSync(realFull) && lstatSync(realFull).isDirectory())) {
+        if (visited.has(realFull)) continue;
+        visited.add(realFull);
         stack.push(realFull);
         continue;
       }

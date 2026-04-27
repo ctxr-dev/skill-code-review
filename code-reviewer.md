@@ -14,7 +14,7 @@ You do NOT review code yourself — you scan, route, collect, deduplicate, verif
 | Runner | [`scripts/run-review.mjs`](scripts/run-review.mjs) | Drives the FSM end-to-end via `@ctxr/fsm`'s `fsm-next` / `fsm-commit` CLIs. Dispatches inline-state handlers, pauses on workers. |
 | Inline-state handlers | [`scripts/inline-states/*.mjs`](scripts/inline-states/) | Deterministic implementations of each non-worker step. (Most are pure-in/pure-out; `write-run-directory` and `emit-stdout` intentionally perform side effects — filesystem writes and stdout/stderr — but each remains byte-deterministic given identical inputs.) |
 | Worker prompts | [`fsm/workers/*.md`](fsm/workers/) | LLM-judgement steps (project-scanner, tree-descender, trim-candidates, tool-runner, specialist-coordinator). |
-| Activation gate | [`scripts/lib/activation-gate.mjs`](scripts/lib/activation-gate.mjs) | Deterministic file_globs / keyword_matches / structural_signals / escalation_from evaluation invoked by the tree-descender worker. |
+| Activation gate | [`scripts/lib/activation-gate.mjs`](scripts/lib/activation-gate.mjs) | Deterministic file_globs / keyword_matches / structural_signals / escalation_from evaluation. **Imported and invoked from inside the tree-descender worker** (not from the runner; the runner only pauses on workers). Lifting it into the runner so the worker consumes a precomputed `activated_leaves[]` from env is tracked under the B6 reframe. |
 | Report shape | [`report-format.md`](report-format.md) | Canonical JSON / markdown report contract — what `report.json` and `report.md` look like. |
 
 **The eleven prose Steps below are not the runtime spec.** They document what each FSM state *does* in human terms. Each Step now carries a callout naming its FSM state id and the handler / worker that implements it. Read the prose to understand intent; trust the linked code for what actually executes.
@@ -196,7 +196,7 @@ A path matches "risk" if it (case-insensitive) contains any of: `auth`, `crypto`
 
 ### Short-circuit clause
 
-If `tier == trivial` AND no leaf in Step 3 produces an activation match AND no `scope-*` override is set: emit empty findings, write the manifest with `short_circuited: true`, exit with GO verdict. Silence is a valid result.
+The FSM short-circuits directly from `risk_tier_triage` to `short_circuit_exit` based on the Step 2 decision inputs alone (`tier`, `risk_signals`, `scope_overrides_present`); Step 3 does not run on this path. Concretely: `tier == trivial` AND no risk signals AND no `scope-*` override ⇒ emit empty findings, write the manifest with `short_circuited: true`, exit with GO verdict. Silence is a valid result.
 
 ### Tier-cap override
 

@@ -131,6 +131,12 @@ export function computeHashKey({ state, promptTemplate, inputs, repoRoot }) {
           `Check that promptTemplate is correct relative to repoRoot. To opt out of content hashing, omit repoRoot.`,
       );
     }
+    // Normalize line endings so the same logical prompt produces the
+    // same hash on Windows (CRLF after a checkout with core.autocrlf=true)
+    // and on Linux (LF). Without this, every fixture recorded on Linux
+    // would replay-miss on Windows and vice versa, even though the
+    // semantic content is identical.
+    promptBody = promptBody.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   }
   h.update(promptBody);
   h.update("\u001f");

@@ -82,6 +82,38 @@ test("computeHashKey: same inputs → same hash; any input change → different 
   assert.notEqual(a, diffInputs);
 });
 
+test("computeHashKey: same prompt body in CRLF and LF produces the same hash", async () => {
+  // Without CRLF normalization, a Windows checkout (core.autocrlf=true)
+  // would hash the same logical prompt to a different value than a
+  // Linux checkout, causing systematic cross-platform replay misses.
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const { join: pj } = await import("node:path");
+  const lfRoot = makeTmpDir();
+  const crlfRoot = makeTmpDir();
+  try {
+    mkdirSync(pj(lfRoot, "fsm", "workers"), { recursive: true });
+    mkdirSync(pj(crlfRoot, "fsm", "workers"), { recursive: true });
+    writeFileSync(pj(lfRoot, "fsm", "workers", "p.md"), "line a\nline b\nline c\n");
+    writeFileSync(pj(crlfRoot, "fsm", "workers", "p.md"), "line a\r\nline b\r\nline c\r\n");
+    const lfHash = computeHashKey({
+      state: "s",
+      promptTemplate: "fsm/workers/p.md",
+      inputs: {},
+      repoRoot: lfRoot,
+    });
+    const crlfHash = computeHashKey({
+      state: "s",
+      promptTemplate: "fsm/workers/p.md",
+      inputs: {},
+      repoRoot: crlfRoot,
+    });
+    assert.equal(lfHash, crlfHash, "CRLF must hash equal to LF after normalization");
+  } finally {
+    rmSync(lfRoot, { recursive: true, force: true });
+    rmSync(crlfRoot, { recursive: true, force: true });
+  }
+});
+
 test("computeHashKey: throws when promptTemplate is unreadable under a given repoRoot", () => {
   // A bad promptTemplate path under a real repoRoot must surface — silent
   // empty-content fallback would mask a bug as a systematic replay miss.

@@ -24,7 +24,6 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  loadConfig,
   resolveSettings,
   runDirPath,
   readManifest,
@@ -34,9 +33,13 @@ import {
 import { renderReportMarkdown, renderReportJson } from "../lib/report-renderer.mjs";
 
 function resolveStorageRoot(repoRoot) {
-  const config = loadConfig({ cwd: repoRoot });
-  const settings = resolveSettings(config, { fsmName: "code-reviewer" });
-  return resolve(repoRoot, settings.storage_root);
+  // @ctxr/fsm exposes resolveSettings(cliArgs, cwd) — cliArgs is the
+  // selector ({fsmName, fsmPath, ...}), cwd resolves .fsmrc.json.
+  // resolveSettings calls loadConfig internally; the caller must NOT
+  // pre-load. Returns are camelCase (storageRoot), not the snake_case
+  // form used in .fsmrc.json on disk.
+  const settings = resolveSettings({ fsmName: "code-reviewer" }, repoRoot);
+  return resolve(repoRoot, settings.storageRoot);
 }
 
 const METHODOLOGY_PRINCIPLES = ["SRP", "OCP", "LSP", "ISP", "DIP", "DRY", "KISS", "YAGNI"];

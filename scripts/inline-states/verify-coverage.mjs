@@ -20,14 +20,73 @@
 //
 // We build the matrix from THREE sources:
 //   (a) each finding's `flagged_by[]` (specialists that produced findings on the file),
-//   (b) picked_leaves credited broadly (one entry per file × leaf): the FSM
-//       schema for picked_leaves does not currently carry per-leaf path
-//       signals (file_globs / activation_match), so broad credit is the
-//       most honest default until B6 (#11) widens the schema. Silence is
-//       precision — a leaf that inspected and emitted no findings is still
-//       a reviewer for the file.
+//   (b) picked_leaves narrowed by their on-disk `activation.file_globs[]`
+//       (read from the leaf's frontmatter via leaf.path). Leaves with no
+//       activation block on disk fall back to broad credit. Silence is
+//       precision — a leaf with matching globs that emitted no findings
+//       is still a reviewer for those files.
 //   (c) coverage_rescues — each rescue maps a file → leaf that was promoted
 //       precisely to lift that file's coverage.
+
+import { readFileSync, existsSync } from "node:fs";
+import { dirname, resolve, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { minimatch } from "../lib/minimatch-shim.mjs";
+
+// Read a leaf's `activation.file_globs` from its on-disk frontmatter.
+// Returns an array of strings (possibly empty) when the leaf has globs,
+// or `null` when the file isn't present / doesn't carry an activation
+// block (caller should fall back to broad credit).
+//
+// Cached per-process: the wiki is small (≤ 1k leaves) and verify-coverage
+// runs once per review, so a Map keyed by absolute path keeps repeat
+// lookups O(1).
+const _leafGlobsCache = new Map();
+function readLeafGlobs(repoRoot, leafPath) {
+  if (typeof leafPath !== "string" || leafPath.length === 0) return null;
+  // Resolve against repo root; reject anything that escapes the wiki.
+  const wikiRoot = resolve(repoRoot, "reviewers.wiki");
+  const abs = resolve(repoRoot, leafPath);
+  if (!abs.startsWith(wikiRoot)) return null;
+  if (_leafGlobsCache.has(abs)) return _leafGlobsCache.get(abs);
+  if (!existsSync(abs)) {
+    _leafGlobsCache.set(abs, null);
+    return null;
+  }
+  let text;
+  try {
+    text = readFileSync(abs, "utf8");
+  } catch {
+    _leafGlobsCache.set(abs, null);
+    return null;
+  }
+  // Tiny YAML-ish frontmatter parser scoped to the activation.file_globs[]
+  // sub-block. Avoids pulling in a YAML dep at runtime; the corpus uses a
+  // single canonical layout. If the leaf doesn't carry an activation block
+  // we return null (broad credit). Bullet items can be quoted or bare;
+  // strip surrounding quotes.
+  const fmEnd = text.indexOf("\n---", 4);
+  const fm = fmEnd > 0 ? text.slice(4, fmEnd) : text;
+  const activationIdx = fm.search(/\n?activation:\s*$/m);
+  if (activationIdx === -1) {
+    _leafGlobsCache.set(abs, null);
+    return null;
+  }
+  const tail = fm.slice(activationIdx);
+  const fileGlobsMatch = tail.match(/\n  file_globs:\s*\n((?: {4}[^\n]+\n?)+)/);
+  if (!fileGlobsMatch) {
+    _leafGlobsCache.set(abs, []);
+    return [];
+  }
+  const globs = fileGlobsMatch[1]
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("- "))
+    .map((line) => line.slice(2).trim().replace(/^["']|["']$/g, ""));
+  _leafGlobsCache.set(abs, globs);
+  return globs;
+}
 
 function ensureSet(map, key) {
   let s = map.get(key);
@@ -61,21 +120,31 @@ export default async function verifyCoverage({ env }) {
     }
   }
 
-  // Source (b): credit each picked leaf with each changed file.
-  //
-  // The FSM schema for `picked_leaves` (Step 4 / llm_trim response_schema)
-  // does not currently carry `activation_match[]` or `activation.file_globs[]`,
-  // so we have no per-leaf path signal to narrow the credit against. Until
-  // `picked_leaves` is widened (B6 reframe — #11) we credit broadly: every
-  // picked leaf is treated as having inspected every changed file, and
-  // silence is precision (the absence of a finding = no issue rather than
-  // no inspection). The two narrower signals — findings (source a) and
-  // rescues (source c) — already attribute coverage on the file level
-  // when they fire.
-  for (const file of changedPaths) {
-    const set = ensureSet(reviewersByFile, file);
-    for (const leaf of pickedLeaves) {
-      if (leaf.id) set.add(leaf.id);
+  // Source (b): per-leaf scope-narrowed credit. The FSM schema for
+  // `picked_leaves` (Step 4 / llm_trim) carries `path` (a relative
+  // reference under reviewers.wiki/), so we read each leaf's frontmatter
+  // off disk and use its `activation.file_globs[]` to narrow which
+  // changed files the leaf actually covers. Leaves whose frontmatter has
+  // no activation block, or whose file isn't present, fall back to broad
+  // credit — same default as before.
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const repoRoot = resolve(__dirname, "..", "..");
+  for (const leaf of pickedLeaves) {
+    if (!leaf.id) continue;
+    const globs = readLeafGlobs(repoRoot, leaf.path);
+    if (globs === null || globs.length === 0) {
+      // No activation block on disk → broad credit. Silence is precision.
+      for (const file of changedPaths) ensureSet(reviewersByFile, file).add(leaf.id);
+      continue;
+    }
+    // Narrow: only files matching one of the leaf's globs.
+    for (const file of changedPaths) {
+      for (const g of globs) {
+        if (typeof g === "string" && minimatch(file, g)) {
+          ensureSet(reviewersByFile, file).add(leaf.id);
+          break;
+        }
+      }
     }
   }
 

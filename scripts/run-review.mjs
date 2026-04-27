@@ -181,8 +181,10 @@ function runFsmCommit({ runId, outputs }) {
   // Defence-in-depth: the runId here came from main()'s --start (assigned
   // by fsm-next) or --continue (validated by isValidRunId before reaching
   // this point). Sanitise once more so a bad path can never form regardless
-  // of caller. Replace anything outside the run-id alphabet with `_`.
-  const safeRunId = String(runId).replace(/[^a-zA-Z0-9-]/g, "_").slice(0, 64);
+  // of caller. Lowercase + restrict to the run-id alphabet (matches
+  // isValidRunId's `[a-z0-9-]+` exactly) so the temp filename is consistent
+  // with the documented id format.
+  const safeRunId = String(runId).toLowerCase().replace(/[^a-z0-9-]/g, "_").slice(0, 64);
   const outputsFile = join(getScratchDir(), `outputs-${safeRunId}-${Date.now()}.json`);
   writeFileSync(outputsFile, JSON.stringify(outputs ?? {}));
   const result = spawnSync(

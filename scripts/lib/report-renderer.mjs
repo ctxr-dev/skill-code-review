@@ -85,9 +85,17 @@ function fileLink(file, line) {
   // resolves to `.skill-code-review/<shard>/<run-id>/src/x.ts` (which doesn't
   // exist) when GitHub / IDEs follow it. Use a leading `../../../` so the
   // link resolves to the repo-root path the user actually expects.
+  //
+  // URL-encode each path segment so files containing spaces, `#`, `?`, `(`,
+  // `)`, `[` or other URL-significant characters produce a valid link.
+  // The display text keeps the raw filename for readability.
   if (!file) return "—";
+  const encodedPath = file
+    .split("/")
+    .map((seg) => encodeURIComponent(seg))
+    .join("/");
   if (line === null || line === undefined) return `\`${file}\``;
-  return `[${file}:${line}](../../../${file}#L${line})`;
+  return `[${file}:${line}](../../../${encodedPath}#L${line})`;
 }
 
 function renderIssuesSection(issues) {

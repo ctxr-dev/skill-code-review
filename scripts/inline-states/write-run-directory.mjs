@@ -56,7 +56,7 @@ export function buildReportPayload(runId, env) {
         coverage_rescues: env.coverage_rescues ?? [],
       },
     },
-    specialists: (env.specialist_outputs ?? []).map((s) => ({
+    specialists: (Array.isArray(env.specialist_outputs) ? env.specialist_outputs : []).map((s) => ({
       id: s.id,
       status: s.status,
       runtime_ms: s.runtime_ms ?? null,
@@ -65,12 +65,12 @@ export function buildReportPayload(runId, env) {
       finding_count: Array.isArray(s.findings) ? s.findings.length : 0,
       skip_reason: s.skip_reason ?? null,
     })),
-    tool_results: env.tool_results ?? [],
-    findings: env.findings ?? [],
+    tool_results: Array.isArray(env.tool_results) ? env.tool_results : [],
+    findings: Array.isArray(env.findings) ? env.findings : [],
     severity_counts: env.severity_counts ?? { critical: 0, important: 0, minor: 0 },
-    coverage_matrix: env.coverage_matrix ?? [],
-    coverage_gaps: env.coverage_gaps ?? [],
-    gates: env.gates ?? [],
+    coverage_matrix: Array.isArray(env.coverage_matrix) ? env.coverage_matrix : [],
+    coverage_gaps: Array.isArray(env.coverage_gaps) ? env.coverage_gaps : [],
+    gates: Array.isArray(env.gates) ? env.gates : [],
     verdict: env.verdict ?? null,
     degraded_run: Boolean(env.degraded_run),
   };

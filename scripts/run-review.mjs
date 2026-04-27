@@ -236,6 +236,13 @@ async function loop(brief, runId) {
       };
     }
     if (current.has_worker) {
+      // The runner doesn't pre-compute activation-gate signals into the env
+      // before handing the brief off; the tree-descender worker calls into
+      // `scripts/lib/activation-gate.mjs` itself, on the activated subset.
+      // Wiring activation-gate as a runner-side pre-step lands under the
+      // B6 code-reviewer.md reframe (the runner becomes authoritative for
+      // every deterministic pre-LLM step at that point). Tracked: this
+      // branch is intentionally a thin pass-through until then.
       return { status: "awaiting_worker", run_id: runId, brief: current };
     }
     const dispatch = await dispatchInlineState(current, runId);

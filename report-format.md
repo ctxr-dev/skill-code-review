@@ -63,7 +63,7 @@ Tools are declared in each reviewer leaf's frontmatter (`tools:` array). The orc
 
 ### Format Auto-Detection
 
-When `format=auto` (the default), `emit-stdout.mjs` resolves the format from `process.stdout.isTTY`:
+When `format=auto` (the default), [`scripts/inline-states/emit-stdout.mjs`](scripts/inline-states/emit-stdout.mjs) resolves the format from `process.stdout.isTTY`:
 
 - TTY stdout (interactive user / slash command / chat) → **markdown**
 - Non-TTY stdout (piped consumer, sub-agent, CI) → **JSON**

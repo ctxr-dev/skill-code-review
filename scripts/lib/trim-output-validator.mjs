@@ -8,12 +8,17 @@
 // referential-integrity check that runs after schema validation, before
 // the trim output is committed to the run env.
 //
-// Five violation classes:
+// Six violation classes:
 //   1. picked_leaves[*].id        ∈ leaf ids in reviewers.wiki/
 //   2. picked_leaves[*].path      resolves to a real wiki file
-//   3. rejected_leaves[*].id      ∈ stage_a_candidates ids
-//   4. coverage_rescues[*].file   ∈ changed_paths
-//   5. coverage_rescues[*].rescued_leaf ∈ rejected_leaves[*].id
+//   3. picked_leaves[*]           matches a stage_a_candidates entry with the
+//                                 same {id, path} pair (a real wiki leaf id is
+//                                 not enough — the trim worker is contractually
+//                                 picking FROM stage_a_candidates, not from
+//                                 the entire wiki).
+//   4. rejected_leaves[*].id      ∈ stage_a_candidates ids
+//   5. coverage_rescues[*].file   ∈ changed_paths
+//   6. coverage_rescues[*].rescued_leaf ∈ rejected_leaves[*].id
 //
 // The validator is a pure function: same `(outputs, env, opts)` →
 // same `{ ok, errors[] }`. It does fs reads to enumerate the wiki when
@@ -138,6 +143,17 @@ function readLeafId(absPath) {
   return m ? m[1] : null;
 }
 
+// Collapse the two wiki path shapes the corpus uses (`lang-typescript.md`
+// vs `reviewers.wiki/lang-typescript.md`) to a single canonical
+// wiki-relative form so id↔path equality across stage_a_candidates and
+// picked_leaves doesn't false-positive on a cosmetic prefix.
+function normalizeWikiPath(p) {
+  if (typeof p !== "string") return p;
+  let out = p.replace(/^\.\/+/, "");
+  if (out.startsWith("reviewers.wiki/")) out = out.slice("reviewers.wiki/".length);
+  return out;
+}
+
 function looksLikeTrimOutput(outputs) {
   return (
     outputs &&
@@ -197,11 +213,21 @@ export function validateTrimOutput(outputs, env, opts = {}) {
   const pickedLeaves = Array.isArray(outputs.picked_leaves) ? outputs.picked_leaves : [];
   const rejectedLeaves = Array.isArray(outputs.rejected_leaves) ? outputs.rejected_leaves : [];
   const coverageRescues = Array.isArray(outputs.coverage_rescues) ? outputs.coverage_rescues : [];
+  const stageACandidates = Array.isArray(env?.stage_a_candidates) ? env.stage_a_candidates : [];
   const stageACandidateIds = new Set(
-    (Array.isArray(env?.stage_a_candidates) ? env.stage_a_candidates : [])
-      .map((c) => c?.id)
-      .filter((id) => typeof id === "string"),
+    stageACandidates.map((c) => c?.id).filter((id) => typeof id === "string"),
   );
+  // Build an id → normalized-path index for the stage-A pair check (3).
+  // Stage-A entries can carry either a wiki-relative path
+  // (`lang-typescript.md`) or a repo-relative one (`reviewers.wiki/lang-
+  // typescript.md`); normalizeWikiPath collapses both shapes so the
+  // comparison doesn't false-positive on a cosmetic prefix difference.
+  const stageAPathById = new Map();
+  for (const cand of stageACandidates) {
+    if (cand && typeof cand.id === "string" && typeof cand.path === "string") {
+      stageAPathById.set(cand.id, normalizeWikiPath(cand.path));
+    }
+  }
   const rejectedIds = new Set(
     rejectedLeaves.map((r) => r?.id).filter((id) => typeof id === "string"),
   );
@@ -231,7 +257,34 @@ export function validateTrimOutput(outputs, env, opts = {}) {
     }
   }
 
-  // (3) rejected_leaves[*].id ∈ stage_a_candidates ids
+  // (3) picked_leaves[*] must match a stage_a_candidates entry with the
+  //     SAME {id, path} pair. The trim worker's contract is "select from
+  //     stage_a_candidates", not "select from the entire wiki". Without
+  //     this check a worker could fabricate an {id: real-leaf, path:
+  //     different-real-leaf} pair where both halves pass (1) and (2)
+  //     individually, but coverage scoping (which reads activation from
+  //     `path`) and specialist dispatch (keyed by `id`) would diverge.
+  for (const leaf of pickedLeaves) {
+    if (!leaf || typeof leaf.id !== "string" || typeof leaf.path !== "string") {
+      // Already flagged by (1) / (2); avoid double-reporting.
+      continue;
+    }
+    if (!stageACandidateIds.has(leaf.id)) {
+      errors.push(
+        `picked_leaves[id=${leaf.id}] is not in stage_a_candidates (worker must pick from candidates, not the full wiki)`,
+      );
+      continue;
+    }
+    const expected = stageAPathById.get(leaf.id);
+    const got = normalizeWikiPath(leaf.path);
+    if (expected !== undefined && expected !== got) {
+      errors.push(
+        `picked_leaves[id=${leaf.id}].path "${leaf.path}" does not match stage_a_candidates entry path "${expected}"`,
+      );
+    }
+  }
+
+  // (4) rejected_leaves[*].id ∈ stage_a_candidates ids
   for (const leaf of rejectedLeaves) {
     if (!leaf || typeof leaf.id !== "string") {
       errors.push("rejected_leaf missing string `id`");

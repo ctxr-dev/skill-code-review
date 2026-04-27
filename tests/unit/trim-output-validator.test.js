@@ -86,7 +86,77 @@ test("validateTrimOutput: rejects picked_leaves[].path that doesn't resolve (cla
   );
 });
 
-test("validateTrimOutput: rejects rejected_leaves[].id not in stage_a_candidates (class 3)", () => {
+test("validateTrimOutput: rejects picked_leaves not in stage_a_candidates (class 3, id mismatch)", () => {
+  // sec-csrf is a real wiki id and resolves to a real file — but it is NOT
+  // in stage_a_candidates for this scenario. Class 1 + class 2 must both
+  // pass; class 3 is the only thing catching this fabrication.
+  const env = {
+    stage_a_candidates: [
+      { id: "lang-typescript", path: "formatter-eslint/lang-typescript.md" },
+    ],
+    changed_paths: [],
+  };
+  const out = {
+    picked_leaves: [
+      { id: "sec-csrf", path: "csrf-missing/sec-csrf.md", justification: "x", dimensions: [] },
+    ],
+    rejected_leaves: [],
+    coverage_rescues: [],
+  };
+  const result = validateTrimOutput(out, env, { knownLeafIds: KNOWN_IDS });
+  assert.equal(result.ok, false);
+  assert.ok(
+    result.errors.some(
+      (e) => e.includes("sec-csrf") && e.includes("not in stage_a_candidates"),
+    ),
+    `expected a stage-A-candidate membership error, got: ${result.errors.join("; ")}`,
+  );
+});
+
+test("validateTrimOutput: rejects picked_leaves with wrong path for the id (class 3, path mismatch)", () => {
+  // Both id (lang-typescript) and path (csrf-missing/sec-csrf.md) are
+  // individually valid wiki entries, but the pair doesn't match: stage_a
+  // declared lang-typescript at formatter-eslint/lang-typescript.md.
+  // Without the pair check, the worker could split id/path across two real
+  // leaves and bypass downstream coverage scoping.
+  const out = validOutputs();
+  out.picked_leaves[0].path = "csrf-missing/sec-csrf.md";
+  const result = validateTrimOutput(out, VALID_ENV, { knownLeafIds: KNOWN_IDS });
+  assert.equal(result.ok, false);
+  assert.ok(
+    result.errors.some(
+      (e) => e.includes("lang-typescript") && e.includes("does not match stage_a_candidates entry path"),
+    ),
+    `expected an id↔path pair-mismatch error, got: ${result.errors.join("; ")}`,
+  );
+});
+
+test("validateTrimOutput: pair check accepts cosmetic 'reviewers.wiki/' prefix on stage_a path", () => {
+  // Stage-A may emit either wiki-relative or repo-relative paths;
+  // normalizeWikiPath collapses them. Same effective path must match.
+  const env = {
+    stage_a_candidates: [
+      { id: "lang-typescript", path: "reviewers.wiki/formatter-eslint/lang-typescript.md" },
+    ],
+    changed_paths: [],
+  };
+  const out = {
+    picked_leaves: [
+      { id: "lang-typescript", path: "formatter-eslint/lang-typescript.md", justification: "x", dimensions: [] },
+    ],
+    rejected_leaves: [],
+    coverage_rescues: [],
+  };
+  const result = validateTrimOutput(out, env, { knownLeafIds: KNOWN_IDS });
+  // Class 2 may still fail if the file isn't on disk (the test uses a real
+  // path), but class 3's pair check must NOT contribute an error here.
+  const class3Errors = result.errors.filter((e) =>
+    e.includes("not in stage_a_candidates") || e.includes("does not match stage_a_candidates entry path"),
+  );
+  assert.deepEqual(class3Errors, [], `prefix-normalized paths must not trigger class 3: ${result.errors.join("; ")}`);
+});
+
+test("validateTrimOutput: rejects rejected_leaves[].id not in stage_a_candidates (class 4)", () => {
   const out = validOutputs();
   out.rejected_leaves.push({ id: "phantom-rejected", reason: "?" });
   const result = validateTrimOutput(out, VALID_ENV, { knownLeafIds: KNOWN_IDS });
@@ -99,7 +169,7 @@ test("validateTrimOutput: rejects rejected_leaves[].id not in stage_a_candidates
   );
 });
 
-test("validateTrimOutput: rejects coverage_rescues[].file not in changed_paths (class 4)", () => {
+test("validateTrimOutput: rejects coverage_rescues[].file not in changed_paths (class 5)", () => {
   const out = validOutputs();
   out.coverage_rescues[0].file = "not-in-the-diff.ts";
   const result = validateTrimOutput(out, VALID_ENV, { knownLeafIds: KNOWN_IDS });
@@ -112,7 +182,7 @@ test("validateTrimOutput: rejects coverage_rescues[].file not in changed_paths (
   );
 });
 
-test("validateTrimOutput: rejects coverage_rescues[].rescued_leaf not in rejected_leaves (class 5)", () => {
+test("validateTrimOutput: rejects coverage_rescues[].rescued_leaf not in rejected_leaves (class 6)", () => {
   const out = validOutputs();
   out.coverage_rescues[0].rescued_leaf = "leaf-the-trim-worker-imagined";
   const result = validateTrimOutput(out, VALID_ENV, { knownLeafIds: KNOWN_IDS });

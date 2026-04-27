@@ -317,7 +317,11 @@ test("reproducibility: full inline pipeline twice on sensitive fixture", async (
   const phantom = manifest.collected.findings.find((f) => f.title === "phantom finding");
   assert.equal(phantom, undefined, "skipped specialist findings must be discarded");
 
-  // Critical finding from sec-jwt-tokens flips Gate 6 and the verdict.
+  // The seeded findings drive an overall NO-GO verdict; the critical
+  // sec-jwt-tokens finding shows up as Gate 6 (Security & Safety) failing.
+  // Other Important findings would also push the verdict to NO-GO via their
+  // respective gates — Gate 6 is one symptom of the failure, not the sole
+  // driver.
   assert.equal(manifest.readiness.verdict, "NO-GO");
   const gate6 = manifest.readiness.gates.find((g) => g.number === 6);
   assert.equal(gate6.status, "FAIL");

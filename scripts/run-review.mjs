@@ -779,7 +779,7 @@ async function main() {
         clearPendingBrief(dir);
       } catch (err) {
         fail(
-          `replay-mode=record: failed to persist fixture for state=${stash.state}: ${err.message}`,
+          `replay-mode=record: failed to persist fixture for state=${stash.state}: ${err?.message ?? String(err)}`,
           { state: stash.state, hash_key: stash.hashKey },
         );
       }

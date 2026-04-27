@@ -62,18 +62,23 @@ export default async function collectFindings({ env }) {
       sourceIds.add(specialist.id);
       // Stamp __origin so the tie-breaker can compare even on the first
       // encounter (before the merged record has a flagged_by[]). Persist
-      // it onto the merged record as `__winner` so downstream consumers
-      // (write-run-directory's buildIssue) can attribute the issue to the
-      // specialist whose finding fields actually won the dedup, instead of
-      // having to guess `flagged_by[0]` (which is lex-sorted, not order
-      // of arrival).
+      // the origin of whichever finding *won* onto the merged record as
+      // `__winner` so downstream consumers (write-run-directory's
+      // buildIssue) can attribute the issue to the specialist whose
+      // finding fields actually carried through the dedup. When `existing`
+      // wins, the previous __winner is the right answer; when `fStamped`
+      // wins, the current specialist.id is.
       const fStamped = { ...f, __origin: specialist.id };
       const winner = existing ? pickWinner(existing, fStamped) : fStamped;
-      const { __origin, ...winnerOut } = winner;
+      const winnerOrigin =
+        existing && winner === existing
+          ? existing.__winner ?? existing.__origin ?? null
+          : specialist.id;
+      const { __origin: _o, __winner: _w, ...winnerOut } = winner;
       merged.set(key, {
         ...winnerOut,
         flagged_by: [...sourceIds].sort(),
-        __winner: __origin ?? specialist.id,
+        __winner: winnerOrigin ?? specialist.id,
       });
     }
   }

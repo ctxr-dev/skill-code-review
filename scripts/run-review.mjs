@@ -323,11 +323,12 @@ async function main() {
     if (!baseSha || !headSha) {
       fail("--start requires --base <sha> and --head <sha>");
     }
+    const refSyntax = "alnum / _ . / - @ ^ ~ { } :, no leading dash, ≤255 chars";
     if (!isValidGitRef(baseSha)) {
-      fail(`--base must be a valid git ref/SHA (alnum/dash/underscore/slash/dot, ≤255 chars); got: ${baseSha}`);
+      fail(`--base must be a valid git ref/SHA/revspec (${refSyntax}); got: ${baseSha}`);
     }
     if (!isValidGitRef(headSha)) {
-      fail(`--head must be a valid git ref/SHA (alnum/dash/underscore/slash/dot, ≤255 chars); got: ${headSha}`);
+      fail(`--head must be a valid git ref/SHA/revspec (${refSyntax}); got: ${headSha}`);
     }
     let argsBag = {};
     if (args["args-file"]) {

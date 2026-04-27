@@ -122,7 +122,11 @@ export default async function emitStdout({ env }) {
 
   const filtersRequested = severityThreshold !== null || gateFilter;
 
-  let body;
+  // Build the body. If anything goes wrong (file missing, invalid JSON), we
+  // STILL emit the manifest pointer at the bottom — Step 11's contract is
+  // "always tell the caller where to find the artefacts on disk", and a
+  // missing report file is exactly when that pointer is most useful.
+  let body = null;
   if (filtersRequested) {
     // Filtering is format-agnostic: read the canonical JSON payload (the
     // single source of truth produced by Step 10), apply the filters, and
@@ -134,41 +138,44 @@ export default async function emitStdout({ env }) {
       process.stderr.write(
         `(emit_stdout: filtered output requested but report.json not found under ${runDirPath})\n`,
       );
-      return {};
+    } else {
+      try {
+        const parsed = JSON.parse(jsonRaw);
+        const filtered = applyScopeFilters(parsed, severityThreshold, gateFilter);
+        body =
+          format === "json"
+            ? JSON.stringify(filtered, null, 2) + "\n"
+            : renderReportMarkdown(filtered);
+      } catch {
+        // Malformed report.json — fall back to the pre-rendered file and warn.
+        process.stderr.write(
+          "(emit_stdout: report.json is malformed; falling back to unfiltered output)\n",
+        );
+        body = readReport(runDirPath, format);
+      }
     }
-    let parsed;
-    try {
-      parsed = JSON.parse(jsonRaw);
-    } catch {
-      // Malformed report.json — fall back to the pre-rendered file and warn.
-      process.stderr.write(
-        "(emit_stdout: report.json is malformed; falling back to unfiltered output)\n",
-      );
-      body = readReport(runDirPath, format);
-      if (body === null) return {};
-      process.stdout.write(body);
-      if (!body.endsWith("\n")) process.stdout.write("\n");
-      return {};
-    }
-    const filtered = applyScopeFilters(parsed, severityThreshold, gateFilter);
-    body = format === "json" ? JSON.stringify(filtered, null, 2) + "\n" : renderReportMarkdown(filtered);
   } else {
     body = readReport(runDirPath, format);
     if (body === null) {
       process.stderr.write(
         `(emit_stdout: report file for format=${format} not found under ${runDirPath})\n`,
       );
-      return {};
     }
   }
 
-  process.stdout.write(body);
-  if (!body.endsWith("\n")) process.stdout.write("\n");
+  if (body !== null) {
+    process.stdout.write(body);
+    if (!body.endsWith("\n")) process.stdout.write("\n");
+  }
+
   // Manifest pointer line — uses the canonical "Manifest:" prefix from
-  // code-reviewer.md Step 11. For markdown it goes on stdout as a human
-  // trailer; for JSON it goes to stderr so the primary stdout stays parseable.
+  // code-reviewer.md Step 11. Always emit, even when the report body
+  // couldn't be produced, so the caller can still locate manifest.json on
+  // disk. For markdown it goes on stdout as a human trailer; for JSON
+  // (and when the body errored) it goes to stderr so the primary stdout
+  // stays parseable / empty for a downstream tool.
   const manifestLine = `Manifest: ${join(runDirPath, "manifest.json")}\n`;
-  if (format === "markdown") {
+  if (format === "markdown" && body !== null) {
     process.stdout.write(manifestLine);
   } else {
     process.stderr.write(manifestLine);

@@ -346,7 +346,13 @@ async function main() {
       fail(`--head must be a valid git ref/SHA/revspec (${refSyntax}); got: ${headSha}`);
     }
     let argsBag = {};
-    if (args["args-file"]) {
+    if (args["args-file"] !== undefined) {
+      // parseArgs sets bare `--args-file` (no value) to boolean `true`.
+      // Guard against that here so readJsonFile(true, ...) doesn't produce
+      // a confusing fs error.
+      if (typeof args["args-file"] !== "string" || args["args-file"].length === 0) {
+        fail("--args-file requires a path argument");
+      }
       argsBag = readJsonFile(args["args-file"], "--args-file");
     }
     const start = runFsmNextStart({ baseSha, headSha, argsBag });
@@ -363,6 +369,14 @@ async function main() {
     const outputsFile = args["outputs-file"];
     if (!runId || !outputsFile) {
       fail("--continue requires --run-id <id> and --outputs-file <path>");
+    }
+    // parseArgs sets bare flags to boolean `true`; require the value to
+    // actually be a non-empty string before forwarding it as a path / id.
+    if (typeof runId !== "string" || runId.length === 0) {
+      fail("--run-id requires a value (got bare flag)");
+    }
+    if (typeof outputsFile !== "string" || outputsFile.length === 0) {
+      fail("--outputs-file requires a path argument");
     }
     if (!isValidRunId(runId)) {
       // Reject path-traversal payloads (`../`, `/etc/passwd`, …) before

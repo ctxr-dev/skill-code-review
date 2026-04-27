@@ -67,6 +67,23 @@ function emit(payload) {
   process.stdout.write(JSON.stringify(payload) + "\n");
 }
 
+// Read + parse JSON from a path, surfacing missing-file / invalid-JSON as
+// structured `{status:"error"}` instead of letting the exception escape
+// to main().catch and emit a generic "unhandled error".
+function readJsonFile(path, label) {
+  let raw;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (err) {
+    fail(`${label} read failed (${path}): ${err.code ?? ""} ${err.message}`.trim());
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    fail(`${label} contains invalid JSON (${path}): ${err.message}`);
+  }
+}
+
 function fail(message, extra = {}) {
   emit({ status: "error", message, ...extra });
   process.exit(1);
@@ -236,13 +253,13 @@ async function loop(brief, runId) {
       };
     }
     if (current.has_worker) {
-      // The runner doesn't pre-compute activation-gate signals into the env
-      // before handing the brief off; the tree-descender worker calls into
-      // `scripts/lib/activation-gate.mjs` itself, on the activated subset.
-      // Wiring activation-gate as a runner-side pre-step lands under the
-      // B6 code-reviewer.md reframe (the runner becomes authoritative for
-      // every deterministic pre-LLM step at that point). Tracked: this
-      // branch is intentionally a thin pass-through until then.
+      // Activation-gate signals are pre-computed by the runner BEFORE the
+      // tree-descender worker is invoked: tree-descender.md instructs the
+      // worker to consume `activated_leaves[]` from the env (already filled
+      // by `scripts/lib/activation-gate.mjs`), so the worker only does
+      // semantic focus-descent and intersection. Wiring that pre-compute
+      // step into this branch (so the env is materialised here for every
+      // worker, not only tree-descender) lands under the B6 reframe.
       return { status: "awaiting_worker", run_id: runId, brief: current };
     }
     const dispatch = await dispatchInlineState(current, runId);
@@ -280,7 +297,7 @@ async function main() {
     }
     let argsBag = {};
     if (args["args-file"]) {
-      argsBag = JSON.parse(readFileSync(args["args-file"], "utf8"));
+      argsBag = readJsonFile(args["args-file"], "--args-file");
     }
     const start = runFsmNextStart({ baseSha, headSha, argsBag });
     if (!start.ok) {
@@ -297,7 +314,7 @@ async function main() {
     if (!runId || !outputsFile) {
       fail("--continue requires --run-id <id> and --outputs-file <path>");
     }
-    const outputs = JSON.parse(readFileSync(outputsFile, "utf8"));
+    const outputs = readJsonFile(outputsFile, "--outputs-file");
     const commit = runFsmCommit({ runId, outputs });
     if (!commit.ok) {
       fail(`fsm-commit failed: ${commit.error}`, { raw: commit.raw });

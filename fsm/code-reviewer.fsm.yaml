@@ -384,7 +384,7 @@ fsm:
 
     # ─── Step 11 ────────────────────────────────────────────────
     - id: emit_stdout
-      purpose: "Print the report (markdown / JSON / YAML per format arg) plus manifest pointer."
+      purpose: "Print the report (markdown or JSON per format arg) plus manifest pointer. yaml is reserved (no serializer bundled yet); requesting it falls back to markdown with a stderr notice."
       preconditions:
         - "run_dir_path exists in run state"
       # Inline state: stdout side effect; no FSM-side outputs.

@@ -200,14 +200,12 @@ test("reproducibility: stage-a-empty twice on changed_paths", async () => {
 
 test("reproducibility: activation-gate twice on full leaf set", async () => {
   await twiceIdentical("activation-gate", () =>
-    Promise.resolve(
-      evaluateActivation({
-        leaves: deepClone(PIPELINE_LEAVES),
-        changed_paths: deepClone(SENSITIVE_FIXTURE.changed_paths),
-        project_profile: deepClone(SENSITIVE_FIXTURE.project_profile),
-        diff_text: SENSITIVE_FIXTURE.diff_text,
-      }),
-    ),
+    evaluateActivation({
+      leaves: deepClone(PIPELINE_LEAVES),
+      changed_paths: deepClone(SENSITIVE_FIXTURE.changed_paths),
+      project_profile: deepClone(SENSITIVE_FIXTURE.project_profile),
+      diff_text: SENSITIVE_FIXTURE.diff_text,
+    }),
   );
 });
 

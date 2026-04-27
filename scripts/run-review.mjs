@@ -260,13 +260,13 @@ async function loop(brief, runId) {
       };
     }
     if (current.has_worker) {
-      // Activation-gate signals are pre-computed by the runner BEFORE the
-      // tree-descender worker is invoked: tree-descender.md instructs the
-      // worker to consume `activated_leaves[]` from the env (already filled
-      // by `scripts/lib/activation-gate.mjs`), so the worker only does
-      // semantic focus-descent and intersection. Wiring that pre-compute
-      // step into this branch (so the env is materialised here for every
-      // worker, not only tree-descender) lands under the B6 reframe.
+      // The runner does not pre-compute activation-gate signals into the env
+      // here — the tree-descender worker prose instructs the LLM to invoke
+      // `scripts/lib/activation-gate.mjs` itself today. Lifting that
+      // pre-compute up to the runner (so any worker can consume
+      // activated_leaves[] from env without an LLM hop) is part of the B6
+      // reframe (#11). For now this branch is intentionally a thin
+      // pass-through.
       return { status: "awaiting_worker", run_id: runId, brief: current };
     }
     const dispatch = await dispatchInlineState(current, runId);

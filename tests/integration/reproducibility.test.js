@@ -145,19 +145,19 @@ async function twiceIdentical(label, runOnce) {
   return first;
 }
 
-function frozenClone(value) {
+function deepClone(value) {
   return structuredClone(value);
 }
 
 test("reproducibility: risk-tier-triage twice on sensitive fixture", async () => {
   await twiceIdentical("risk-tier-triage", () =>
-    riskTierTriage({ env: frozenClone(SENSITIVE_FIXTURE) }),
+    riskTierTriage({ env: deepClone(SENSITIVE_FIXTURE) }),
   );
 });
 
 test("reproducibility: collect-findings twice on seeded specialist outputs", async () => {
   await twiceIdentical("collect-findings", () =>
-    collectFindings({ env: { specialist_outputs: frozenClone(SEEDED_SPECIALIST_OUTPUTS) } }),
+    collectFindings({ env: { specialist_outputs: deepClone(SEEDED_SPECIALIST_OUTPUTS) } }),
   );
 });
 
@@ -171,7 +171,7 @@ test("reproducibility: verify-coverage twice on synthetic findings + leaves", as
     coverage_rescues: [],
     changed_paths: SENSITIVE_FIXTURE.changed_paths,
   };
-  await twiceIdentical("verify-coverage", () => verifyCoverage({ env: frozenClone(env) }));
+  await twiceIdentical("verify-coverage", () => verifyCoverage({ env: deepClone(env) }));
 });
 
 test("reproducibility: synthesize-release-readiness twice on seeded inputs", async () => {
@@ -184,7 +184,7 @@ test("reproducibility: synthesize-release-readiness twice on seeded inputs", asy
     coverage_rule_violated: false,
   };
   await twiceIdentical("synthesize-release-readiness", () =>
-    synthesizeReleaseReadiness({ env: frozenClone(env) }),
+    synthesizeReleaseReadiness({ env: deepClone(env) }),
   );
 });
 
@@ -194,7 +194,7 @@ test("reproducibility: short-circuit-exit twice (no env)", async () => {
 
 test("reproducibility: stage-a-empty twice on changed_paths", async () => {
   await twiceIdentical("stage-a-empty", () =>
-    stageAEmpty({ env: frozenClone({ changed_paths: SENSITIVE_FIXTURE.changed_paths }) }),
+    stageAEmpty({ env: deepClone({ changed_paths: SENSITIVE_FIXTURE.changed_paths }) }),
   );
 });
 
@@ -202,9 +202,9 @@ test("reproducibility: activation-gate twice on full leaf set", async () => {
   await twiceIdentical("activation-gate", () =>
     Promise.resolve(
       evaluateActivation({
-        leaves: frozenClone(PIPELINE_LEAVES),
-        changed_paths: frozenClone(SENSITIVE_FIXTURE.changed_paths),
-        project_profile: frozenClone(SENSITIVE_FIXTURE.project_profile),
+        leaves: deepClone(PIPELINE_LEAVES),
+        changed_paths: deepClone(SENSITIVE_FIXTURE.changed_paths),
+        project_profile: deepClone(SENSITIVE_FIXTURE.project_profile),
         diff_text: SENSITIVE_FIXTURE.diff_text,
       }),
     ),
@@ -218,12 +218,12 @@ test("reproducibility: activation-gate twice on full leaf set", async () => {
 // invocation so a handler that accidentally mutates its input cannot smuggle
 // state between runs.
 async function runFullInlinePipeline() {
-  const triage = await riskTierTriage({ env: frozenClone(SENSITIVE_FIXTURE) });
+  const triage = await riskTierTriage({ env: deepClone(SENSITIVE_FIXTURE) });
 
   const activation = evaluateActivation({
-    leaves: frozenClone(PIPELINE_LEAVES),
-    changed_paths: frozenClone(SENSITIVE_FIXTURE.changed_paths),
-    project_profile: frozenClone(SENSITIVE_FIXTURE.project_profile),
+    leaves: deepClone(PIPELINE_LEAVES),
+    changed_paths: deepClone(SENSITIVE_FIXTURE.changed_paths),
+    project_profile: deepClone(SENSITIVE_FIXTURE.project_profile),
     diff_text: SENSITIVE_FIXTURE.diff_text,
   });
   const pickedLeaves = activation.activated.slice(0, triage.cap);
@@ -235,24 +235,24 @@ async function runFullInlinePipeline() {
   // leaves can legitimately appear with status="skipped" — collect-findings
   // is responsible for discarding any findings they emit.
   const pickedIds = new Set(pickedLeaves.map((l) => l.id));
-  const dispatched = frozenClone(SEEDED_SPECIALIST_OUTPUTS).filter((s) => pickedIds.has(s.id));
+  const dispatched = deepClone(SEEDED_SPECIALIST_OUTPUTS).filter((s) => pickedIds.has(s.id));
 
   const collected = await collectFindings({ env: { specialist_outputs: dispatched } });
 
   const coverage = await verifyCoverage({
     env: {
-      findings: frozenClone(collected.findings),
-      picked_leaves: frozenClone(pickedLeaves),
+      findings: deepClone(collected.findings),
+      picked_leaves: deepClone(pickedLeaves),
       coverage_rescues: [],
-      changed_paths: frozenClone(SENSITIVE_FIXTURE.changed_paths),
+      changed_paths: deepClone(SENSITIVE_FIXTURE.changed_paths),
     },
   });
 
   const readiness = await synthesizeReleaseReadiness({
     env: {
-      findings: frozenClone(collected.findings),
-      picked_leaves: frozenClone(pickedLeaves),
-      coverage_gaps: frozenClone(coverage.coverage_gaps),
+      findings: deepClone(collected.findings),
+      picked_leaves: deepClone(pickedLeaves),
+      coverage_gaps: deepClone(coverage.coverage_gaps),
       coverage_rule_violated: coverage.coverage_rule_violated,
     },
   });

@@ -8,7 +8,8 @@
 // referential-integrity check that runs after schema validation, before
 // the trim output is committed to the run env.
 //
-// Six violation classes:
+// Six violation classes (the original five from #13 plus a stage-A pair check
+// added in round 4 to close a subtle id/path-split fabrication path):
 //   1. picked_leaves[*].id        ∈ leaf ids in reviewers.wiki/
 //   2. picked_leaves[*].path      resolves to a real wiki file
 //   3. picked_leaves[*]           matches a stage_a_candidates entry with the
@@ -37,6 +38,13 @@ import { fileURLToPath } from "node:url";
 // run that walks two different repos (tests, multi-repo tooling) gets a
 // per-repo cache rather than reusing the first walk's result.
 const _wikiIdsCache = new Map();
+
+// This module sits at scripts/lib/trim-output-validator.mjs. Walking up two
+// directories lands at the repo root (scripts/lib → scripts → <repo>). Hoist
+// the derivation to a named module constant so the path math isn't mistaken
+// for "<repo>/scripts" by readers counting `..` segments inline.
+const __thisDir = dirname(fileURLToPath(import.meta.url));
+const DEFAULT_REPO_ROOT = resolve(__thisDir, "..", "..");
 
 // Helper: a path is "inside" parent iff `relative(parent, child)` is non-
 // empty AND not the parent itself AND doesn't start with `..` AND isn't an
@@ -204,8 +212,7 @@ export function validateTrimOutput(outputs, env, opts = {}) {
     return { ok: true, errors: [] };
   }
   const errors = [];
-  const repoRoot =
-    opts.repoRoot ?? resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const repoRoot = opts.repoRoot ?? DEFAULT_REPO_ROOT;
   const { ids: wikiIds } = opts.knownLeafIds
     ? { ids: new Set(opts.knownLeafIds) }
     : enumerateWikiLeaves(repoRoot);
@@ -295,7 +302,7 @@ export function validateTrimOutput(outputs, env, opts = {}) {
     }
   }
 
-  // (4) coverage_rescues[*].file ∈ changed_paths
+  // (5) coverage_rescues[*].file ∈ changed_paths
   for (const rescue of coverageRescues) {
     if (!rescue || typeof rescue.file !== "string") {
       errors.push("coverage_rescue missing string `file`");
@@ -306,7 +313,7 @@ export function validateTrimOutput(outputs, env, opts = {}) {
     }
   }
 
-  // (5) coverage_rescues[*].rescued_leaf ∈ rejected_leaves[*].id
+  // (6) coverage_rescues[*].rescued_leaf ∈ rejected_leaves[*].id
   for (const rescue of coverageRescues) {
     if (!rescue || typeof rescue.rescued_leaf !== "string") {
       errors.push("coverage_rescue missing string `rescued_leaf`");

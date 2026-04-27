@@ -128,12 +128,15 @@ function pickle(value) {
   return JSON.stringify(value);
 }
 
-// Deep-clone every fixture argument before each invocation so a handler that
-// mutates its input env in place (sort, splice, push, …) cannot smuggle state
-// between runs and silently keep the equality check passing. Object.freeze on
-// the top-level fixtures only freezes the outer container; inner arrays /
-// objects must be re-cloned. Done by wrapping the runOnce thunk so call-sites
-// stay terse.
+// Asserts the runOnce thunk produces byte-identical output across two calls.
+//
+// Mutation defence (deep-clone): the top-level fixture constants are
+// Object.freeze()'d, but freeze is shallow — inner arrays/objects can still
+// be mutated by a handler. So every call site below wraps its env / leaves /
+// changed_paths in `deepClone(...)` before passing them in. That way a
+// handler that accidentally sorts findings in place (or pushes a derived
+// value) cannot smuggle state between the two runs and silently keep the
+// equality check passing.
 async function twiceIdentical(label, runOnce) {
   const first = await runOnce();
   const second = await runOnce();

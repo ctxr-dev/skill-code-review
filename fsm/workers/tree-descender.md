@@ -20,7 +20,7 @@ Execute Step 3 of `code-reviewer.md` (Tree Descent):
 3. **Sub-category descent** — for each retained branch, read its `index.md`. If `entries[].type == "index"`, descend further; otherwise treat them as leaves.
 4. **Leaf activation gate** — `activation:` block evaluation (`file_globs`, `keyword_matches`, `structural_signals`, `escalation_from`) is deterministic and is computed by [`scripts/lib/activation-gate.mjs`](../../scripts/lib/activation-gate.mjs). The runner pre-computes `activated_leaves[]` from this module and passes the result into the env before invoking this worker; the worker therefore does NOT re-evaluate activation blocks on its own. Your remaining job is strictly: (a) walk the wiki tree and decide which subcategories are semantically relevant from their `focus` strings, (b) intersect those subcategory leaves with `activated_leaves[]`, (c) emit the resulting candidate set with the activation-gate's reported `activation_match[]` carried through verbatim.
 
-   For leaves with NO `activation:` block, mark them iff their parent subcategory was retained AND their `focus` is itself a clear match against the diff. These leaves carry an empty `activation_match: []` (the runner annotates them with a synthetic `"focus_only"` signal if it needs the array non-empty for schema compliance).
+   For leaves with NO `activation:` block, mark them iff their parent subcategory was retained AND their `focus` is itself a clear match against the diff. Emit `activation_match: ["focus_only"]` for these leaves — the FSM schema accepts `focus_only` as a first-class signal alongside `file_globs`, `keyword_matches`, `structural_signals`, and `escalation_from`, and it requires the array to be non-empty.
 
 ## Output (JSON, schema-validated)
 

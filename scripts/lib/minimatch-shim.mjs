@@ -11,7 +11,11 @@
 // Anchored to full path; case-sensitive (matches POSIX semantics).
 
 function escapeRegex(s) {
-  return s.replace(/[.+^$()|[\]\\]/g, "\\$&");
+  // Include `{` and `}` so any literal brace character that survived
+  // compileGlob's brace-alternation pass is escaped before reaching new
+  // RegExp(). An unbalanced `{` would otherwise be treated as the start of a
+  // quantifier, throwing "Invalid regular expression".
+  return s.replace(/[.+^$()|[\]{}\\]/g, "\\$&");
 }
 
 function compileGlob(glob) {

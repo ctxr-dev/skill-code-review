@@ -18,7 +18,7 @@
 // pure.
 
 import { writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -86,8 +86,10 @@ export function writeRunArtefacts(runId, env) {
 
   const reportPayload = buildReportPayload(runId, env);
 
-  writeFileSync(`${dir}/report.json`, renderReportJson(reportPayload));
-  writeFileSync(`${dir}/report.md`, renderReportMarkdown(reportPayload));
+  const reportJsonPath = join(dir, "report.json");
+  const reportMdPath = join(dir, "report.md");
+  writeFileSync(reportJsonPath, renderReportJson(reportPayload));
+  writeFileSync(reportMdPath, renderReportMarkdown(reportPayload));
 
   const existingManifest = readManifest(runId, { storageRoot }) ?? {};
   writeManifest(
@@ -95,8 +97,8 @@ export function writeRunArtefacts(runId, env) {
     {
       ...existingManifest,
       verdict: reportPayload.verdict,
-      report_path: `${dir}/report.md`,
-      report_json_path: `${dir}/report.json`,
+      report_path: reportMdPath,
+      report_json_path: reportJsonPath,
     },
     { storageRoot },
   );

@@ -84,8 +84,25 @@ const GATE_DEFINITIONS = [
 
 function tagsLikeFromLeaf(leaf) {
   if (!leaf?.id) return [];
+  // Real `tags[]` aren't in the env yet (the trim worker passes per-pick
+  // dimensions but not tags); approximate by hashing the leaf id into a
+  // bag of tokens. We need to cover both single-token tags ("solid", "cli")
+  // AND hyphenated multi-word tags ("error-handling", "type-safety",
+  // "api-design"). Emit:
+  //   - the full leaf id verbatim (catches some leaf-id == tag matches),
+  //   - each `-`-delimited segment (single-word matches),
+  //   - every contiguous 2-, 3-, and 4-segment slide (multi-word matches).
+  // Order doesn't matter for the predicate `.includes(t)` checks below.
+  const tags = new Set();
+  tags.add(leaf.id);
   const segments = leaf.id.split("-");
-  return segments;
+  for (let i = 0; i < segments.length; i++) {
+    tags.add(segments[i]);
+    for (let n = 2; n <= 4 && i + n <= segments.length; n++) {
+      tags.add(segments.slice(i, i + n).join("-"));
+    }
+  }
+  return [...tags];
 }
 
 function leafProducedBlockers(leafId, blockingFlaggedBy) {

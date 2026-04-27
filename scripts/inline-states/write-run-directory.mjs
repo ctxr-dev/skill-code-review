@@ -248,7 +248,14 @@ export function buildReportPayload(runId, env) {
       mode: argsBag.full ? "full" : "diff",
       files_changed: Array.isArray(env.changed_paths) ? env.changed_paths.length : 0,
       stack,
-      specialists_dispatched: specialistOutputs.length,
+      // specialists_dispatched is the count of leaves PICKED for this run
+      // (Step 4 / llm_trim → picked_leaves). Falls back to
+      // specialist_outputs.length when picked_leaves isn't in env (legacy
+      // / partial runs), but the canonical answer is the picked-leaves
+      // size, not however many workers happened to report back.
+      specialists_dispatched: Array.isArray(env.picked_leaves)
+        ? env.picked_leaves.length
+        : specialistOutputs.length,
       specialists_total: specialistsTotal(),
       scope: buildScope(argsBag),
     },

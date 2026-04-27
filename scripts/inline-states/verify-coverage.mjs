@@ -20,9 +20,12 @@
 //
 // We build the matrix from THREE sources:
 //   (a) each finding's `flagged_by[]` (specialists that produced findings on the file),
-//   (b) picked_leaves narrowed by their own `activation.file_globs[]` (a leaf
-//       only covers a file if its globs match the file; leaves with no
-//       file_globs — focus_only, escalation_from — are credited broadly),
+//   (b) picked_leaves credited broadly (one entry per file × leaf): the FSM
+//       schema for picked_leaves does not currently carry per-leaf path
+//       signals (file_globs / activation_match), so broad credit is the
+//       most honest default until B6 (#11) widens the schema. Silence is
+//       precision — a leaf that inspected and emitted no findings is still
+//       a reviewer for the file.
 //   (c) coverage_rescues — each rescue maps a file → leaf that was promoted
 //       precisely to lift that file's coverage.
 
@@ -58,32 +61,22 @@ export default async function verifyCoverage({ env }) {
     }
   }
 
-  // Per-leaf scope narrowing using activation_match[] (the actual signal
-  // the tree_descend FSM state emits per leaf, per the response_schema).
-  // The rule:
-  //   - "file_globs" or "keyword_matches" or "structural_signals" or
-  //     "escalation_from" — the activation gate already proved the leaf
-  //     applies to this diff, so source (a) (findings) is the authoritative
-  //     credit signal. We DON'T broadly credit on the picked-leaves pass
-  //     because that would make coverage_gaps depend on picked_leaves.length
-  //     instead of the spec's per-file rule. A leaf earns credit on a file
-  //     only if it actually produced a finding there (source a) OR was
-  //     promoted by a rescue (source c) OR carries activation_match
-  //     containing exactly "focus_only" (no path signal — credit broadly
-  //     because we have no narrower hook).
-  for (const leaf of pickedLeaves) {
-    if (!leaf.id) continue;
-    const activationMatch = Array.isArray(leaf.activation_match)
-      ? leaf.activation_match
-      : Array.isArray(leaf.activation?.file_globs)
-      ? leaf.activation.file_globs.length > 0
-        ? ["file_globs"]
-        : ["focus_only"]
-      : ["focus_only"];
-    const isFocusOnly =
-      activationMatch.length === 1 && activationMatch[0] === "focus_only";
-    if (!isFocusOnly) continue;
-    for (const file of changedPaths) ensureSet(reviewersByFile, file).add(leaf.id);
+  // Source (b): credit each picked leaf with each changed file.
+  //
+  // The FSM schema for `picked_leaves` (Step 4 / llm_trim response_schema)
+  // does not currently carry `activation_match[]` or `activation.file_globs[]`,
+  // so we have no per-leaf path signal to narrow the credit against. Until
+  // `picked_leaves` is widened (B6 reframe — #11) we credit broadly: every
+  // picked leaf is treated as having inspected every changed file, and
+  // silence is precision (the absence of a finding = no issue rather than
+  // no inspection). The two narrower signals — findings (source a) and
+  // rescues (source c) — already attribute coverage on the file level
+  // when they fire.
+  for (const file of changedPaths) {
+    const set = ensureSet(reviewersByFile, file);
+    for (const leaf of pickedLeaves) {
+      if (leaf.id) set.add(leaf.id);
+    }
   }
 
   // Apply coverage rescues from Step 4 (rescues outside changed_paths are

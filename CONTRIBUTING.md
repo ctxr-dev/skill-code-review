@@ -77,7 +77,13 @@ The FSM design substrate, CLI reference, state-YAML schema, worker contract, and
 - [`worker-contract.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/worker-contract.md)
 - [`storage-layout.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/storage-layout.md)
 
-`package.json` references `@ctxr/fsm` via `git+https://github.com/ctxr-dev/fsm.git#main`, so `npm install` always resolves from the latest `main` of the FSM package — no sibling checkout required, no manual SHA bump needed. Note: npm caches git deps by URL, so to force a refresh after FSM `main` advances, run `npm install --force` (or explicitly reinstall with `npm install --save "@ctxr/fsm@git+https://github.com/ctxr-dev/fsm.git#main"`, or delete `node_modules/@ctxr/fsm` and reinstall).
+`package.json` references `@ctxr/fsm` via `git+https://github.com/ctxr-dev/fsm.git#<commit-sha>` — pinned to a full 40-character commit SHA so `npm ci` resolves the same engine bytes on every run, and the `npm publish --provenance` attestation has a stable subject closure (no silent floats from `main`). To pick up new FSM commits, bump the SHA explicitly:
+
+```bash
+npm install --save "@ctxr/fsm@git+https://github.com/ctxr-dev/fsm.git#<new-sha>"
+```
+
+(or fetch the latest with `gh api repos/ctxr-dev/fsm/commits/main --jq '.sha'` and reinstall against it).
 
 **For local engine hacking** against a sibling checkout at `../fsm`, override the dep temporarily:
 
@@ -86,10 +92,11 @@ npm install --save file:../fsm   # writes "@ctxr/fsm": "file:../fsm" into packag
 # ... iterate locally; changes in ../fsm are picked up immediately
 ```
 
-Revert to the upstream-resolvable form before committing:
+Revert to a pinned upstream form before committing:
 
 ```bash
-npm install --save "@ctxr/fsm@git+https://github.com/ctxr-dev/fsm.git#main"
+SHA=$(gh api repos/ctxr-dev/fsm/commits/main --jq '.sha')
+npm install --save "@ctxr/fsm@git+https://github.com/ctxr-dev/fsm.git#$SHA"
 ```
 
 `.fsmrc.json` at the repo root tells the FSM CLIs where the FSM YAML and storage root live:
@@ -130,7 +137,7 @@ npm run lint           # markdown lint
 npm run lint:fix       # auto-fix markdown issues
 ```
 
-The pre-commit hook runs `validate:src + lint`.
+The pre-commit hook runs `validate:fsm + lint`. (Maintainers authoring new reviewers should additionally run `npm run validate:src` locally against their `reviewers.src/` checkout before opening a PR — the source layer is gitignored, so the hook can't enforce it for everyone.)
 
 #### What the Source Validators Check
 

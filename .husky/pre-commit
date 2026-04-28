@@ -1,1 +1,1 @@
-npm run validate:src && npm run lint
+npm run validate:fsm && npm run lint

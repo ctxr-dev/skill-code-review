@@ -38,11 +38,8 @@ jobs:
 
       - run: npm ci
 
-      - name: Build reviewer index
-        run: npm run index:build
-
-      - name: Validate
-        run: npm run validate
+      - name: Validate FSM
+        run: npm run validate:fsm
 
       - name: Lint
         run: npm run lint

@@ -167,6 +167,6 @@ Releases are PR-gated; the bot does not push to `main` directly. One dispatch + 
 2. The workflow bumps `package.json` on a `release/v<version>` branch and opens a release PR.
 3. Review + merge the PR.
 4. `tag-on-main.yml` detects the version change on the merge commit, creates the annotated `v<version>` tag, and pushes it.
-5. The tag push triggers `publish.yml`, which runs `index:build + validate + lint + test`, verifies tag/version agreement, and runs `npm publish --access public --provenance`.
+5. The tag push triggers `publish.yml`, which runs `validate:fsm + lint + test`, verifies tag/version agreement, and runs `npm publish --access public --provenance`.
 
 Full operator walkthrough (including troubleshooting for stale/orphan tags, non-main dispatches, and the "Allow GitHub Actions to create and approve pull requests" org-level policy) lives in the [Releasing section of the README](README.md#releasing).

@@ -171,7 +171,7 @@ Enable these on the repo before your first release:
 4. On merge, `tag-on-main.yml` fires automatically:
    - Detects the version change.
    - Creates and pushes the annotated `v<version>` tag via `GITHUB_TOKEN`.
-5. **Actions → Publish to npm → Run workflow** on the `v<version>` tag. The workflow runs `npm ci + index:build + validate + lint + test`, verifies the tag matches `package.json`, and publishes the package to npm.
+5. **Actions → Publish to npm → Run workflow** on the `v<version>` tag. The workflow runs `npm ci + validate:fsm + lint + test`, verifies the tag matches `package.json`, and publishes the package to npm.
 
 > **Why a manual dispatch for step 5?** GitHub's built-in `GITHUB_TOKEN` cannot trigger further workflows (`on: push: tags` won't fire when a workflow pushed the tag). So the tag auto-creation stops at the tag. Publishing is one extra click. To make it fully automatic, swap the push credential in `tag-on-main.yml` for a GitHub App token or fine-grained PAT stored as a repo secret, then the `push: tags` trigger on `publish.yml` will fire and step 5 happens by itself.
 

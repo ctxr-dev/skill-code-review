@@ -317,12 +317,16 @@ export function defaultDispatchPromptPath(runId, state, leafId) {
   if (!runId || !state) return null;
   const storageRoot = resolveStorageRoot();
   const dir = join(runDirPath(runId, { storageRoot }), "workers");
-  if (state === "dispatch_specialists" && leafId) {
-    // Reject leaf-ids that look like path-traversal payloads. Leaf ids
-    // are kebab-case alnum-and-dashes per the corpus contract; anything
-    // else (slashes, dots, traversal segments) is malformed input and
-    // must not flow into a filename under our run-dir tree.
-    if (!/^[a-z][a-z0-9-]*$/.test(leafId)) return null;
+  if (state === "dispatch_specialists") {
+    // Strict branch: dispatch_specialists prompts are ONLY valid in the
+    // documented per-leaf layout. Reject missing or malformed leaf-ids
+    // (path-traversal guard: kebab-case alnum-and-dashes per the corpus
+    // contract) so the helper never falls back to the generic
+    // "<state>-dispatch-prompt.md" path that writeSpecialistPromptsToDisk
+    // does not produce.
+    if (typeof leafId !== "string" || !/^[a-z][a-z0-9-]*$/.test(leafId)) {
+      return null;
+    }
     return join(dir, `dispatch_specialists-prompt-${leafId}.md`);
   }
   return join(dir, `${state}-dispatch-prompt.md`);
@@ -372,9 +376,17 @@ export function buildDispatchPromptText(brief, opts = {}) {
       "--- TOOL RESULTS ---",
       JSON.stringify(toolResults, null, 2),
       "",
-      "--- OUTPUTS PATH ---",
-      `Write your JSON response (the per-specialist contract: id, status, runtime_ms, tokens_in, tokens_out, findings[], optional skip_reason) to:`,
-      outputsPath,
+      // Per-specialist contract: return JSON to the orchestrator. The
+      // orchestrator collects K responses and aggregates them into a
+      // single specialist_outputs[] payload at outputs_path. K specialists
+      // writing directly to outputs_path would clobber each other and
+      // contradict fsm/workers/specialist.md.
+      "--- RESPONSE CONTRACT ---",
+      "Return ONLY the per-specialist JSON object to the orchestrator.",
+      "Do NOT write to disk or to any outputs path.",
+      "Required shape: { id, status, runtime_ms, tokens_in, tokens_out, findings[], optional skip_reason }",
+      "",
+      `(For audit context: the orchestrator aggregates the K responses into specialist_outputs[] and writes once to ${outputsPath}.)`,
       "",
     ].join("\n");
   }
@@ -1454,6 +1466,22 @@ async function main() {
       fail(
         `--print-dispatch-prompt: no manifest found for run-id "${runId}".`,
         { run_id: runId },
+      );
+    }
+    // Mirror --print-current-state: a finished run has no pause prompt.
+    // Without this branch the code falls through to a generic
+    // missing-file error that misleadingly claims the run pre-dates
+    // dispatch-prompt staging.
+    if (manifest.status === "completed") {
+      fail(
+        `--print-dispatch-prompt: run "${runId}" is terminal (verdict ${manifest.verdict ?? "unknown"}); there is no pause prompt to print.`,
+        { run_id: runId, status: "completed", verdict: manifest.verdict ?? null },
+      );
+    }
+    if (manifest.status === "faulted") {
+      fail(
+        `--print-dispatch-prompt: run "${runId}" is faulted (state ${manifest.current_state ?? "unknown"}); there is no pause prompt to print.`,
+        { run_id: runId, status: "faulted", current_state: manifest.current_state ?? null },
       );
     }
     const currentState = manifest.current_state;

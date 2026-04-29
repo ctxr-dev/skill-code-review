@@ -56,6 +56,26 @@ test("defaultDispatchPromptPath: rejects malformed leaf-ids (path traversal guar
   );
 });
 
+test("defaultDispatchPromptPath: dispatch_specialists is strictly per-leaf (rejects missing leaf-id)", () => {
+  // Regression for the second-round Copilot review on PR #80: previously a
+  // call with state="dispatch_specialists" and no/empty leafId fell back
+  // to the generic "<state>-dispatch-prompt.md" path that
+  // writeSpecialistPromptsToDisk does not produce. Strict branch now
+  // returns null and forces callers to supply a valid leaf-id.
+  assert.equal(
+    defaultDispatchPromptPath("20260429-200856-cece84b", "dispatch_specialists", undefined),
+    null,
+  );
+  assert.equal(
+    defaultDispatchPromptPath("20260429-200856-cece84b", "dispatch_specialists", ""),
+    null,
+  );
+  assert.equal(
+    defaultDispatchPromptPath("20260429-200856-cece84b", "dispatch_specialists", null),
+    null,
+  );
+});
+
 test("buildDispatchPromptText: standard worker — embeds prompt_body, INPUTS, OUTPUTS PATH", () => {
   const brief = {
     has_worker: true,
@@ -108,7 +128,13 @@ test("buildDispatchPromptText: per-specialist — embeds leaf id/path/dimensions
   assert.match(text, /Flag use-after-await/);
   assert.match(text, /--- PROJECT PROFILE ---/);
   assert.match(text, /"languages":\s*\[\s*"javascript"/);
-  assert.match(text, /--- OUTPUTS PATH ---/);
+  // Per-specialist response contract: return JSON to the orchestrator,
+  // do NOT write to outputs_path (the orchestrator aggregates K
+  // responses and writes once). Outputs_path is mentioned in the
+  // audit-context line but the instruction is "do not write to disk".
+  assert.match(text, /--- RESPONSE CONTRACT ---/);
+  assert.match(text, /Do NOT write to disk/);
+  assert.match(text, /the orchestrator aggregates the K responses/);
 });
 
 test("writeDispatchPromptToDisk: passes through silently when no worker / dispatch_specialists / missing fields", () => {

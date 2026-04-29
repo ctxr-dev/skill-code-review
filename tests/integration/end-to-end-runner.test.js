@@ -92,11 +92,36 @@ test("runner --start: emits awaiting_worker JSON with project-scanner brief and 
     "brief.worker.prompt_body must equal fsm/workers/project-scanner.md byte-for-byte",
   );
 
+  // PR for #76: brief carries a canonical outputs_path under
+  // <run_dir>/workers/<state>-output.json. Assert it's present and
+  // shaped right.
+  assert.equal(typeof firstLine.brief.outputs_path, "string");
+  assert.ok(
+    firstLine.brief.outputs_path.endsWith("workers/scan_project-output.json"),
+    `outputs_path should end with workers/scan_project-output.json; got ${firstLine.brief.outputs_path}`,
+  );
+
   // The FSM engine seeds the manifest at run-init with base_sha / head_sha
   // taken from --base / --head. Confirm assert-fresh-run.mjs accepts it.
   const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
   const storageRoot = resolve(REPO_ROOT, settings.storageRoot);
   const runDir = runDirPath(firstLine.run_id, { storageRoot });
+
+  // PR for #76: the runner persists the brief to
+  // <run_dir>/workers/<state>-brief.json on every pause. Assert the
+  // file exists and matches the stdout brief byte-for-byte.
+  const briefOnDiskPath = `${runDir}/workers/scan_project-brief.json`;
+  assert.ok(
+    existsSync(briefOnDiskPath),
+    `expected on-disk brief at ${briefOnDiskPath}`,
+  );
+  const briefOnDisk = JSON.parse(readFileSync(briefOnDiskPath, "utf8"));
+  assert.deepEqual(
+    briefOnDisk,
+    firstLine.brief,
+    "<run_dir>/workers/scan_project-brief.json must equal the stdout brief",
+  );
+
   const manifestPath = `${runDir}/manifest.json`;
   assert.ok(
     existsSync(manifestPath),
@@ -158,9 +183,14 @@ test("runner --start → --continue: chains across subprocesses without lock_not
   // Trivial-tier project-scanner output: 1 file, 1 line changed, no
   // risk-path match → risk_tier_triage emits tier=trivial → FSM jumps to
   // short_circuit_exit, writes the run dir, emits stdout, hits terminal.
-  const tmpFile = `/tmp/e2e-runner-${runId}.json`;
+  //
+  // PR for #76: write to brief.outputs_path (the canonical path the
+  // runner shipped), and call --continue WITHOUT --outputs-file so the
+  // runner's default-path lookup is exercised.
+  const outputsPath = startLine.brief.outputs_path;
+  assert.equal(typeof outputsPath, "string");
   writeFileSync(
-    tmpFile,
+    outputsPath,
     JSON.stringify({
       project_profile: {
         languages: ["md"],
@@ -180,8 +210,7 @@ test("runner --start → --continue: chains across subprocesses without lock_not
         "--continue",
         "--run-id",
         runId,
-        "--outputs-file",
-        tmpFile,
+        // No --outputs-file: runner defaults to brief.outputs_path.
       ],
       { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
     );
@@ -249,6 +278,69 @@ test("runner --start → --continue: chains across subprocesses without lock_not
     const ok = validateRun({ runId, base: baseSha, head: headSha, storageRoot });
     assert.equal(ok.ok, true, `validateRun failed after --continue: ${JSON.stringify(ok)}`);
   } finally {
-    // tmpFile cleanup is best-effort; the test machine's /tmp gets swept.
+    // outputsPath cleanup is best-effort; the run-dir is gitignored.
   }
+});
+
+test("runner --resume: re-emits the current pause brief from disk (regression for #76)", () => {
+  // Drives --start, captures the brief on disk, then runs --resume
+  // and asserts the runner re-emits the same brief from
+  // <run_dir>/workers/<state>-brief.json without spawning fsm-next
+  // and without touching the lock.
+  const baseSha = "3333333333333333333333333333333333333333";
+  const headSha = "4444444444444444444444444444444444444444";
+
+  const start = spawnSync(
+    process.execPath,
+    [
+      "scripts/run-review.mjs",
+      "--start",
+      "--base",
+      baseSha,
+      "--head",
+      headSha,
+    ],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
+  );
+  assert.equal(start.status, 0, `--start exited ${start.status}; stderr: ${start.stderr}`);
+  const startLine = JSON.parse(start.stdout.split("\n").filter(Boolean)[0]);
+  const runId = startLine.run_id;
+  const originalBrief = startLine.brief;
+
+  // The runner persisted the brief to disk during the pause. Confirm
+  // the file exists under <run_dir>/workers/<state>-brief.json.
+  const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
+  const storageRoot = resolve(REPO_ROOT, settings.storageRoot);
+  const runDir = runDirPath(runId, { storageRoot });
+  const briefOnDiskPath = `${runDir}/workers/scan_project-brief.json`;
+  assert.ok(existsSync(briefOnDiskPath), `expected ${briefOnDiskPath}`);
+
+  // --resume re-emits the brief.
+  const resume = spawnSync(
+    process.execPath,
+    [
+      "scripts/run-review.mjs",
+      "--resume",
+      "--run-id",
+      runId,
+    ],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
+  );
+  assert.equal(
+    resume.status,
+    0,
+    `--resume exited ${resume.status}; stdout=${resume.stdout} stderr=${resume.stderr}`,
+  );
+  const resumeLine = JSON.parse(resume.stdout.split("\n").filter(Boolean)[0]);
+  assert.equal(resumeLine.status, "awaiting_worker");
+  assert.equal(resumeLine.run_id, runId);
+
+  // The resumed brief equals the original brief from --start
+  // byte-for-byte (modulo no nondeterministic fields — both come from
+  // the same disk file).
+  assert.deepEqual(
+    resumeLine.brief,
+    originalBrief,
+    "--resume must re-emit the same brief --start did, byte-for-byte",
+  );
 });

@@ -92,15 +92,41 @@ fsm:
           when:
             kind: deterministic
             expression: "tier == 'trivial' AND len(risk_signals) == 0 AND NOT scope_overrides_present"
+        - to: activate_leaves
+          when: always
+
+    # ─── Step 2.5 (B6 reframe; #70 divergence #4) ───────────────
+    - id: activate_leaves
+      purpose: "Run the activation gate over every wiki leaf deterministically; produce activated_leaves[] for the tree-descender to consume as its candidate set."
+      preconditions:
+        - "project_profile exists in run state"
+        - "changed_paths exists in run state"
+      # Inline state: no worker. The FSM Orchestrator imports
+      # scripts/lib/activation-gate.mjs's evaluateActivation() and runs
+      # it over every leaf under reviewers.wiki/, producing
+      # activated_leaves[] that the next state (tree_descend) consumes
+      # as a precomputed candidate set. This removes the "did the LLM
+      # actually invoke the activation gate?" trust gap that the audit
+      # in #70 surfaced as divergence #4.
+      outputs:
+        - activated_leaves
+      post_validations:
+        - "activated_leaves is an array"
+      transitions:
+        - to: stage_a_empty
+          when:
+            kind: deterministic
+            expression: "len(activated_leaves) == 0"
         - to: tree_descend
           when: always
 
     # ─── Step 3 ─────────────────────────────────────────────────
     - id: tree_descend
-      purpose: "Walk reviewers.wiki by focus + activation gate; gather candidate leaves."
+      purpose: "Filter activated_leaves[] by parent subcategory focus (semantic LLM judgement); emit stage_a_candidates as the trim worker's input set."
       preconditions:
         - "project_profile exists in run state"
         - "tier exists in run state"
+        - "activated_leaves exists in run state"
       worker:
         role: tree-descender
         prompt_template: workers/tree-descender.md
@@ -108,6 +134,7 @@ fsm:
           - project_profile
           - changed_paths
           - tier
+          - activated_leaves
         response_schema:
           type: object
           required: [stage_a_candidates, descent_path]

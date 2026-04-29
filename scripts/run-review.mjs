@@ -29,12 +29,12 @@
 // handler emits a `fault` so callers can react uniformly.
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync, mkdtempSync, existsSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdtempSync, existsSync, rmSync, renameSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir, platform } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { resolveSettings, runEnv, runDirPath, readLock } from "@ctxr/fsm";
+import { resolveSettings, runEnv, runDirPath, readLock, readManifest } from "@ctxr/fsm";
 
 import {
   resolveReplayMode,
@@ -236,6 +236,77 @@ export function enrichBriefWithSpecialistBodies(brief) {
       picked_leaves: enrichedLeaves,
     },
   };
+}
+
+// PR for #76: run-dir as the source of truth.
+//
+// Two helpers compute the canonical per-state, per-run-id paths under
+// <run_dir>/workers/. The directory is pre-created by @ctxr/fsm's
+// ensureRunDir on every fsm-next invocation, so no mkdir boilerplate is
+// needed here.
+//
+// Layout:
+//   <run_dir>/workers/<state>-brief.json   ← runner writes on every pause
+//   <run_dir>/workers/<state>-output.json  ← orchestrator writes; --continue reads
+//
+// Both files round-trip through JSON.parse / JSON.stringify with no
+// special framing — they are the canonical artifacts the orchestrator
+// reads from disk.
+export function defaultOutputsPath(runId, state) {
+  if (!runId || !state) return null;
+  const storageRoot = resolveStorageRoot();
+  return join(runDirPath(runId, { storageRoot }), "workers", `${state}-output.json`);
+}
+
+export function defaultBriefPath(runId, state) {
+  if (!runId || !state) return null;
+  const storageRoot = resolveStorageRoot();
+  return join(runDirPath(runId, { storageRoot }), "workers", `${state}-brief.json`);
+}
+
+// Inject brief.outputs_path into every awaiting_worker brief on the way
+// out of parseFsmCliResult. Pure function, idempotent; passes through
+// briefs that are not at a worker pause.
+//
+// SKILL.md mandates that the orchestrator write the worker's response
+// to brief.outputs_path. The runner defaults --continue's --outputs-file
+// to this same path, so the orchestrator does not need to thread the
+// path back via CLI args.
+export function enrichBriefWithOutputsPath(brief) {
+  if (!brief?.has_worker) return brief;
+  if (!brief.run_id || !brief.state) return brief;
+  const outputsPath = defaultOutputsPath(brief.run_id, brief.state);
+  if (!outputsPath) return brief;
+  return { ...brief, outputs_path: outputsPath };
+}
+
+// Persist a fully-enriched awaiting_worker brief to
+// <run_dir>/workers/<state>-brief.json atomically (write to a tmp
+// sibling, then rename). The brief on disk is the canonical record;
+// stdout is a convenience signal but not load-bearing — if the
+// orchestrator loses the stdout brief, --resume reads this file.
+//
+// Best-effort: any I/O failure is swallowed. The orchestrator can still
+// use stdout if disk persistence happens to fail. We do not want a
+// transient ENOSPC / EACCES on brief-disk-write to fault out a run that
+// would otherwise advance fine.
+export function writeBriefToDisk(brief) {
+  if (!brief?.has_worker) return;
+  if (!brief.run_id || !brief.state) return;
+  const briefPath = defaultBriefPath(brief.run_id, brief.state);
+  if (!briefPath) return;
+  const tmpPath = `${briefPath}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    writeFileSync(tmpPath, JSON.stringify(brief, null, 2));
+    renameSync(tmpPath, briefPath);
+  } catch {
+    // Best-effort cleanup of the tmp file on failure; ignore secondary errors.
+    try {
+      rmSync(tmpPath, { force: true });
+    } catch {
+      // ignore
+    }
+  }
 }
 
 function hashKeyForBrief(brief, env) {
@@ -541,8 +612,15 @@ export function parseFsmCliResult(result, label) {
     //      dispatches K specialists in parallel without K separate Reads.
     // Both helpers are idempotent and pass through untouched payloads
     // they don't apply to (terminal status, non-worker state, etc.).
-    const enriched = enrichBriefWithSpecialistBodies(
-      enrichBriefWithPromptBody(payload),
+    // Three enrichers, applied innermost-first:
+    //   1. enrichBriefWithPromptBody       — bake the worker's prompt template bytes
+    //   2. enrichBriefWithSpecialistBodies — for dispatch_specialists, bake each leaf body
+    //   3. enrichBriefWithOutputsPath      — inject the canonical outputs_path
+    // Briefs without a worker (terminal payloads, etc.) pass through untouched.
+    const enriched = enrichBriefWithOutputsPath(
+      enrichBriefWithSpecialistBodies(
+        enrichBriefWithPromptBody(payload),
+      ),
     );
     return { ok: true, payload: enriched };
   } catch (err) {
@@ -641,6 +719,11 @@ export function handleWorkerStateBrief(brief, runId, opts = {}, _deps = {}) {
   // --replay-mode=record` will not have a stash to record against;
   // record mode is per-run, not retroactive.
   if (replayMode === "live") {
+    // Persist the brief to <run_dir>/workers/<state>-brief.json before
+    // returning. The on-disk file is the canonical brief; stdout is
+    // a redundant convenience. Lost stdout (orchestrator pipes through
+    // a summarizer, etc.) becomes recoverable via --resume.
+    writeBriefToDisk(brief);
     return {
       kind: "pause",
       payload: { status: "awaiting_worker", run_id: runId, brief },
@@ -759,6 +842,10 @@ export function handleWorkerStateBrief(brief, runId, opts = {}, _deps = {}) {
     };
   }
 
+  // Persist the brief to <run_dir>/workers/<state>-brief.json before
+  // returning. Same reasoning as the live-mode branch above; the disk
+  // file is the canonical brief regardless of replay mode.
+  writeBriefToDisk(brief);
   return {
     kind: "pause",
     payload: { status: "awaiting_worker", run_id: runId, brief },
@@ -847,6 +934,9 @@ async function main() {
   if (args.start && args.continue) {
     fail("--start and --continue are mutually exclusive; pick one");
   }
+  if ((args.start && args.resume) || (args.continue && args.resume)) {
+    fail("--resume is mutually exclusive with --start and --continue");
+  }
 
   if (args.start) {
     const baseSha = args.base ?? args["base-sha"];
@@ -903,22 +993,51 @@ async function main() {
 
   if (args.continue) {
     const runId = args["run-id"];
-    const outputsFile = args["outputs-file"];
-    if (!runId || !outputsFile) {
-      fail("--continue requires --run-id <id> and --outputs-file <path>");
+    if (!runId) {
+      fail("--continue requires --run-id <id>");
     }
-    // parseArgs sets bare flags to boolean `true`; require the value to
-    // actually be a non-empty string before forwarding it as a path / id.
     if (typeof runId !== "string" || runId.length === 0) {
       fail("--run-id requires a value (got bare flag)");
-    }
-    if (typeof outputsFile !== "string" || outputsFile.length === 0) {
-      fail("--outputs-file requires a path argument");
     }
     if (!isValidRunId(runId)) {
       // Reject path-traversal payloads (`../`, `/etc/passwd`, …) before
       // `runId` can land in a filename inside SCRATCH_DIR.
       fail(`--run-id must be lowercase alnum + dashes, 3-64 chars; got: ${runId}`);
+    }
+
+    // --outputs-file is now optional. When omitted, default to the
+    // canonical path the brief shipped as `outputs_path`:
+    //   <run_dir>/workers/<current_state>-output.json
+    // The runner reads the manifest's current_state to compose the
+    // path. SKILL.md instructs the orchestrator to write to
+    // brief.outputs_path and call --continue --run-id <id> without
+    // --outputs-file in the common case.
+    let outputsFile = args["outputs-file"];
+    if (outputsFile === undefined) {
+      const storageRoot = resolveStorageRoot();
+      const manifest = readManifest(runId, { storageRoot });
+      if (!manifest) {
+        fail(
+          `--continue: no manifest found for run-id "${runId}"; cannot resolve default --outputs-file. Run --start first, or pass --outputs-file <path> explicitly.`,
+          { run_id: runId },
+        );
+      }
+      const currentState = manifest.current_state;
+      if (!currentState) {
+        fail(
+          `--continue: manifest has no current_state for run-id "${runId}"; cannot resolve default --outputs-file. Pass --outputs-file <path> explicitly.`,
+          { run_id: runId },
+        );
+      }
+      outputsFile = defaultOutputsPath(runId, currentState);
+      if (!existsSync(outputsFile)) {
+        fail(
+          `--continue: default outputs file not found at "${outputsFile}". Either write your worker output to that path (the brief shipped it as outputs_path) or pass --outputs-file <path> explicitly.`,
+          { run_id: runId, current_state: currentState, expected_path: outputsFile },
+        );
+      }
+    } else if (typeof outputsFile !== "string" || outputsFile.length === 0) {
+      fail("--outputs-file requires a path argument");
     }
     const outputs = readJsonFile(outputsFile, "--outputs-file");
 
@@ -1042,10 +1161,90 @@ async function main() {
     return;
   }
 
+  if (args.resume) {
+    // --resume is a read-only recovery path. The orchestrator (the LLM)
+    // pipes --continue stdout through summarizers / parsers and loses
+    // the next awaiting_worker brief; --resume re-emits it from the
+    // canonical on-disk artifact at <run_dir>/workers/<state>-brief.json.
+    //
+    // No subprocess. No lock dance. The brief on disk was written by
+    // the runner during the previous pause (see writeBriefToDisk in
+    // handleWorkerStateBrief). All this does is read the manifest's
+    // current_state and read the matching brief file.
+    const runId = args["run-id"];
+    if (!runId) {
+      fail("--resume requires --run-id <id>");
+    }
+    if (typeof runId !== "string" || runId.length === 0) {
+      fail("--run-id requires a value (got bare flag)");
+    }
+    if (!isValidRunId(runId)) {
+      fail(`--run-id must be lowercase alnum + dashes, 3-64 chars; got: ${runId}`);
+    }
+    const storageRoot = resolveStorageRoot();
+    const manifest = readManifest(runId, { storageRoot });
+    if (!manifest) {
+      fail(
+        `--resume: no manifest found for run-id "${runId}". Either the run never started or the run-dir was removed.`,
+        { run_id: runId },
+      );
+    }
+    // Terminal / faulted runs have no brief to resume — surface the
+    // manifest's verdict / fault state directly so the orchestrator
+    // sees the same shape it would have seen at the original
+    // terminal pause.
+    if (manifest.status === "completed") {
+      emit({
+        status: "terminal",
+        run_id: runId,
+        verdict: manifest.verdict ?? null,
+        run_dir_path: runDirPath(runId, { storageRoot }),
+      });
+      return;
+    }
+    if (manifest.status === "faulted") {
+      emit({
+        status: "fault",
+        run_id: runId,
+        fault: {
+          state: manifest.current_state ?? null,
+          reason: manifest.fault_reason ?? "run faulted; see manifest",
+        },
+      });
+      return;
+    }
+    const currentState = manifest.current_state;
+    if (!currentState) {
+      fail(
+        `--resume: manifest has no current_state for run-id "${runId}".`,
+        { run_id: runId, status: manifest.status },
+      );
+    }
+    const briefPath = defaultBriefPath(runId, currentState);
+    if (!briefPath || !existsSync(briefPath)) {
+      fail(
+        `--resume: no brief file at "${briefPath}". Either this run pre-dates run-dir-as-source-of-truth (briefs were not persisted) or the file was removed. Try re-running --start, or use @ctxr/fsm's fsm-next --resume directly.`,
+        { run_id: runId, current_state: currentState, expected_path: briefPath },
+      );
+    }
+    let brief;
+    try {
+      brief = JSON.parse(readFileSync(briefPath, "utf8"));
+    } catch (err) {
+      fail(
+        `--resume: brief file at "${briefPath}" is unreadable or malformed: ${err?.message ?? String(err)}`,
+        { run_id: runId, current_state: currentState, brief_path: briefPath },
+      );
+    }
+    emit({ status: "awaiting_worker", run_id: runId, brief });
+    return;
+  }
+
   fail(
     "Usage:\n" +
       "  run-review.mjs --start --base <sha> --head <sha> [--args-file <path>] [--replay-mode <live|record|replay>]\n" +
-      "  run-review.mjs --continue --run-id <id> --outputs-file <path> [--replay-mode <live|record|replay>]",
+      "  run-review.mjs --continue --run-id <id> [--outputs-file <path>] [--replay-mode <live|record|replay>]\n" +
+      "  run-review.mjs --resume --run-id <id>",
   );
 }
 

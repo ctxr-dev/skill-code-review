@@ -96,7 +96,7 @@ test("buildDispatchPromptText: standard worker — embeds prompt_body, INPUTS, O
   assert.match(text, /\/run\/dir\/workers\/scan_project-output\.json/);
 });
 
-test("buildDispatchPromptText: per-specialist — embeds leaf id/path/dimensions/body and project_profile", () => {
+test("buildDispatchPromptText: per-specialist — embeds leaf id/path/dimensions/body, project_profile, changed_paths, filtered-diff placeholder", () => {
   const brief = {
     has_worker: true,
     state: "dispatch_specialists",
@@ -107,6 +107,7 @@ test("buildDispatchPromptText: per-specialist — embeds leaf id/path/dimensions
     },
     inputs: {
       project_profile: { languages: ["javascript"] },
+      changed_paths: ["src/foo.js", "tests/foo.test.js"],
       tool_results: [],
       picked_leaves: [],
     },
@@ -128,6 +129,12 @@ test("buildDispatchPromptText: per-specialist — embeds leaf id/path/dimensions
   assert.match(text, /Flag use-after-await/);
   assert.match(text, /--- PROJECT PROFILE ---/);
   assert.match(text, /"languages":\s*\[\s*"javascript"/);
+  // Round-3 review: per-specialist prompt MUST include changed_paths and a
+  // filtered-diff placeholder (the orchestrator appends the diff before
+  // dispatch — it's the one allowed augmentation).
+  assert.match(text, /--- CHANGED PATHS ---/);
+  assert.match(text, /"src\/foo\.js"/);
+  assert.match(text, /--- FILTERED DIFF \(orchestrator appends below\) ---/);
   // Per-specialist response contract: return JSON to the orchestrator,
   // do NOT write to outputs_path (the orchestrator aggregates K
   // responses and writes once). Outputs_path is mentioned in the
@@ -135,6 +142,22 @@ test("buildDispatchPromptText: per-specialist — embeds leaf id/path/dimensions
   assert.match(text, /--- RESPONSE CONTRACT ---/);
   assert.match(text, /Do NOT write to disk/);
   assert.match(text, /the orchestrator aggregates the K responses/);
+});
+
+test("defaultDispatchPromptPath: rejects unsafe state segments (path traversal guard on state)", () => {
+  // Round-3 review: state was concatenated into a path without
+  // validation. A tampered manifest with state="../../etc/passwd"
+  // would otherwise let --print-dispatch-prompt walk outside <run_dir>.
+  // Allowed state shape: ^[a-z][a-z0-9_]*$ (snake_case ascii).
+  assert.equal(defaultDispatchPromptPath("20260429-200856-cece84b", "../etc/passwd"), null);
+  assert.equal(defaultDispatchPromptPath("20260429-200856-cece84b", "scan/project"), null);
+  assert.equal(defaultDispatchPromptPath("20260429-200856-cece84b", "scan-project"), null); // hyphen rejected
+  assert.equal(defaultDispatchPromptPath("20260429-200856-cece84b", "Scan_Project"), null); // uppercase rejected
+  assert.equal(defaultDispatchPromptPath("20260429-200856-cece84b", ""), null);
+  assert.equal(defaultDispatchPromptPath("20260429-200856-cece84b", null), null);
+  // Snake_case ascii is accepted.
+  const ok = defaultDispatchPromptPath("20260429-200856-cece84b", "scan_project");
+  assert.ok(ok && ok.endsWith("workers/scan_project-dispatch-prompt.md"));
 });
 
 test("writeDispatchPromptToDisk: passes through silently when no worker / dispatch_specialists / missing fields", () => {

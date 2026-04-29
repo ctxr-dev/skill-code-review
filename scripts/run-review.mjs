@@ -313,8 +313,19 @@ export function writeBriefToDisk(brief) {
 //   1. cat <run_dir>/workers/<state>-dispatch-prompt.md
 //   2. Feed the bytes to Agent
 // No JSON parsing, no field extraction, no /tmp.
+// FSM state-id shape per fsm/code-reviewer.fsm.yaml: snake_case ascii
+// (lowercase letters, digits, underscore). Reject anything else BEFORE
+// composing a filename so a tampered manifest (e.g. an attacker-controlled
+// current_state with `..` or path separators) cannot direct file
+// writes/reads outside <run_dir>/workers/. Same defense-in-depth pattern
+// as scripts/lib/worker-replay.mjs's assertSafeStateSegment.
+function isSafeStateSegment(state) {
+  return typeof state === "string" && /^[a-z][a-z0-9_]*$/.test(state);
+}
+
 export function defaultDispatchPromptPath(runId, state, leafId) {
-  if (!runId || !state) return null;
+  if (!runId) return null;
+  if (!isSafeStateSegment(state)) return null;
   const storageRoot = resolveStorageRoot();
   const dir = join(runDirPath(runId, { storageRoot }), "workers");
   if (state === "dispatch_specialists") {
@@ -353,6 +364,7 @@ export function buildDispatchPromptText(brief, opts = {}) {
   if (leaf) {
     // Per-specialist prompt for dispatch_specialists.
     const projectProfile = inputs.project_profile ?? {};
+    const changedPaths = Array.isArray(inputs.changed_paths) ? inputs.changed_paths : [];
     const toolResults = Array.isArray(inputs.tool_results) ? inputs.tool_results : [];
     return [
       promptBody,
@@ -368,11 +380,22 @@ export function buildDispatchPromptText(brief, opts = {}) {
       "--- PROJECT PROFILE ---",
       JSON.stringify(projectProfile, null, 2),
       "",
+      "--- CHANGED PATHS ---",
+      JSON.stringify(changedPaths, null, 2),
+      "",
+      // The runner does NOT pre-compute a per-leaf filtered diff —
+      // that would require reading each leaf's `activation.file_globs`
+      // from frontmatter at brief-build time (a follow-up; tracked
+      // separately). The orchestrator MUST append the filtered diff
+      // below this header before dispatching the Agent. SKILL.md's
+      // dispatch_specialists section names this as the one allowed
+      // form of prompt augmentation.
+      "--- FILTERED DIFF (orchestrator appends below) ---",
+      `(Append: git diff <base>..<head> -- <leaf's activation.file_globs from leaf.body frontmatter, or all changed_paths if no globs>)`,
+      "",
       // Header reflects what the runner actually emits: ALL tool_results
-      // unfiltered. Filtering by the leaf's declared `tools[]` would
-      // require reading the leaf's frontmatter at brief-build time, which
-      // is doable but out of scope for this PR. The dispatched specialist
-      // can filter itself using its leaf body, which IS shipped above.
+      // unfiltered. The dispatched specialist can filter itself using
+      // its leaf body's tools[] frontmatter, which IS shipped above.
       "--- TOOL RESULTS ---",
       JSON.stringify(toolResults, null, 2),
       "",

@@ -17,7 +17,7 @@ The runner emits one JSON object per stdout line. Loop until `{"status": "termin
 
 ### On `{"status": "awaiting_worker", "run_id": "<id>", "brief": {...}}`
 
-**The runner has staged everything you need on disk under `<run_dir>/workers/`.** You do not Read worker prompt files, you do not compose prompts from `prompt_body` + inputs, and you do not reach for `python3 -c` to parse the brief. Use the `--print-X` CLIs (below) for runner state — `--print-run-dir`, `--print-current-state`, `--print-dispatch-prompt` — and reserve `jq` for the few small leaf reads the loop needs (`.run_id` from `--start`'s envelope, `.inputs.picked_leaves[].id` for the `dispatch_specialists` fan-out, `.outputs_path` if you ever need it directly). Your dispatch loop is:
+**The runner has staged everything you need on disk under `<run_dir>/workers/`.** You do not read worker prompt files, you do not compose prompts from `prompt_body` + inputs, and you do not reach for `python3 -c` to parse the brief. Use the `--print-X` CLIs (below) for runner state — `--print-run-dir`, `--print-current-state`, `--print-dispatch-prompt` — and reserve `jq` for the few small leaf reads the loop needs (`.run_id` from `--start`'s envelope, `.inputs.picked_leaves[].id` for the `dispatch_specialists` fan-out, `.outputs_path` if you ever need it directly). Your dispatch loop is:
 
 ```bash
 # After --start, capture run_id (one short string) into a SHELL VARIABLE.
@@ -53,19 +53,34 @@ echo "Manifest: $RUN_DIR/manifest.json"
 
 #### Special case: `STATE === "dispatch_specialists"`
 
-The runner stages K per-leaf prompts at `$RUN_DIR/workers/dispatch_specialists-prompt-<leaf-id>.md` — one per picked specialist. Dispatch K Agents in **one parallel message** (K Agent tool calls in a single LLM turn). Each Agent runs blind (no specialist sees another's output).
+The runner stages K per-leaf prompts at `$RUN_DIR/workers/dispatch_specialists-prompt-<leaf-id>.md` — one per picked specialist. Each per-leaf prompt already contains the leaf body, project profile, changed paths, and tool results. Dispatch K Agents in **one parallel message** (K Agent tool calls in a single LLM turn). Each Agent runs blind (no specialist sees another's output).
+
+**One required augmentation:** the staged per-leaf prompt has a `--- FILTERED DIFF (orchestrator appends below) ---` section. The runner does not pre-compute per-leaf diffs (that would require parsing each leaf's `activation.file_globs` from frontmatter at brief-build time; tracked separately). Before dispatching, append the filtered diff body for each specialist:
 
 ```bash
 # Get the picked leaf ids from the on-disk brief.
 LEAF_IDS=$(jq -r '.inputs.picked_leaves[].id' "$RUN_DIR/workers/dispatch_specialists-brief.json")
-# For each leaf id, the per-specialist prompt is at:
-#   node scripts/run-review.mjs --print-dispatch-prompt --run-id "$RUN_ID" --leaf-id "$LEAF_ID"
+BASE_SHA=$(jq -r .base_sha "$RUN_DIR/manifest.json")
+HEAD_SHA=$(jq -r .head_sha "$RUN_DIR/manifest.json")
+
+# For each leaf id:
+#   1. PROMPT=$(node scripts/run-review.mjs --print-dispatch-prompt --run-id "$RUN_ID" --leaf-id "$LEAF_ID")
+#   2. Determine the leaf's activation.file_globs from leaf.body (which is
+#      already in the prompt). If the leaf has globs, run:
+#        DIFF=$(git diff "$BASE_SHA".."$HEAD_SHA" -- <globs...>)
+#      Otherwise (no globs), use the full diff:
+#        DIFF=$(git diff "$BASE_SHA".."$HEAD_SHA")
+#   3. Concatenate: FULL_PROMPT="$PROMPT"$'\n'"$DIFF"
+#   4. Pass FULL_PROMPT as the Agent tool call's prompt.
+
 # Dispatch K Agents in ONE message (K parallel Agent tool calls).
 # Aggregate the K JSON responses into:
 #   { "specialist_outputs": [<k objects>] }
 # Write to: $(jq -r .outputs_path "$RUN_DIR/workers/dispatch_specialists-brief.json")
 # Then --continue.
 ```
+
+The filtered-diff append is **the only allowed form of prompt augmentation.** Every other piece of context — the leaf body, project profile, tool results, response contract — is already in the staged prompt. Do not add anything else.
 
 **Do NOT** dispatch a single Agent for `dispatch_specialists` — you would be re-introducing the coordinator-layer opacity that the audit in #70 (divergence #3) surfaced. The runner cannot tell from the JSON output alone whether you ran K Agents or simulated K specialists in one mind. Run K real Agents in one parallel-tool-call message.
 

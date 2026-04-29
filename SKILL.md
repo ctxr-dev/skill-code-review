@@ -26,21 +26,21 @@ The brief has this shape (only the fields you need):
   "worker": {
     "role":             <worker name, e.g. "project-scanner">,
     "prompt_template":  <path under fsm/, e.g. "workers/project-scanner.md">,
+    "prompt_body":      <bytes of the worker prompt file, shipped with the brief>,
     "response_schema":  <JSON Schema the worker output is validated against>
   }
 }
 ```
 
-1. Read **only** `fsm/<brief.worker.prompt_template>` (the worker prompt file). Do not read anything else (not the wiki, not the design doc, not the gate predicates, not other workers).
-2. Build the worker prompt by concatenating the file body with the `brief.inputs` values the worker needs.
-3. Dispatch via the `Agent` tool. The worker must return a single JSON object satisfying `brief.worker.response_schema`.
-4. Write the response to a temp file (`/tmp/worker-out-<run_id>.json` is fine), then call:
+1. Build the worker prompt by concatenating `brief.worker.prompt_body` (already provided) with the `brief.inputs` values the worker needs. **Do not** Read the file at `brief.worker.prompt_template` — the runner already shipped its bytes in `prompt_body`. **Do not** read anything else (not the wiki, not the design doc, not the gate predicates, not other workers).
+2. Dispatch via the `Agent` tool. The worker must return a single JSON object satisfying `brief.worker.response_schema`.
+3. Write the response to a temp file (`/tmp/worker-out-<run_id>.json` is fine), then call:
 
    ```
    node scripts/run-review.mjs --continue --run-id <run_id> --outputs-file <path>
    ```
 
-5. Loop on the next stdout line.
+4. Loop on the next stdout line.
 
 ### On `{"status": "terminal", "run_id": "<id>", "verdict": "...", "run_dir_path": "<path>"}`
 
@@ -53,11 +53,11 @@ The brief has this shape (only the fields you need):
    Exit 0 means OK. Exit non-zero means stop and surface the error.
 
 2. Read `<run_dir_path>/report.md`.
-3. **Your final response is the contents of `report.md` followed by a literal trailing line `Manifest: <run_dir_path>/manifest.json`.** Do not paraphrase or summarise the report; surface it verbatim.
+3. **Your final response is the literal bytes of `<run_dir_path>/report.md`, followed by exactly one trailing line: `Manifest: <run_dir_path>/manifest.json`. Nothing more, nothing less.** Do not edit, paraphrase, summarise, reformat, transpose columns, drop rows, or "polish" the report. If a column or table seems redundant, that is not your call. The runner produced the report in this exact shape on purpose; your job is to surface it byte-for-byte. If `report.md` is too long for your context, link to its path instead — never edit it.
 
 ### On `{"status": "fault" | "error", ...}`
 
-Surface the message to the user. Do not retry silently. Do not fall back to a manual review.
+**Any** fault or error output is a stop signal — even if other output (such as a `report.md` on disk, or a Manifest line) appears valid alongside it. Surface the fault payload to the user verbatim. Do not retry silently. Do not fall back to a manual review. Do not editorialise the fault as "cosmetic" or "known": that judgement is the user's, not yours.
 
 ---
 

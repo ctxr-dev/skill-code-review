@@ -73,6 +73,25 @@ test("runner --start: emits awaiting_worker JSON with project-scanner brief and 
   assert.equal(firstLine.brief.worker?.role, "project-scanner");
   assert.equal(firstLine.brief.worker?.prompt_template, "workers/project-scanner.md");
 
+  // PR A regression for divergence #7: the runner must ship the worker
+  // prompt body inside brief.worker.prompt_body so the orchestrator does
+  // not need to Read the file separately. Assert the bytes are present
+  // and match the actual on-disk file.
+  assert.ok(
+    typeof firstLine.brief.worker?.prompt_body === "string"
+      && firstLine.brief.worker.prompt_body.length > 0,
+    "brief.worker.prompt_body must be a non-empty string",
+  );
+  const promptOnDisk = readFileSync(
+    `${REPO_ROOT}/fsm/workers/project-scanner.md`,
+    "utf8",
+  );
+  assert.equal(
+    firstLine.brief.worker.prompt_body,
+    promptOnDisk,
+    "brief.worker.prompt_body must equal fsm/workers/project-scanner.md byte-for-byte",
+  );
+
   // The FSM engine seeds the manifest at run-init with base_sha / head_sha
   // taken from --base / --head. Confirm assert-fresh-run.mjs accepts it.
   const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
@@ -194,6 +213,22 @@ test("runner --start → --continue: chains across subprocesses without lock_not
       cont.stderr,
       /Manifest: .*manifest\.json/,
       `--continue did not emit the Manifest trailer; stderr=${cont.stderr}`,
+    );
+
+    // PR A regression for divergence #2: the runner must NOT emit a
+    // trailing fault payload after the canonical report+Manifest. The
+    // pre-fix runner would dispatch the no-op `terminal` state as an
+    // inline state, fail to find an `inline-states/terminal.mjs` handler,
+    // and emit a spurious {"status":"fault","fault":{"state":"terminal",
+    // "reason":"Inline-state handler not found..."}} AFTER the report.
+    // The fix in loop() detects state==="terminal" and calls fsm-commit
+    // one more time with empty outputs to get the proper terminal payload.
+    assert.equal(
+      /"state"\s*:\s*"terminal".*Inline-state handler not found/.test(
+        cont.stdout + cont.stderr,
+      ),
+      false,
+      `--continue trailed the no-op terminal-state fault; PR A regression. stdout=${cont.stdout} stderr=${cont.stderr}`,
     );
 
     // Read the canonical report.json from the run dir directly (avoids

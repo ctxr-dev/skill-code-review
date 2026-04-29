@@ -156,6 +156,43 @@ export function repoRelativePromptPath(briefPath) {
   return `${FSM_YAML_DIR_REL}/${norm}`;
 }
 
+// Bake the worker prompt body into the brief so the orchestrator (the LLM
+// driving --start/--continue) can use brief.worker.prompt_body directly
+// instead of having to Read the file at brief.worker.prompt_template. SKILL.md
+// instructs the orchestrator NOT to read the file separately. The runner
+// reads it once here, on the way out, and ships its bytes in the brief.
+//
+// Failures to read are surfaced as a missing prompt_body (not a fault):
+// the brief still flows, the orchestrator still has the prompt_template
+// path it can fall back to, and any hashing / fixture-record code that
+// ALREADY needs the file body will surface its own errors at that point.
+// We do NOT want a transient ENOENT on prompt-body enrichment to fault
+// out a run that would otherwise advance fine.
+export function enrichBriefWithPromptBody(brief) {
+  const promptTemplate = brief?.worker?.prompt_template;
+  if (!promptTemplate || typeof promptTemplate !== "string") return brief;
+  let bodyPath;
+  try {
+    bodyPath = resolve(REPO_ROOT, repoRelativePromptPath(promptTemplate));
+  } catch {
+    return brief;
+  }
+  let body;
+  try {
+    body = readFileSync(bodyPath, "utf8");
+  } catch {
+    return brief;
+  }
+  // Return a new object with the enriched worker; do not mutate input.
+  return {
+    ...brief,
+    worker: {
+      ...brief.worker,
+      prompt_body: body,
+    },
+  };
+}
+
 function hashKeyForBrief(brief, env) {
   const briefPath = brief?.prompt_template ?? brief?.worker?.prompt_template ?? "";
   return computeHashKey({
@@ -450,7 +487,18 @@ export function parseFsmCliResult(result, label) {
     };
   }
   try {
-    return { ok: true, payload: JSON.parse(result.stdout) };
+    const payload = JSON.parse(result.stdout);
+    // Enrich every fsm-* payload that carries a worker brief with the
+    // prompt body so the orchestrator (the LLM driving the --start /
+    // --continue loop) does not need to Read the prompt-template file.
+    // Two shapes can appear here:
+    //   1. fsm-next --new-run / --resume: payload IS the brief (with
+    //      state, worker, inputs, ...).
+    //   2. fsm-commit advance: payload is { advanced_from, ...brief }.
+    // Both have the same `worker` shape when a worker state is reached.
+    // Terminal payloads (status: "terminal") have no `worker`; the
+    // helper short-circuits on missing prompt_template.
+    return { ok: true, payload: enrichBriefWithPromptBody(payload) };
   } catch (err) {
     return {
       ok: false,
@@ -683,6 +731,33 @@ async function loop(brief, runId, { replayMode = "live", sessionId } = {}) {
         verdict: current.verdict,
         run_dir_path: current.run_dir_path,
       };
+    }
+    // Terminal-state brief detection. The FSM YAML declares `terminal` as a
+    // no-op end state (no worker, no transitions). When fsm-commit advances
+    // INTO terminal it emits a brief with state="terminal" and no
+    // `status: "terminal"` envelope (that envelope is only emitted when
+    // fsm-commit is called WITH terminal as the committed state). Without
+    // this branch the loop falls into dispatchInlineState, fails to find
+    // an `inline-states/terminal.mjs` handler, and surfaces a spurious
+    // fault AFTER the canonical report+Manifest were already written.
+    // Calling fsm-commit one more time with empty outputs lets fsm-commit
+    // mark the run completed and release the lock cleanly, then emit the
+    // proper { status: "terminal", verdict, run_dir_path } payload.
+    if (current.state === "terminal" && !current.has_worker) {
+      const finalCommit = runFsmCommit({ runId, outputs: {}, sessionId });
+      if (!finalCommit.ok) {
+        return {
+          status: "fault",
+          run_id: runId,
+          fault: {
+            state: "terminal",
+            reason: `fsm-commit on terminal state failed: ${finalCommit.error}`,
+            details: finalCommit.raw,
+          },
+        };
+      }
+      current = finalCommit.payload;
+      continue;
     }
     if (current.has_worker) {
       const result = handleWorkerStateBrief(current, runId, { replayMode });

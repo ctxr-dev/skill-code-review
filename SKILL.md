@@ -58,9 +58,15 @@ while true; do
   node scripts/run-review.mjs --continue --run-id "$RUN_ID"
 done
 
-# On terminal, surface report.md + Manifest line verbatim.
-cat "$RUN_DIR/report.md"
-echo "Manifest: $RUN_DIR/manifest.json"
+# Loop exited on terminal OR faulted. Only terminal runs have a real
+# report.md; faulted runs may have an incomplete or missing one.
+if [ "$STATE" = "terminal" ]; then
+  cat "$RUN_DIR/report.md"
+  echo "Manifest: $RUN_DIR/manifest.json"
+else
+  # Faulted: surface the manifest's fault state to the user verbatim.
+  jq . "$RUN_DIR/manifest.json"
+fi
 ```
 
 **The brief is at `$RUN_DIR/workers/$STATE-brief.json`** if you need to inspect any field directly (`outputs_path`, `worker.response_schema`, `inputs.picked_leaves[]` for `dispatch_specialists`, etc.). The dispatch prompt is at `$RUN_DIR/workers/$STATE-dispatch-prompt.md` — the literal text to feed to the Agent tool. **Both are canonical**; stdout is a redundant convenience.

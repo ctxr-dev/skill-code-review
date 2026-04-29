@@ -421,10 +421,11 @@ export function buildDispatchPromptText(brief, opts = {}) {
   // Standard worker prompt.
   const lines = [promptBody, "", "--- INPUTS (from FSM env) ---"];
   for (const name of declaredInputs) {
-    // JSON.stringify(undefined) returns the literal `undefined` (not a
-    // string), which would emit a non-JSON line `<name> = undefined`.
-    // Coerce missing inputs to null so the INPUTS section stays
-    // JSON-shaped and predictable for the dispatched agent.
+    // JSON.stringify(undefined) returns undefined (no string output);
+    // the surrounding template-literal interpolation would then coerce
+    // it to the string "undefined" and emit a non-JSON line
+    // `<name> = undefined`. Coerce missing inputs to null so the INPUTS
+    // section stays JSON-shaped and predictable for the dispatched agent.
     const value = inputs[name] === undefined ? null : inputs[name];
     lines.push(`${name} = ${JSON.stringify(value, null, 2)}`);
     lines.push("");

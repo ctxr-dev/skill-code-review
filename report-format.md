@@ -1,9 +1,11 @@
 # Report Format Reference
 
-This file defines the canonical output format for code reviews. The orchestrator reads this file to produce consistent reports. It contains three sections:
+> **Consumed by [`scripts/inline-states/write-run-directory.mjs`](scripts/inline-states/write-run-directory.mjs), [`scripts/inline-states/emit-stdout.mjs`](scripts/inline-states/emit-stdout.mjs), and [`scripts/lib/report-renderer.mjs`](scripts/lib/report-renderer.mjs).** Not part of the LLM's invocation read path. If you arrived here while running the skill, stop and re-read [`SKILL.md`](SKILL.md). The argument table is mirrored in `SKILL.md` so you don't need to navigate.
+
+This file defines the canonical output format for code reviews. The handler code reads this file's specification when persisting `report.json` / `report.md`. It contains three sections:
 
 1. **Arguments** — all supported arguments with defaults
-2. **Markdown report** — the beautiful human-readable format (default for users)
+2. **Markdown report** — the human-readable format (default for users)
 3. **JSON schema** — the structured format for programmatic consumption
 
 ---
@@ -306,7 +308,7 @@ When `format=json` or auto-detected as tool context, produce this exact structur
 - `verdict`: exactly one of `GO`, `NO-GO`, `CONDITIONAL`
 - `summary.description`: string
 - `summary.files_changed`: integer
-- `summary.specialists_dispatched`: integer (count of leaves dispatched in Step 6 of `code-reviewer.md`)
+- `summary.specialists_dispatched`: integer (count of leaves dispatched by the FSM `dispatch_specialists` state)
 - `summary.specialists_total`: integer (count of leaves under `reviewers.wiki/`, queried at runtime — do not hard-code)
 - `summary.mode`: `diff` or `full`
 - `summary.scope`: all fields `null` when no scope filters; array of strings when filtered

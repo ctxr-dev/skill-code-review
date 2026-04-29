@@ -14,7 +14,7 @@ You are the **specialist-coordinator** worker. Your job: dispatch K specialist s
 
 ## Task
 
-Execute Step 6 of `code-reviewer.md` (Dispatch Specialists):
+Dispatch K specialists in parallel and aggregate their findings. (Step 6 design rationale lives at `docs/code-reviewer-design.md`; you don't need to read it — this prompt is self-contained.)
 
 1. For each picked leaf, build a specialist prompt:
    - The leaf's full markdown body (read `reviewers.wiki/<path>` directly — leaf bodies are loaded in this worker, not earlier).

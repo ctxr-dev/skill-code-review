@@ -80,7 +80,7 @@ The orchestrator runs eleven sequential steps:
 Specialists live in [`reviewers.wiki/`](reviewers.wiki/index.md) — a wiki-organised corpus of ~476 leaves under ~59 top-level subcategories, built from `reviewers.src/` via `skill-llm-wiki` (deterministic mode, fan-out target 6, max depth 5). Coverage spans:
 
 - **Languages** — every supported language as a `lang-<name>.md` leaf.
-- **Frameworks** — `fw-*.md` leaves for the frameworks named in the [Phase C detection table](code-reviewer.md).
+- **Frameworks** — `fw-*.md` leaves for the frameworks named in the [Phase C detection table](docs/code-reviewer-design.md).
 - **Concerns** — security (decomposed across OWASP categories), correctness, tests, performance, architecture, readability, documentation, observability, CLI, API, domain footguns.
 - **Patterns / anti-patterns / DDD / clean-architecture / hexagonal / microservices** — each as their own leaf.
 
@@ -102,16 +102,25 @@ Every review produces (markdown or JSON):
 
 ```text
 skill-code-review/
-├── SKILL.md                  # Skill metadata and architecture overview
-├── code-reviewer.md          # Orchestrator: scans, descends the wiki, dispatches specialists
-├── release-readiness.md      # 8-gate scorecard, dimension-predicate binding
-├── report-format.md          # Canonical report format + JSON schema + argument spec
-├── reviewers.src/            # Source corpus (gitignored; wiki is source of truth in repo)
+├── SKILL.md                          # LLM entry point — single imperative dispatching scripts/run-review.mjs
+├── code-reviewer.md                  # Runtime-contract stub (redirect to SKILL.md + design doc)
+├── release-readiness.md              # 8-gate predicate reference (consumed by code, not LLMs)
+├── report-format.md                  # Report contract (consumed by code, not LLMs)
+├── docs/
+│   └── code-reviewer-design.md       # Eleven-step orchestrator design rationale (humans only)
+├── fsm/
+│   ├── code-reviewer.fsm.yaml        # Authoritative state machine
+│   └── workers/*.md                  # Per-state worker prompts (LLM-readable, self-contained)
+├── scripts/
+│   ├── run-review.mjs                # FSM-driver runner (the only LLM-facing entry point at runtime)
+│   ├── inline-states/*.mjs           # Deterministic per-state handlers
+│   └── lib/*.mjs                     # Validators (trim-output, activation-gate, fresh-run)
+├── reviewers.src/                    # Source corpus (gitignored; wiki is source of truth in repo)
 └── reviewers.wiki/
-    ├── index.md              # Root index — entries[] of subcategories
+    ├── index.md                      # Root index — entries[] of subcategories
     ├── <subcat>/
-    │   ├── index.md          # Subcategory index — entries[] of leaves
-    │   ├── <leaf>.md         # Specialist (frontmatter + body checklist)
+    │   ├── index.md                  # Subcategory index — entries[] of leaves
+    │   ├── <leaf>.md                 # Specialist (frontmatter + body checklist)
     │   └── ...
     └── ... (~59 subcategories, ~476 leaves total)
 ```
@@ -135,7 +144,7 @@ The wiki layer takes care of clustering, slug generation, soft-DAG parents, and 
 
 ### Add a language or framework
 
-Same procedure as a reviewer — the language/framework is just a `lang-<name>.md` or `fw-<name>.md` leaf in `reviewers.src/`. Update Phase C of [`code-reviewer.md`](code-reviewer.md) if the framework is new and the dependency-name detection needs to know about it.
+Same procedure as a reviewer — the language/framework is just a `lang-<name>.md` or `fw-<name>.md` leaf in `reviewers.src/`. Update Phase C of [`docs/code-reviewer-design.md`](docs/code-reviewer-design.md) if the framework is new and the dependency-name detection needs to know about it.
 
 ### Severity levels
 

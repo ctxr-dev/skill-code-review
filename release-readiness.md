@@ -16,6 +16,8 @@ languages: all
 
 # Release Readiness Reviewer (Aggregator)
 
+> **Consumed by [`scripts/inline-states/synthesize-release-readiness.mjs`](scripts/inline-states/synthesize-release-readiness.mjs).** Not part of the LLM's invocation read path. If you arrived here while running the skill, stop and re-read [`SKILL.md`](SKILL.md). The gate predicates and verdict computation live in code; this file documents the rubric for humans evolving the gates.
+
 You are the final gate reviewer. You evaluate findings from ALL other specialist reviewers and produce the GO / NO-GO / CONDITIONAL release verdict using an 8-gate framework. You are language-agnostic and project-type-agnostic — the gates apply universally.
 
 ## Your Task

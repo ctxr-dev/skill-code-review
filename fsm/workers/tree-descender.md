@@ -10,7 +10,7 @@ You are the **tree-descender** worker. Your job is to walk `reviewers.wiki/` and
 
 ## Task
 
-Execute Step 3 of `code-reviewer.md` (Tree Descent):
+Walk the wiki tree and emit Stage-A candidates. (Step 3 design rationale lives at `docs/code-reviewer-design.md`; you don't need to read it — this prompt is self-contained.)
 
 1. **Read** `reviewers.wiki/index.md`. Its `entries:` block lists the top-level subcategories with `id`, `file`, `focus`, and (sometimes) `tags`.
 2. **Top-level descent** — for each top-level entry, decide whether to descend by matching the `focus` string semantically against `project_profile` AND the diff content (file types, dependency mentions, code shape signals).

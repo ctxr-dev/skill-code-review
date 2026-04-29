@@ -10,11 +10,11 @@ You receive these inputs from the FSM Orchestrator:
 
 ## Task
 
-Execute Step 1 of `code-reviewer.md` (Deep Project Scan):
+Produce the Project Profile from local git + manifest reads. (Step 1 design rationale lives at `docs/code-reviewer-design.md`; you don't need to read it — this prompt is self-contained.)
 
 1. **File Discovery** — `git ls-files` if `args.full` is true; otherwise `git diff --name-only {args.base}..{args.head}` and `git diff --stat {args.base}..{args.head}`. Apply `args.scope-dir` filter if set.
 2. **Manifest & Config Reads** in parallel — runtime versions, dependencies, monorepo detection, CI/CD, infrastructure, build tools, linters.
-3. **Framework Classification** — map detected dependency names to the categories from the Framework Classification table in `code-reviewer.md`.
+3. **Framework Classification** — map detected dependency names to the categories listed in the schema below (`web`, `orm`, `test`, `ui`, `validation`, `auth`, `state`, `graphql`, `grpc`). Use the dependency-to-category mapping table in `docs/code-reviewer-design.md` ONLY if you encounter an unfamiliar dependency name.
 4. **Language census** — run `git ls-files | awk -F. '{print tolower($NF)}' | sort | uniq -c | sort -rn | head -20` and parse percentages.
 
 ## Output (JSON, schema-validated)

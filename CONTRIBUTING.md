@@ -63,7 +63,7 @@ The wiki layer handles clustering, slug generation, soft-DAG parents, balance en
 
 ### Updating Phase C framework detection
 
-Adding a framework that the orchestrator doesn't yet recognise from manifests requires updating the Phase C table in [`code-reviewer.md`](code-reviewer.md). The table maps dependency names to semantic categories so the Project Profile carries the right signal into Step 3 (Tree Descent).
+Adding a framework that the orchestrator doesn't yet recognise from manifests requires updating the Phase C table in [`docs/code-reviewer-design.md`](docs/code-reviewer-design.md). The table maps dependency names to semantic categories so the Project Profile carries the right signal into Step 3 (Tree Descent).
 
 ### FSM authoring
 
@@ -148,15 +148,21 @@ The pre-commit hook runs `validate:fsm + lint`. (Maintainers authoring new revie
 ## File Structure
 
 ```
-SKILL.md                  Skill metadata (frontmatter + architecture overview)
-code-reviewer.md          Orchestrator (scans, descends the wiki, dispatches)
-release-readiness.md      8-gate scorecard (dimension-predicate binding)
-report-format.md          Canonical report format + JSON schema + argument spec
-reviewers.src/            Source corpus (gitignored)
-reviewers.wiki/           Wiki-organised corpus — source of truth in repo
-  index.md                Root index — entries[] of subcategories
-  <subcat>/index.md       Subcategory index — entries[] of leaves
-  <subcat>/<leaf>.md      Specialist reviewer
+SKILL.md                          LLM entry point — single imperative dispatching scripts/run-review.mjs
+code-reviewer.md                  Runtime-contract stub (redirect to SKILL.md + design doc; not LLM-runtime)
+release-readiness.md              8-gate predicate reference (consumed by inline-state handlers, not LLMs)
+report-format.md                  Report contract (consumed by inline-state handlers, not LLMs)
+docs/code-reviewer-design.md      Eleven-step orchestrator design rationale (humans only)
+fsm/code-reviewer.fsm.yaml        Authoritative state machine
+fsm/workers/*.md                  Per-state worker prompts (LLM-readable, self-contained)
+scripts/run-review.mjs            FSM-driver runner (the only LLM-facing entry point at runtime)
+scripts/inline-states/*.mjs       Deterministic per-state handlers
+scripts/lib/*.mjs                 Validators (trim-output, activation-gate, fresh-run)
+reviewers.src/                    Source corpus (gitignored)
+reviewers.wiki/                   Wiki-organised corpus — source of truth in repo
+  index.md                        Root index — entries[] of subcategories
+  <subcat>/index.md               Subcategory index — entries[] of leaves
+  <subcat>/<leaf>.md              Specialist reviewer
 ```
 
 ## Conventions

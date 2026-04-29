@@ -1,118 +1,104 @@
 ---
 name: skill-code-review
-description: Use when completing tasks, implementing major features, or before merging to verify work meets requirements. Dispatches specialised reviewers selected from a wiki-organised corpus (~476 leaves) by semantic tree descent against the diff, then aggregates findings into an 8-gate GO/NO-GO release verdict.
+description: Use when completing tasks, implementing major features, or before merging to verify work meets requirements. Runs an FSM-driven, deterministic, manifest-producing code-review pipeline via scripts/run-review.mjs. The LLM is a worker, not the orchestrator.
 ---
 
-# Requesting Code Review
+# skill-code-review
 
-Dispatch a code review orchestrator that scans the project, auto-detects the tech stack, descends `reviewers.wiki/` to select specialists semantically based on the diff and Project Profile, dispatches them in parallel, verifies coverage, and produces a unified report with a GO/NO-GO release verdict.
+## Run this command first
 
-**Core principles:** SOLID, Clean Code, DRY, KISS, YAGNI, security, correctness, tests, architecture, performance, readability, documentation — covered by the corpus's 7-axis dimensions taxonomy. Only leaves relevant to the diff are loaded — token-efficient by design.
-
-## Architecture
-
-```text
-code-reviewer.md          Orchestrator: scans the project, descends the wiki, dispatches specialists in parallel
-reviewers.wiki/           Wiki-organised corpus of ~476 specialist leaves under ~59 top-level subcategories
-  index.md                Root index — entries[] lists subcategories with id + file + focus + tags
-  <subcat>/index.md       Subcategory index — entries[] of leaves (or sub-subcategory indices)
-  <subcat>/<leaf>.md      Specialist leaf — frontmatter (id, focus, dimensions, covers, activation, tools) + body
-release-readiness.md      8-gate scorecard; gate-to-leaf binding by dimensions[] + tags[] predicate
-report-format.md          Argument reference, markdown report shape, JSON schema
+```
+node scripts/run-review.mjs --start --base <BASE> --head <HEAD> [--<key>=<value>...]
 ```
 
-### How It Works
+Defaults: `--base` is the merge-base with `origin/main` (or `HEAD~1`); `--head` is `HEAD`. Pass any other args from the table at the bottom as `--<key>=<value>`. Do not invent flags.
 
-The orchestrator runs eleven sequential steps. See `code-reviewer.md` for the full specification. Headline mechanics:
+The runner emits one JSON object per stdout line. Loop until `{"status": "terminal", ...}`:
 
-1. **Deep Project Scan** — detects languages, frameworks, monorepo structure; produces a Project Profile.
-2. **Risk-Tier Triage** — buckets the diff into trivial / lite / full / sensitive; sets the specialist cap (3 / 8 / 20 / 30); short-circuits trivial diffs with no risk signal.
-3. **Tree Descent** — walks `reviewers.wiki/` deterministically, gathers candidate leaves whose `activation:` matches the diff or whose parent subcategory's `focus` is relevant.
-4. **LLM Trim** — picks K = cap leaves from the candidates with one-sentence justifications per pick. Justifications are the audit trail.
-5. **Tool Discovery** — collects external linters/SAST declared by picked leaves; runs available ones; feeds output into specialist prompts.
-6. **Parallel Dispatch** — every picked leaf runs as a sub-agent in parallel, blind to other specialists, receiving leaf body + Project Profile + filtered diff + tool output.
-7. **Collect Findings** — gathers all specialist outputs, deduplicates `(file, line, normalised_title)`, categorises by severity.
-8. **Verify Coverage** — every diff file must be reviewed by ≥ 2 specialists.
-9. **Synthesize Release Readiness** — 8 gates aggregate findings via dimension/tag predicates; produces GO / CONDITIONAL / NO-GO.
-10. **Write Run Directory** — sharded `.skill-code-review/<shard>/<run-id>/` directory with `manifest.json`, `report.md`, `report.json`. The manifest is the coverage proof.
-11. **Stdout / Return Value** — prints the report in the chosen format, appends a pointer to the manifest.
+### On `{"status": "awaiting_worker", "run_id": "<id>", "brief": {...}}`
 
-## Corpus
-
-The corpus lives at `reviewers.wiki/`. Sources at `reviewers.src/` are passed through `skill-llm-wiki` (deterministic mode, fan-out target 6, max depth 5, soft-DAG parents) to produce the wiki. It covers:
-
-- **Languages** — Python, JS, TS, Swift, Go, Rust, Java, Kotlin, Scala, C#, Ruby, PHP, Dart, C, C++, Objective-C, shell, SQL, R, Lua. Each as a `lang-<name>.md` leaf.
-- **Frameworks** — every framework in Phase C of `code-reviewer.md`'s detection table (web, ORM, test, UI, validation, auth, state, GraphQL, gRPC, …) as `fw-*.md` leaves.
-- **Concerns** — security (decomposed by OWASP / dimension), correctness, tests, performance, architecture, readability, documentation, observability, CLI/API, domain-specific footguns.
-- **Anti-patterns + design patterns + DDD + clean-architecture / hexagonal / microservices** as their own leaves.
-
-Leaves carry rich frontmatter: `id`, `type`, `focus`, `covers[]`, `dimensions[]` (7-axis), `audit_surface[]`, `activation` (file_globs / keyword_matches / structural_signals / escalation_from), `tools[]`, `tags[]`, `languages`. The orchestrator routes off `focus` and `dimensions`/`tags`; specialists themselves use the body checklist.
-
-## When to Request Review
-
-**Mandatory:**
-
-- After completing a phase from the implementation plan
-- After completing a major feature
-- Before merge to main
-
-**Optional but valuable:**
-
-- When stuck (fresh perspective)
-- Before refactoring (baseline check)
-- After fixing complex bug
-
-## How to Request
-
-**Basic usage:**
+The brief has this shape (only the fields you need):
 
 ```text
-/skill-code-review
+{
+  "state":  <fsm state id, e.g. "scan_project">,
+  "inputs": <map of input-name → value, populated from prior states>,
+  "worker": {
+    "role":             <worker name, e.g. "project-scanner">,
+    "prompt_template":  <path under fsm/, e.g. "workers/project-scanner.md">,
+    "response_schema":  <JSON Schema the worker output is validated against>
+  }
+}
 ```
 
-The orchestrator auto-detects the base commit, scans the project, descends the wiki, and produces the report.
+1. Read **only** `fsm/<brief.worker.prompt_template>` (the worker prompt file). Do not read anything else (not the wiki, not the design doc, not the gate predicates, not other workers).
+2. Build the worker prompt by concatenating the file body with the `brief.inputs` values the worker needs.
+3. Dispatch via the `Agent` tool. The worker must return a single JSON object satisfying `brief.worker.response_schema`.
+4. Write the response to a temp file (`/tmp/worker-out-<run_id>.json` is fine), then call:
 
-**With arguments:**
+   ```
+   node scripts/run-review.mjs --continue --run-id <run_id> --outputs-file <path>
+   ```
 
-```text
-/skill-code-review help                              # show all arguments
-/skill-code-review full                              # review entire codebase
-/skill-code-review format=json                       # structured JSON output
-/skill-code-review scope-dir=src/api                 # only review src/api/
-/skill-code-review scope-reviewer=sec-owasp-a01      # force-activate a specific leaf
-/skill-code-review max-reviewers=15                  # tighter token budget
-/skill-code-review base=origin/main head=HEAD        # explicit commit range
-```
+5. Loop on the next stdout line.
 
-See `report-format.md` for the full argument reference, output format examples, and JSON schema.
+### On `{"status": "terminal", "run_id": "<id>", "verdict": "...", "run_dir_path": "<path>"}`
 
-**Output formats:**
+1. Verify the run is real:
 
-- **Markdown** (default for users) — full report with tables, verdicts, coverage matrix
-- **JSON/YAML** (default for tools, or `format=json`) — structured data for CI/automation
+   ```
+   node scripts/assert-fresh-run.mjs --run-id <run_id> --base <BASE> --head <HEAD>
+   ```
 
-**Act on feedback:**
+   Exit 0 means OK. Exit non-zero means stop and surface the error.
 
-- Fix Critical issues immediately
-- Fix Important issues before proceeding
-- Note Minor issues for later
-- Push back if reviewer is wrong (with reasoning)
+2. Read `<run_dir_path>/report.md`.
+3. **Your final response is the contents of `report.md` followed by a literal trailing line `Manifest: <run_dir_path>/manifest.json`.** Do not paraphrase or summarise the report; surface it verbatim.
 
-## Red Flags
+### On `{"status": "fault" | "error", ...}`
 
-**Never:**
+Surface the message to the user. Do not retry silently. Do not fall back to a manual review.
 
-- Skip review because "it's simple"
-- Ignore Critical issues
-- Proceed with unfixed Important issues
-- Argue with valid technical feedback
+---
 
-**If reviewer wrong:**
+## Failure modes (READ THIS BEFORE STARTING)
 
-- Push back with technical reasoning
-- Show code/tests that prove it works
-- Request clarification
+If you find yourself reading any of these at the start of a review, **STOP**. You are on the wrong path:
 
-See orchestrator: `code-reviewer.md`
-See corpus: `reviewers.wiki/index.md`
-See gates: `release-readiness.md`
+- `code-reviewer.md`
+- `docs/code-reviewer-design.md`
+- `release-readiness.md`
+- `report-format.md`
+- `reviewers.wiki/**`
+
+Past LLMs have read those files and re-implemented the FSM by hand: produces a plausible-looking but un-auditable, non-deterministic, no-manifest report. Run the runner instead.
+
+If your final response does not end with `Manifest: .skill-code-review/<shard>/<run-id>/manifest.json` whose `base_sha` and `head_sha` match what the user asked for, you did not run the skill. Restart at the runner command above.
+
+---
+
+## Arguments
+
+| Argument | Values | Default | Description |
+|----------|--------|---------|-------------|
+| help | (flag) | — | Print this argument table and exit. No review is run. |
+| format | auto, markdown, json | auto | Output format. `auto`: markdown when stdout is a TTY, JSON otherwise. |
+| full | (flag) | — | Review entire codebase, not just git diff. Respects scope-dir. |
+| base | git SHA or ref | auto | Base commit for diff. Auto: merge-base with origin/main, fallback HEAD~1. Ignored if full. |
+| head | git SHA or ref | HEAD | Head commit for diff. |
+| scope-dir | comma-separated paths | all | Restrict review to these directories. |
+| scope-lang | comma-separated languages | all detected | Force specific languages (e.g. typescript,python). |
+| scope-framework | comma-separated frameworks | all detected | Force specific frameworks (e.g. react,prisma). |
+| scope-reviewer | comma-separated reviewer IDs | auto-routed | Force specific reviewers, skip auto-routing. |
+| scope-severity | critical, important, minor | all | Only report issues at or above this severity. |
+| scope-gate | comma-separated gate numbers | all | Only evaluate specific release gates. |
+| tools | silent, interactive, skip | silent | Tool execution mode. silent=use available. skip=no tools. |
+| mode | standard, thorough | standard | Review depth. thorough=max depth, all tools, lower thresholds. |
+| max-reviewers | integer 3–50 | tier-default | Override the per-tier specialist cap (3/8/20/30). |
+
+For the canonical specification of each argument and the report shape, see `report-format.md` — but the runner already reads it for you, so you should not need to.
+
+## When to invoke
+
+**Mandatory:** after a feature/phase, before merge to main.
+**Optional:** when stuck (fresh perspective), before a refactor (baseline), after a complex bug fix.

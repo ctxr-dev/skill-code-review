@@ -1,6 +1,6 @@
 ---
 name: skill-code-review
-description: Use when completing tasks, implementing major features, or before merging to verify work meets requirements. Runs an FSM-driven, deterministic, manifest-producing code-review pipeline via scripts/run-review.mjs. The runner stages every intermediate (brief, agent dispatch prompt, worker output) under <run_dir>/workers/. The orchestrator drives a shell loop using --print-run-dir / --print-current-state / --print-dispatch-prompt; never /tmp, never python3 -c. The LLM is a worker, not the orchestrator.
+description: Use when completing tasks, implementing major features, or before merging to verify work meets requirements. Runs an FSM-driven, deterministic, manifest-producing code-review pipeline via scripts/run-review.mjs. The runner stages every intermediate (brief, agent dispatch prompt, worker output) under <run_dir>/workers/. The orchestrator drives a shell loop using --print-run-dir / --print-current-state / --print-dispatch-prompt and never writes to /tmp. The LLM is a worker, not the orchestrator.
 ---
 
 # skill-code-review
@@ -17,7 +17,7 @@ The runner emits one JSON object per stdout line. Loop until `{"status": "termin
 
 ### On `{"status": "awaiting_worker", "run_id": "<id>", "brief": {...}}`
 
-**The runner has staged everything you need on disk under `<run_dir>/workers/`.** You do not Read worker prompt files, you do not compose prompts from `prompt_body` + inputs, you do not extract fields from the brief with `python3 -c` or `jq`. Your dispatch loop is:
+**The runner has staged everything you need on disk under `<run_dir>/workers/`.** You do not Read worker prompt files, you do not compose prompts from `prompt_body` + inputs, and you do not reach for `python3 -c` to parse the brief. Use the `--print-X` CLIs (below) for runner state — `--print-run-dir`, `--print-current-state`, `--print-dispatch-prompt` — and reserve `jq` for the few small leaf reads the loop needs (`.run_id` from `--start`'s envelope, `.inputs.picked_leaves[].id` for the `dispatch_specialists` fan-out, `.outputs_path` if you ever need it directly). Your dispatch loop is:
 
 ```bash
 # After --start, capture run_id (one short string) into a SHELL VARIABLE.
@@ -102,7 +102,7 @@ The runner persists every awaiting_worker brief to disk at **`<run_dir>/workers/
 These are NOT allowed during a review run:
 
 - **`/tmp/*`** — never. Every intermediate must live under `<run_dir>/`. The run-dir is per-project, per-run; `/tmp` is mode 1777 (world-readable on every Unix), shared across concurrent sessions, and collides under parallel development. The run-dir is gitignored, isolates parallel runs by run-id, and isolates parallel projects by `.fsmrc.json`'s `storage_root`.
-- **`python3 -c "import json; ..."` to extract fields from a brief** — never. Use the `--print-X` CLIs above, or `jq` against the on-disk brief at `<run_dir>/workers/<state>-brief.json`.
+- **`python3 -c "import json; ..."` to extract fields from a brief** — never. Anything the orchestrator routinely needs (run-dir path, current state, dispatch prompt) is exposed by a `--print-X` CLI. For the small handful of fields the loop reads directly (`.run_id` from `--start`, `.inputs.picked_leaves[].id` for specialists, `.outputs_path`), use `jq` against the on-disk brief at `<run_dir>/workers/<state>-brief.json`. `jq` is fine; ad-hoc `python3 -c` is not.
 - **Inventing your own filename for the worker output** — never. Use `brief.outputs_path` from the on-disk brief, or just call `--continue --run-id <id>` without `--outputs-file` (the runner defaults to it).
 - **Composing the agent prompt by concatenating `prompt_body` with inputs yourself** — never. The runner has already done that and written it to `<run_dir>/workers/<state>-dispatch-prompt.md`. Read that file (or use `--print-dispatch-prompt`).
 - **Capturing `--continue` stdout into `/tmp/*` to "look at later"** — never. The brief is on disk after every pause. `--print-current-state` tells you which one.

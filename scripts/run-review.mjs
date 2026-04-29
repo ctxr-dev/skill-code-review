@@ -364,7 +364,12 @@ export function buildDispatchPromptText(brief, opts = {}) {
       "--- PROJECT PROFILE ---",
       JSON.stringify(projectProfile, null, 2),
       "",
-      "--- TOOL RESULTS (filter to leaf-declared tools) ---",
+      // Header reflects what the runner actually emits: ALL tool_results
+      // unfiltered. Filtering by the leaf's declared `tools[]` would
+      // require reading the leaf's frontmatter at brief-build time, which
+      // is doable but out of scope for this PR. The dispatched specialist
+      // can filter itself using its leaf body, which IS shipped above.
+      "--- TOOL RESULTS ---",
       JSON.stringify(toolResults, null, 2),
       "",
       "--- OUTPUTS PATH ---",
@@ -377,7 +382,11 @@ export function buildDispatchPromptText(brief, opts = {}) {
   // Standard worker prompt.
   const lines = [promptBody, "", "--- INPUTS (from FSM env) ---"];
   for (const name of declaredInputs) {
-    const value = inputs[name];
+    // JSON.stringify(undefined) returns the literal `undefined` (not a
+    // string), which would emit a non-JSON line `<name> = undefined`.
+    // Coerce missing inputs to null so the INPUTS section stays
+    // JSON-shaped and predictable for the dispatched agent.
+    const value = inputs[name] === undefined ? null : inputs[name];
     lines.push(`${name} = ${JSON.stringify(value, null, 2)}`);
     lines.push("");
   }
@@ -1465,9 +1474,21 @@ async function main() {
       currentState,
       currentState === "dispatch_specialists" ? leafId : undefined,
     );
-    if (!promptPath || !existsSync(promptPath)) {
+    // Distinguish two failure modes so the operator gets a clean message:
+    //   1. promptPath === null → defaultDispatchPromptPath rejected the
+    //      leaf-id (path-traversal guard). The operator passed something
+    //      that doesn't match `^[a-z][a-z0-9-]*$`.
+    //   2. promptPath set but file missing → run pre-dates dispatch-prompt
+    //      staging, or the file was removed.
+    if (promptPath === null) {
       fail(
-        `--print-dispatch-prompt: no prompt file at "${promptPath}". Either this run pre-dates dispatch-prompt staging, the leaf-id is malformed, or the file was removed.`,
+        `--print-dispatch-prompt: invalid --leaf-id "${leafId}" for state "dispatch_specialists" (must match ^[a-z][a-z0-9-]*$).`,
+        { run_id: runId, current_state: currentState, leaf_id: leafId },
+      );
+    }
+    if (!existsSync(promptPath)) {
+      fail(
+        `--print-dispatch-prompt: no prompt file at "${promptPath}". Either this run pre-dates dispatch-prompt staging or the file was removed.`,
         { run_id: runId, current_state: currentState, leaf_id: leafId, expected_path: promptPath },
       );
     }

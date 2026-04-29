@@ -289,12 +289,12 @@ fsm:
 
     # ─── Step 6 ─────────────────────────────────────────────────
     - id: dispatch_specialists
-      purpose: "Run all picked leaves in parallel as worker subagents; aggregate their findings."
+      purpose: "Orchestrator dispatches all K picked-leaf specialists in parallel via K Agent tool calls in one message; aggregates their findings into specialist_outputs[]. The coordinator-Agent layer was eliminated in PR D of #70 (audit divergence #3) — fan-out is now visible to the orchestrator's tool-use trace."
       preconditions:
         - "picked_leaves is non-empty"
       worker:
-        role: specialist-coordinator
-        prompt_template: workers/specialist-coordinator.md
+        role: specialist
+        prompt_template: workers/specialist.md
         inputs:
           - project_profile
           - changed_paths

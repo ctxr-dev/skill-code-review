@@ -42,6 +42,22 @@ The brief has this shape (only the fields you need):
 
 4. Loop on the next stdout line.
 
+#### Special case: `brief.state === "dispatch_specialists"`
+
+This is the ONE state where the contract is different. Instead of dispatching a single Agent, you dispatch **K = brief.inputs.picked_leaves.length** specialists IN PARALLEL via K Agent tool calls in a single message. The runner does not aggregate for you; you aggregate the K JSON outputs into `specialist_outputs[]` and pass that as the worker output.
+
+Step-by-step:
+
+1. `brief.worker.prompt_body` is the per-specialist template (`fsm/workers/specialist.md`). It applies to every specialist; you concatenate it with each leaf's body to build that specialist's prompt.
+2. `brief.inputs.picked_leaves[]` arrives with each leaf's `body` already baked in (the runner ships it; you don't Read leaf files).
+3. For each leaf in `picked_leaves`, build a specialist prompt by concatenating: the per-specialist template (`brief.worker.prompt_body`) + that leaf's `body` + `brief.inputs.project_profile` + a filtered `git diff` (scope by the leaf's `activation.file_globs` from its frontmatter when present, else the full changed-file set) + any `tool_results` entries whose `name` matches a tool the leaf declares.
+4. Emit ONE message containing K parallel `Agent` tool calls — one per leaf. Each Agent must run **blind** (no specialist sees another's output). Each returns a single JSON object matching the per-specialist response shape (id, status, runtime_ms, tokens_in, tokens_out, findings, optional skip_reason). See `fsm/workers/specialist.md` for the contract.
+5. Aggregate the K responses into `{ "specialist_outputs": [<k objects>] }` (must match `brief.worker.response_schema`). Write to a temp file. `--continue` with that file.
+
+**Why this is special:** the previous design dispatched a single coordinator-Agent that fanned out to K specialists internally. That hid whether K real Agents actually ran (the audit in #70 surfaced this as divergence #3 — "blind specialists" was unverifiable). The orchestrator-side dispatch makes the K Agent calls visible in your tool-use trace and to the runner's FSM trace.
+
+**Do NOT** dispatch a single Agent for `dispatch_specialists` — you would be re-introducing the coordinator-layer opacity. The runner cannot tell from the JSON output alone whether you ran K Agents or simulated K specialists in one mind. Run K real Agents.
+
 ### On `{"status": "terminal", "run_id": "<id>", "verdict": "...", "run_dir_path": "<path>"}`
 
 1. Verify the run is real:

@@ -32,13 +32,27 @@ while true; do
     terminal|faulted) break ;;
   esac
 
-  # The runner has pre-staged the agent prompt at
-  # $RUN_DIR/workers/$STATE-dispatch-prompt.md. Read it as a single string
-  # and dispatch via the Agent tool. The worker must write its JSON
-  # response to brief.outputs_path (also stated inside the prompt, at
-  # $RUN_DIR/workers/$STATE-output.json).
-  PROMPT=$(node scripts/run-review.mjs --print-dispatch-prompt --run-id "$RUN_ID")
-  # ... dispatch Agent with $PROMPT; agent writes its output to outputs_path ...
+  if [ "$STATE" = "dispatch_specialists" ]; then
+    # Specialist dispatch is a fan-out: K leaves, K parallel Agents.
+    # --print-dispatch-prompt requires --leaf-id in this state. The
+    # orchestrator must also append the filtered diff per leaf — see
+    # the "Special case" section below for the full pattern.
+    BRIEF_PATH="$RUN_DIR/workers/$STATE-brief.json"
+    for LEAF_ID in $(jq -r '.inputs.picked_leaves[].id' "$BRIEF_PATH"); do
+      PROMPT=$(node scripts/run-review.mjs --print-dispatch-prompt --run-id "$RUN_ID" --leaf-id "$LEAF_ID")
+      # ... append filtered diff for this leaf, dispatch K Agents in ONE
+      # parallel message, aggregate K JSON responses into specialist_outputs[],
+      # write to $(jq -r .outputs_path "$BRIEF_PATH"). See full pattern below.
+    done
+  else
+    # The runner has pre-staged the agent prompt at
+    # $RUN_DIR/workers/$STATE-dispatch-prompt.md. Read it as a single string
+    # and dispatch via the Agent tool. The worker must write its JSON
+    # response to brief.outputs_path (also stated inside the prompt, at
+    # $RUN_DIR/workers/$STATE-output.json).
+    PROMPT=$(node scripts/run-review.mjs --print-dispatch-prompt --run-id "$RUN_ID")
+    # ... dispatch Agent with $PROMPT; agent writes its output to outputs_path ...
+  fi
 
   # Continue. Runner reads from the canonical outputs path automatically.
   node scripts/run-review.mjs --continue --run-id "$RUN_ID"

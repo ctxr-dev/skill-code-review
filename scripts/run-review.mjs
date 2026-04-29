@@ -347,13 +347,17 @@ export function defaultDispatchPromptPath(runId, state, leafId) {
 // Two shapes:
 //   - Standard worker (project-scanner, tree-descender, etc.): one prompt
 //     containing the worker's prompt_body verbatim plus a structured
-//     "INPUTS" section emitting JSON for every declared input.
+//     "INPUTS" section emitting JSON for every declared input, followed
+//     by brief.outputs_path as the location where the worker writes its
+//     JSON response.
 //   - dispatch_specialists per-leaf (when `opts.leaf` is provided):
 //     the per-specialist template plus the leaf's id/path/dimensions and
-//     the leaf's body, plus the project_profile.
-//
-// Both shapes name brief.outputs_path so the dispatched Agent knows
-// where to write its JSON response.
+//     body, the project_profile, the changed_paths, an orchestrator-fill
+//     filtered-diff placeholder, and tool_results. In this shape
+//     outputs_path is included only for audit/orchestration context;
+//     the specialist returns JSON to the orchestrator and does NOT
+//     write to disk directly (the orchestrator aggregates the K
+//     responses and writes once).
 export function buildDispatchPromptText(brief, opts = {}) {
   const promptBody = brief?.worker?.prompt_body ?? "";
   const declaredInputs = brief?.worker?.inputs ?? [];
@@ -1473,6 +1477,18 @@ async function main() {
         { run_id: runId, status: manifest.status },
       );
     }
+    // SKILL.md shows the orchestrator using $STATE to interpolate paths
+    // like $RUN_DIR/workers/$STATE-brief.json. A tampered manifest with
+    // current_state containing path separators or `..` would let the
+    // orchestrator's loop walk outside <run_dir>. Reject anything that
+    // doesn't match the documented snake_case ascii state-id shape so
+    // the printed value is always safe to interpolate.
+    if (!isSafeStateSegment(currentState)) {
+      fail(
+        `--print-current-state: manifest has invalid current_state for run-id "${runId}" (must match ^[a-z][a-z0-9_]*$).`,
+        { run_id: runId, status: manifest.status, current_state: currentState },
+      );
+    }
     process.stdout.write(`${currentState}\n`);
     return;
   }
@@ -1514,6 +1530,16 @@ async function main() {
         { run_id: runId, status: manifest.status },
       );
     }
+    // Validate currentState BEFORE composing any path. Without this,
+    // a tampered manifest with current_state="../etc/passwd" would
+    // make defaultDispatchPromptPath return null and the downstream
+    // null check would misleadingly blame the leaf-id.
+    if (!isSafeStateSegment(currentState)) {
+      fail(
+        `--print-dispatch-prompt: manifest has invalid current_state for run-id "${runId}" (must match ^[a-z][a-z0-9_]*$).`,
+        { run_id: runId, current_state: currentState },
+      );
+    }
     if (currentState === "dispatch_specialists" && (!leafId || typeof leafId !== "string")) {
       fail(
         `--print-dispatch-prompt for state "dispatch_specialists" requires --leaf-id <id>; one prompt per picked specialist sits at <run_dir>/workers/dispatch_specialists-prompt-<leaf-id>.md.`,
@@ -1525,10 +1551,11 @@ async function main() {
       currentState,
       currentState === "dispatch_specialists" ? leafId : undefined,
     );
-    // Distinguish two failure modes so the operator gets a clean message:
-    //   1. promptPath === null → defaultDispatchPromptPath rejected the
-    //      leaf-id (path-traversal guard). The operator passed something
-    //      that doesn't match `^[a-z][a-z0-9-]*$`.
+    // currentState is now guaranteed safe (isSafeStateSegment passed
+    // above). The only way promptPath can be null at this point is the
+    // dispatch_specialists branch rejecting a malformed leaf-id.
+    //   1. promptPath === null → invalid --leaf-id (must match
+    //      `^[a-z][a-z0-9-]*$`).
     //   2. promptPath set but file missing → run pre-dates dispatch-prompt
     //      staging, or the file was removed.
     if (promptPath === null) {

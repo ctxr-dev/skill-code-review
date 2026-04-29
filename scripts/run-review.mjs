@@ -395,7 +395,7 @@ export function buildDispatchPromptText(brief, opts = {}) {
       // dispatch_specialists section names this as the one allowed
       // form of prompt augmentation.
       "--- FILTERED DIFF (orchestrator appends below) ---",
-      `(Append: git diff <base>..<head> -- <leaf's activation.file_globs from leaf.body frontmatter, or all changed_paths if no globs>)`,
+      `(Append: git diff <base>..<head> -- <leaf's activation.file_globs from leaf.body frontmatter, or the full diff if no globs>)`,
       "",
       // Header reflects what the runner actually emits: ALL tool_results
       // unfiltered. The dispatched specialist can filter itself using
@@ -440,9 +440,11 @@ export function buildDispatchPromptText(brief, opts = {}) {
 // Side-effecting helper. Persists the standard-worker dispatch prompt
 // to <run_dir>/workers/<state>-dispatch-prompt.md atomically. Fires
 // from handleWorkerStateBrief alongside writeBriefToDisk on every pause.
-// Best-effort: I/O failures swallowed; the brief on disk is the canonical
-// record and the orchestrator can fall back to building the prompt
-// itself from the brief's prompt_body + inputs if needed.
+// Best-effort: I/O failures are swallowed; the brief on disk is the
+// canonical record. SKILL.md forbids orchestrator-side prompt
+// composition as the normal path — if the prompt file goes missing,
+// reconstructing from the brief's prompt_body + inputs is a
+// last-resort, run-dir-scoped recovery, not standard workflow.
 export function writeDispatchPromptToDisk(brief) {
   if (!brief?.has_worker) return;
   if (brief.state === "dispatch_specialists") return; // handled by writeSpecialistPromptsToDisk

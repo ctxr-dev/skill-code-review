@@ -122,6 +122,35 @@ test("runner --start: emits awaiting_worker JSON with project-scanner brief and 
     "<run_dir>/workers/scan_project-brief.json must equal the stdout brief",
   );
 
+  // PR for #79: the runner pre-stages the agent dispatch prompt at
+  // <run_dir>/workers/<state>-dispatch-prompt.md on every pause. Assert
+  // it's present and contains the worker prompt body's opening header.
+  const dispatchPromptOnDiskPath = `${runDir}/workers/scan_project-dispatch-prompt.md`;
+  assert.ok(
+    existsSync(dispatchPromptOnDiskPath),
+    `expected dispatch prompt at ${dispatchPromptOnDiskPath}`,
+  );
+  const dispatchPromptOnDisk = readFileSync(dispatchPromptOnDiskPath, "utf8");
+  assert.match(
+    dispatchPromptOnDisk,
+    /# Worker: project-scanner/,
+    "dispatch prompt should embed the worker prompt body",
+  );
+  assert.match(
+    dispatchPromptOnDisk,
+    /--- INPUTS \(from FSM env\) ---/,
+    "dispatch prompt should include the INPUTS section",
+  );
+  assert.match(
+    dispatchPromptOnDisk,
+    /--- OUTPUTS PATH ---/,
+    "dispatch prompt should include the OUTPUTS PATH section",
+  );
+  assert.ok(
+    dispatchPromptOnDisk.includes(firstLine.brief.outputs_path),
+    "dispatch prompt should name the canonical outputs_path",
+  );
+
   const manifestPath = `${runDir}/manifest.json`;
   assert.ok(
     existsSync(manifestPath),
@@ -343,4 +372,80 @@ test("runner --resume: re-emits the current pause brief from disk (regression fo
     originalBrief,
     "--resume must re-emit the same brief --start did, byte-for-byte",
   );
+});
+
+test("runner --print-X CLIs: drive the documented orchestrator loop without /tmp (regression for #79)", () => {
+  // Drives the full --print-run-dir / --print-current-state /
+  // --print-dispatch-prompt loop, asserting every step works without
+  // any /tmp file or python3 -c invocation. This is the canonical
+  // orchestrator workflow SKILL.md documents.
+  const baseSha = "7777777777777777777777777777777777777777";
+  const headSha = "8888888888888888888888888888888888888888";
+
+  const start = spawnSync(
+    process.execPath,
+    [
+      "scripts/run-review.mjs",
+      "--start",
+      "--base",
+      baseSha,
+      "--head",
+      headSha,
+    ],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
+  );
+  assert.equal(start.status, 0, `--start exited ${start.status}; stderr: ${start.stderr}`);
+  const startLine = JSON.parse(start.stdout.split("\n").filter(Boolean)[0]);
+  const runId = startLine.run_id;
+
+  // --print-run-dir: emits the absolute run-dir path.
+  const printRunDir = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-run-dir", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(printRunDir.status, 0, `--print-run-dir exited ${printRunDir.status}`);
+  const runDirFromCli = printRunDir.stdout.trim();
+  // Cross-check against the resolved path another way.
+  const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
+  const storageRoot = resolve(REPO_ROOT, settings.storageRoot);
+  const runDirExpected = runDirPath(runId, { storageRoot });
+  assert.equal(runDirFromCli, runDirExpected, "--print-run-dir output must match runDirPath()");
+
+  // --print-current-state: emits the manifest's current_state.
+  const printState = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-current-state", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(printState.status, 0, `--print-current-state exited ${printState.status}`);
+  assert.equal(
+    printState.stdout.trim(),
+    "scan_project",
+    "--print-current-state should return the entry-state name on a fresh --start",
+  );
+
+  // --print-dispatch-prompt: emits the on-disk dispatch prompt verbatim.
+  const printPrompt = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-dispatch-prompt", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(printPrompt.status, 0, `--print-dispatch-prompt exited ${printPrompt.status}`);
+  // The CLI output must equal the on-disk file byte-for-byte.
+  const printedPromptPath = `${runDirExpected}/workers/scan_project-dispatch-prompt.md`;
+  const printedPromptOnDisk = readFileSync(printedPromptPath, "utf8");
+  assert.equal(
+    printPrompt.stdout,
+    printedPromptOnDisk,
+    "--print-dispatch-prompt must emit the on-disk file byte-for-byte",
+  );
+
+  // Negative path: --print-dispatch-prompt without --run-id fails fast.
+  const noRun = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-dispatch-prompt"],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.notEqual(noRun.status, 0, "--print-dispatch-prompt without --run-id must hard-fail");
 });

@@ -1,6 +1,6 @@
 ---
 name: skill-code-review
-description: Use when completing tasks, implementing major features, or before merging to verify work meets requirements. Runs an FSM-driven, deterministic, manifest-producing code-review pipeline via scripts/run-review.mjs. The runner is the source of truth; briefs and outputs live on disk under <run_dir>/workers/. The LLM is a worker, not the orchestrator.
+description: Use when completing tasks, implementing major features, or before merging to verify work meets requirements. Runs an FSM-driven, deterministic, manifest-producing code-review pipeline via scripts/run-review.mjs. The runner stages every intermediate (brief, agent dispatch prompt, worker output) under <run_dir>/workers/. The orchestrator drives a shell loop using --print-run-dir / --print-current-state / --print-dispatch-prompt; never /tmp, never python3 -c. The LLM is a worker, not the orchestrator.
 ---
 
 # skill-code-review
@@ -17,49 +17,57 @@ The runner emits one JSON object per stdout line. Loop until `{"status": "termin
 
 ### On `{"status": "awaiting_worker", "run_id": "<id>", "brief": {...}}`
 
-The brief has this shape (only the fields you need):
+**The runner has staged everything you need on disk under `<run_dir>/workers/`.** You do not Read worker prompt files, you do not compose prompts from `prompt_body` + inputs, you do not extract fields from the brief with `python3 -c` or `jq`. Your dispatch loop is:
 
-```text
-{
-  "state":  <fsm state id, e.g. "scan_project">,
-  "inputs": <map of input-name → value, populated from prior states>,
-  "worker": {
-    "role":             <worker name, e.g. "project-scanner">,
-    "prompt_template":  <path under fsm/, e.g. "workers/project-scanner.md">,
-    "prompt_body":      <bytes of the worker prompt file, shipped with the brief>,
-    "response_schema":  <JSON Schema the worker output is validated against>
-  },
-  "outputs_path":       <canonical path to write the worker's JSON output: <run_dir>/workers/<state>-output.json>
-}
+```bash
+# After --start, capture run_id (one short string) into a SHELL VARIABLE.
+START_OUT=$(node scripts/run-review.mjs --start --base "$BASE" --head "$HEAD")
+RUN_ID=$(echo "$START_OUT" | jq -r .run_id)
+RUN_DIR=$(node scripts/run-review.mjs --print-run-dir --run-id "$RUN_ID")
+
+# Loop until terminal.
+while true; do
+  STATE=$(node scripts/run-review.mjs --print-current-state --run-id "$RUN_ID")
+  case "$STATE" in
+    terminal|faulted) break ;;
+  esac
+
+  # The runner has pre-staged the agent prompt at
+  # $RUN_DIR/workers/$STATE-dispatch-prompt.md. Read it as a single string
+  # and dispatch via the Agent tool. The worker must write its JSON
+  # response to brief.outputs_path (also stated inside the prompt, at
+  # $RUN_DIR/workers/$STATE-output.json).
+  PROMPT=$(node scripts/run-review.mjs --print-dispatch-prompt --run-id "$RUN_ID")
+  # ... dispatch Agent with $PROMPT; agent writes its output to outputs_path ...
+
+  # Continue. Runner reads from the canonical outputs path automatically.
+  node scripts/run-review.mjs --continue --run-id "$RUN_ID"
+done
+
+# On terminal, surface report.md + Manifest line verbatim.
+cat "$RUN_DIR/report.md"
+echo "Manifest: $RUN_DIR/manifest.json"
 ```
 
-1. Build the worker prompt by concatenating `brief.worker.prompt_body` (already provided) with the `brief.inputs` values the worker needs. **Do not** Read the file at `brief.worker.prompt_template` — the runner already shipped its bytes in `prompt_body`. **Do not** read anything else (not the wiki, not the design doc, not the gate predicates, not other workers).
-2. Dispatch via the `Agent` tool. The worker must return a single JSON object satisfying `brief.worker.response_schema`.
-3. Write the worker's response to **`brief.outputs_path`** (the runner has already pre-allocated this canonical path under `<run_dir>/workers/<state>-output.json`). Then call:
+**The brief is at `$RUN_DIR/workers/$STATE-brief.json`** if you need to inspect any field directly (`outputs_path`, `worker.response_schema`, `inputs.picked_leaves[]` for `dispatch_specialists`, etc.). The dispatch prompt is at `$RUN_DIR/workers/$STATE-dispatch-prompt.md` — the literal text to feed to the Agent tool. **Both are canonical**; stdout is a redundant convenience.
 
-   ```
-   node scripts/run-review.mjs --continue --run-id <run_id>
-   ```
+#### Special case: `STATE === "dispatch_specialists"`
 
-   No `--outputs-file` flag is needed — the runner defaults to `brief.outputs_path` when it's omitted. **Do not invent your own filename.** Doing so risks cross-run collisions, stale-file pickup, and breaks the run-dir's audit-trail invariant that every output sits next to its commit trace.
+The runner stages K per-leaf prompts at `$RUN_DIR/workers/dispatch_specialists-prompt-<leaf-id>.md` — one per picked specialist. Dispatch K Agents in **one parallel message** (K Agent tool calls in a single LLM turn). Each Agent runs blind (no specialist sees another's output).
 
-4. Loop on the next stdout line.
+```bash
+# Get the picked leaf ids from the on-disk brief.
+LEAF_IDS=$(jq -r '.inputs.picked_leaves[].id' "$RUN_DIR/workers/dispatch_specialists-brief.json")
+# For each leaf id, the per-specialist prompt is at:
+#   node scripts/run-review.mjs --print-dispatch-prompt --run-id "$RUN_ID" --leaf-id "$LEAF_ID"
+# Dispatch K Agents in ONE message (K parallel Agent tool calls).
+# Aggregate the K JSON responses into:
+#   { "specialist_outputs": [<k objects>] }
+# Write to: $(jq -r .outputs_path "$RUN_DIR/workers/dispatch_specialists-brief.json")
+# Then --continue.
+```
 
-#### Special case: `brief.state === "dispatch_specialists"`
-
-This is the ONE state where the contract is different. Instead of dispatching a single Agent, you dispatch **K = brief.inputs.picked_leaves.length** specialists IN PARALLEL via K Agent tool calls in a single message. The runner does not aggregate for you; you aggregate the K JSON outputs into `specialist_outputs[]` and pass that as the worker output.
-
-Step-by-step:
-
-1. `brief.worker.prompt_body` is the per-specialist template (`fsm/workers/specialist.md`). It applies to every specialist; you concatenate it with each leaf's body to build that specialist's prompt.
-2. `brief.inputs.picked_leaves[]` arrives with each leaf's `body` already baked in (the runner ships it; you don't Read leaf files).
-3. For each leaf in `picked_leaves`, build a specialist prompt by concatenating: the per-specialist template (`brief.worker.prompt_body`) + that leaf's `body` + `brief.inputs.project_profile` + a filtered `git diff` (scope by the leaf's `activation.file_globs` from its frontmatter when present, else the full changed-file set) + any `tool_results` entries whose `name` matches a tool the leaf declares.
-4. Emit ONE message containing K parallel `Agent` tool calls — one per leaf. Each Agent must run **blind** (no specialist sees another's output). Each returns a single JSON object matching the per-specialist response shape (id, status, runtime_ms, tokens_in, tokens_out, findings, optional skip_reason). See `fsm/workers/specialist.md` for the contract.
-5. Aggregate the K responses into `{ "specialist_outputs": [<k objects>] }` (must match `brief.worker.response_schema`). Write to **`brief.outputs_path`** (same canonical location as every other worker state — `<run_dir>/workers/dispatch_specialists-output.json`). Then call `node scripts/run-review.mjs --continue --run-id <run_id>`. Do not invent a filename.
-
-**Why this is special:** the previous design dispatched a single coordinator-Agent that fanned out to K specialists internally. That hid whether K real Agents actually ran (the audit in #70 surfaced this as divergence #3 — "blind specialists" was unverifiable). The orchestrator-side dispatch makes the K Agent calls visible in your tool-use trace and to the runner's FSM trace.
-
-**Do NOT** dispatch a single Agent for `dispatch_specialists` — you would be re-introducing the coordinator-layer opacity. The runner cannot tell from the JSON output alone whether you ran K Agents or simulated K specialists in one mind. Run K real Agents.
+**Do NOT** dispatch a single Agent for `dispatch_specialists` — you would be re-introducing the coordinator-layer opacity that the audit in #70 (divergence #3) surfaced. The runner cannot tell from the JSON output alone whether you ran K Agents or simulated K specialists in one mind. Run K real Agents in one parallel-tool-call message.
 
 ### On `{"status": "terminal", "run_id": "<id>", "verdict": "...", "run_dir_path": "<path>"}`
 
@@ -80,17 +88,24 @@ Step-by-step:
 
 ### Recovery: lost the awaiting_worker brief on stdout?
 
-The runner persists every awaiting_worker brief to disk at **`<run_dir>/workers/<state>-brief.json`** at the moment it pauses. If you piped `--continue` stdout through a summarizer or otherwise lost the next brief, you do **not** need to retry `--continue` (which would fault — the FSM has already advanced past the previous worker). Instead:
+The runner persists every awaiting_worker brief to disk at **`<run_dir>/workers/<state>-brief.json`** AND the agent dispatch prompt at **`<run_dir>/workers/<state>-dispatch-prompt.md`** at the moment it pauses. If you lost stdout, recover by:
 
-```
-node scripts/run-review.mjs --resume --run-id <run_id>
-```
-
-This is a read-only operation: it reads the manifest's `current_state`, reads the brief file from disk, and re-emits it on stdout in the same `{"status": "awaiting_worker", "run_id", "brief"}` envelope as `--start` produces. After that, continue with `--continue` as normal.
-
-If even that's not enough (e.g. stdout buffering issues), you can `cat <run_dir>/workers/<state>-brief.json` directly — the file IS the canonical brief. Stdout is a convenience signal; the run-dir is the source of truth.
+- `node scripts/run-review.mjs --print-current-state --run-id <run_id>` to see what state the FSM is in.
+- `node scripts/run-review.mjs --print-dispatch-prompt --run-id <run_id>` to get the agent prompt.
+- `cat <run_dir>/workers/<state>-brief.json` for the full brief if you need a specific field.
+- Or `node scripts/run-review.mjs --resume --run-id <run_id>` to re-emit the brief on stdout in the same envelope as `--start`.
 
 **Do not** re-run `--continue` with the previous worker's outputs to "see what happens." The FSM has already committed those outputs and advanced; a second commit will fail `output_schema_violation` against the next state's schema.
+
+### Forbidden tools and paths during a review
+
+These are NOT allowed during a review run:
+
+- **`/tmp/*`** — never. Every intermediate must live under `<run_dir>/`. The run-dir is per-project, per-run; `/tmp` is mode 1777 (world-readable on every Unix), shared across concurrent sessions, and collides under parallel development. The run-dir is gitignored, isolates parallel runs by run-id, and isolates parallel projects by `.fsmrc.json`'s `storage_root`.
+- **`python3 -c "import json; ..."` to extract fields from a brief** — never. Use the `--print-X` CLIs above, or `jq` against the on-disk brief at `<run_dir>/workers/<state>-brief.json`.
+- **Inventing your own filename for the worker output** — never. Use `brief.outputs_path` from the on-disk brief, or just call `--continue --run-id <id>` without `--outputs-file` (the runner defaults to it).
+- **Composing the agent prompt by concatenating `prompt_body` with inputs yourself** — never. The runner has already done that and written it to `<run_dir>/workers/<state>-dispatch-prompt.md`. Read that file (or use `--print-dispatch-prompt`).
+- **Capturing `--continue` stdout into `/tmp/*` to "look at later"** — never. The brief is on disk after every pause. `--print-current-state` tells you which one.
 
 ---
 

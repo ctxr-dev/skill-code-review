@@ -193,6 +193,51 @@ export function enrichBriefWithPromptBody(brief) {
   };
 }
 
+// Bake each picked leaf's full markdown body into the dispatch_specialists
+// brief so the orchestrator can dispatch K specialists in parallel without
+// needing to Read K leaf files separately. Only enriches when the brief is
+// for dispatch_specialists; other states pass through untouched.
+//
+// PR D of #70 (audit divergence #3): the coordinator-Agent layer was
+// eliminated in favour of orchestrator-side parallel dispatch. The runner
+// now ships every picked leaf's body in inputs.picked_leaves[].body so the
+// orchestrator's "dispatch K specialists" step is a single concatenation
+// per leaf, not a Read-then-concatenate.
+export function enrichBriefWithSpecialistBodies(brief) {
+  if (brief?.state !== "dispatch_specialists") return brief;
+  const inputs = brief?.inputs;
+  const pickedLeaves = inputs?.picked_leaves;
+  if (!Array.isArray(pickedLeaves) || pickedLeaves.length === 0) return brief;
+  const wikiRoot = resolve(REPO_ROOT, "reviewers.wiki");
+  const enrichedLeaves = pickedLeaves.map((leaf) => {
+    if (!leaf || typeof leaf.path !== "string") return leaf;
+    // Try wiki-relative first (the canonical shape from tree_descend),
+    // then repo-relative as a fallback (some upstream tooling carries the
+    // longer prefix). Mirrors verify-coverage.mjs's resolution order.
+    const candidates = [resolve(wikiRoot, leaf.path), resolve(REPO_ROOT, leaf.path)];
+    for (const candidate of candidates) {
+      try {
+        const body = readFileSync(candidate, "utf8");
+        return { ...leaf, body };
+      } catch {
+        continue;
+      }
+    }
+    // Leaf body unreadable: pass through without `body`. The orchestrator
+    // can still Read the file from leaf.path as a fallback. We do not
+    // surface this as a fault — that would block a run for one missing
+    // body when 19 of 20 specialists could still dispatch fine.
+    return leaf;
+  });
+  return {
+    ...brief,
+    inputs: {
+      ...inputs,
+      picked_leaves: enrichedLeaves,
+    },
+  };
+}
+
 function hashKeyForBrief(brief, env) {
   const briefPath = brief?.prompt_template ?? brief?.worker?.prompt_template ?? "";
   return computeHashKey({
@@ -488,17 +533,18 @@ export function parseFsmCliResult(result, label) {
   }
   try {
     const payload = JSON.parse(result.stdout);
-    // Enrich every fsm-* payload that carries a worker brief with the
-    // prompt body so the orchestrator (the LLM driving the --start /
-    // --continue loop) does not need to Read the prompt-template file.
-    // Two shapes can appear here:
-    //   1. fsm-next --new-run / --resume: payload IS the brief (with
-    //      state, worker, inputs, ...).
-    //   2. fsm-commit advance: payload is { advanced_from, ...brief }.
-    // Both have the same `worker` shape when a worker state is reached.
-    // Terminal payloads (status: "terminal") have no `worker`; the
-    // helper short-circuits on missing prompt_template.
-    return { ok: true, payload: enrichBriefWithPromptBody(payload) };
+    // Enrich every fsm-* payload that carries a worker brief:
+    //   1. prompt_body — the worker's prompt template bytes, baked in so
+    //      the orchestrator never needs to Read the template file.
+    //   2. picked_leaves[].body — for dispatch_specialists only, every
+    //      picked leaf's full markdown body, baked in so the orchestrator
+    //      dispatches K specialists in parallel without K separate Reads.
+    // Both helpers are idempotent and pass through untouched payloads
+    // they don't apply to (terminal status, non-worker state, etc.).
+    const enriched = enrichBriefWithSpecialistBodies(
+      enrichBriefWithPromptBody(payload),
+    );
+    return { ok: true, payload: enriched };
   } catch (err) {
     return {
       ok: false,

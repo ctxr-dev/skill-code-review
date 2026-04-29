@@ -52,8 +52,8 @@
     "validate:fsm": "fsm-validate-static fsm/code-reviewer.fsm.yaml",
     "validate:src": "npm run index:build:src && npm run validate:body-shape && npm run validate:dimensions && npm run validate:fsm",
     "review": "node scripts/run-review.mjs",
-    "lint": "markdownlint-cli2 '**/*.md' '#node_modules'",
-    "lint:fix": "markdownlint-cli2 --fix '**/*.md' '#node_modules'",
+    "lint": "markdownlint-cli2 '**/*.md' '#node_modules' '#.skill-code-review'",
+    "lint:fix": "markdownlint-cli2 --fix '**/*.md' '#node_modules' '#.skill-code-review'",
     "prepare": "husky",
     "prepublishOnly": "npm run validate:fsm && npm run lint && npm test"
   },

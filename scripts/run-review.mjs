@@ -34,7 +34,7 @@ import { dirname, join, resolve } from "node:path";
 import { tmpdir, platform } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { resolveSettings, runEnv, runDirPath } from "@ctxr/fsm";
+import { resolveSettings, runEnv, runDirPath, readLock } from "@ctxr/fsm";
 
 import {
   resolveReplayMode,
@@ -347,28 +347,53 @@ function getScratchDir() {
   return _scratchDir;
 }
 
-function runFsmNextStart({ baseSha, headSha, argsBag }) {
+// Session-id threading: @ctxr/fsm's defaultSessionId() returns
+// `session-${pid}-${Date.now()}` per process. fsm-next acquires the run
+// lock with that auto-id; fsm-commit rejects any subprocess presenting a
+// different one. Without explicit threading, every spawnSync in this
+// runner hands fsm-* a fresh session-id and the lock check always fails
+// after the first acquisition. Fix: generate a session-id once per
+// runner process (--start) or read the existing one from <run_dir>/
+// lock.json (--continue), and pass it as --session-id to every fsm-next
+// and fsm-commit subprocess.
+export function buildRunnerSessionId() {
+  return `runner-${process.pid}-${Date.now()}`;
+}
+
+export function readSessionIdFromLock(runId) {
+  const storageRoot = resolveStorageRoot();
+  const lock = readLock(runId, { storageRoot });
+  if (!lock || typeof lock.session_id !== "string" || !lock.session_id) {
+    return null;
+  }
+  return lock.session_id;
+}
+
+function runFsmNextStart({ baseSha, headSha, argsBag, sessionId }) {
   const argsFile = join(getScratchDir(), "args.json");
   writeFileSync(argsFile, JSON.stringify(argsBag ?? {}));
-  const result = spawnSync(
-    fsmBin("fsm-next"),
-    [
-      "--new-run",
-      "--repo",
-      "skill-code-review",
-      "--base-sha",
-      baseSha,
-      "--head-sha",
-      headSha,
-      "--args-file",
-      argsFile,
-    ],
-    { encoding: "utf8", cwd: REPO_ROOT },
-  );
+  const args = [
+    "--new-run",
+    "--repo",
+    "skill-code-review",
+    "--base-sha",
+    baseSha,
+    "--head-sha",
+    headSha,
+    "--args-file",
+    argsFile,
+  ];
+  if (sessionId) {
+    args.push("--session-id", sessionId);
+  }
+  const result = spawnSync(fsmBin("fsm-next"), args, {
+    encoding: "utf8",
+    cwd: REPO_ROOT,
+  });
   return parseFsmCliResult(result, "fsm-next --new-run");
 }
 
-function runFsmCommit({ runId, outputs }) {
+function runFsmCommit({ runId, outputs, sessionId }) {
   // Defence-in-depth: the runId here came from main()'s --start (assigned
   // by fsm-next) or --continue (validated by isValidRunId before reaching
   // this point). Sanitise once more so a bad path can never form regardless
@@ -379,11 +404,14 @@ function runFsmCommit({ runId, outputs }) {
   const outputsFile = join(getScratchDir(), `outputs-${safeRunId}-${Date.now()}.json`);
   writeFileSync(outputsFile, JSON.stringify(outputs ?? {}));
   try {
-    const result = spawnSync(
-      fsmBin("fsm-commit"),
-      ["--run-id", runId, "--outputs-file", outputsFile],
-      { encoding: "utf8", cwd: REPO_ROOT },
-    );
+    const args = ["--run-id", runId, "--outputs-file", outputsFile];
+    if (sessionId) {
+      args.push("--session-id", sessionId);
+    }
+    const result = spawnSync(fsmBin("fsm-commit"), args, {
+      encoding: "utf8",
+      cwd: REPO_ROOT,
+    });
     return parseFsmCliResult(result, "fsm-commit");
   } finally {
     // Delete the per-commit outputs file as soon as fsm-commit returns —
@@ -645,7 +673,7 @@ export function handleWorkerStateBrief(brief, runId, opts = {}, _deps = {}) {
 
 // Drive the loop from a starting brief: walk inline states, pause on workers,
 // stop on terminal. Returns the final status payload to emit.
-async function loop(brief, runId, { replayMode = "live" } = {}) {
+async function loop(brief, runId, { replayMode = "live", sessionId } = {}) {
   let current = brief;
   while (true) {
     if (current.status === "terminal") {
@@ -673,7 +701,7 @@ async function loop(brief, runId, { replayMode = "live" } = {}) {
         fault: { state: current.state, reason: dispatch.error },
       };
     }
-    const commit = runFsmCommit({ runId, outputs: dispatch.outputs });
+    const commit = runFsmCommit({ runId, outputs: dispatch.outputs, sessionId });
     if (!commit.ok) {
       return {
         status: "fault",
@@ -728,7 +756,13 @@ async function main() {
       // mid-pipeline.
       validateArgsBag(argsBag);
     }
-    const start = runFsmNextStart({ baseSha, headSha, argsBag });
+    // Generate a session-id once per --start invocation and thread it
+    // through every fsm-next / fsm-commit subprocess in this process. The
+    // lock that fsm-next writes outlives the runner subprocess by 1 hour;
+    // a later --continue subprocess will re-discover the same session-id
+    // by reading <run_dir>/lock.json.
+    const sessionId = buildRunnerSessionId();
+    const start = runFsmNextStart({ baseSha, headSha, argsBag, sessionId });
     if (!start.ok) {
       fail(`fsm-next --new-run failed: ${start.error}`, { raw: start.raw });
     }
@@ -742,7 +776,7 @@ async function main() {
         onInvalid: (msg) => fail(msg, { flag: "--replay-mode" }),
       },
     );
-    emit(await loop(brief, brief.run_id, { replayMode }));
+    emit(await loop(brief, brief.run_id, { replayMode, sessionId }));
     return;
   }
 
@@ -794,7 +828,20 @@ async function main() {
       },
     );
 
-    const commit = runFsmCommit({ runId, outputs });
+    // The lock acquired by --start (with the original runner's session-id)
+    // outlives that subprocess. This --continue process is a fresh node
+    // invocation with no in-memory state from --start, so we recover the
+    // session-id from the on-disk lock file. fsm-commit will accept it
+    // because lock.session_id will equal what we pass via --session-id.
+    const sessionId = readSessionIdFromLock(runId);
+    if (!sessionId) {
+      fail(
+        `--continue: no session-id found in lock for run-id "${runId}". Either the run never reached --start, or the lock has been deleted/expired. Restart with --start.`,
+        { run_id: runId },
+      );
+    }
+
+    const commit = runFsmCommit({ runId, outputs, sessionId });
     if (!commit.ok) {
       fail(`fsm-commit failed: ${commit.error}`, { raw: commit.raw });
     }
@@ -870,7 +917,7 @@ async function main() {
       }
     }
 
-    emit(await loop(commit.payload, runId, { replayMode }));
+    emit(await loop(commit.payload, runId, { replayMode, sessionId }));
     return;
   }
 

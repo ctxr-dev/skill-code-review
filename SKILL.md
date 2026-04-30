@@ -74,7 +74,7 @@ fi
 
 #### Special case: `STATE === "dispatch_specialists"`
 
-The runner stages K per-leaf prompts at `$RUN_DIR/workers/dispatch_specialists-prompt-<leaf-id>.md` — one per picked specialist. Each per-leaf prompt already contains the leaf body, project profile, changed paths, tool results, **and the pre-computed filtered diff for that leaf's `activation.file_globs[]`** (issue #83). Dispatch K Agents in **one parallel message** (K Agent tool calls in a single LLM turn). Each Agent runs blind (no specialist sees another's output).
+The runner stages K per-leaf prompts at `$RUN_DIR/workers/dispatch_specialists-prompt-<leaf-id>.md` — one per picked specialist. Each per-leaf prompt already contains the leaf body, project profile, changed paths, tool results, **and the pre-computed filtered diff for that leaf's `activation.file_globs[]`** (issue #83). For the rare leaf (~1/476 in the corpus today) that omits `file_globs`, the runner falls back to embedding the full diff so coverage is preserved — the orchestrator does not need to detect or branch on this. Dispatch K Agents in **one parallel message** (K Agent tool calls in a single LLM turn). Each Agent runs blind (no specialist sees another's output).
 
 **No augmentation.** The staged per-leaf prompt is complete and ready to paste:
 

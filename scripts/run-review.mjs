@@ -48,6 +48,10 @@ import {
 } from "./lib/worker-replay.mjs";
 
 import { validateTrimOutput } from "./lib/trim-output-validator.mjs";
+import {
+  splitFrontmatter,
+  extractFileGlobs as extractFileGlobsFromYaml,
+} from "./lib/leaf-frontmatter.mjs";
 
 // Apply the B8 referential-integrity check to a worker output. Returns
 // `{ ok: true }` for no-op (output isn't a trim shape) or for a clean
@@ -228,8 +232,8 @@ export function enrichBriefWithSpecialistBodies(brief) {
         // `body` keeps the full file (frontmatter + body) for
         // backward compatibility with the specialist prompt template
         // and the existing leaf.body.includes(...) tests.
-        const parsed = parseLeafFrontmatter(text);
-        const fileGlobs = extractFileGlobs(parsed?.frontmatter);
+        const parsed = splitFrontmatter(text);
+        const fileGlobs = extractFileGlobsFromYaml(parsed?.frontmatter);
         return { ...leaf, body: text, file_globs: fileGlobs };
       } catch {
         continue;
@@ -259,21 +263,29 @@ export function enrichBriefWithSpecialistBodies(brief) {
 // ready to paste.
 //
 // Failure modes (all return a labeled placeholder, never throw):
-//   - missing baseSha/headSha (e.g., unit test): "(diff unavailable)"
-//   - git spawn failure: stderr-or-error label
-//   - empty filteredGlobs and no full-diff fallback requested: empty diff
+//   - missing baseSha/headSha (e.g., unit test): placeholder string.
+//   - git spawn failure (binary missing / killed): stderr-or-error label.
+//   - non-zero exit (bad refs, etc.): exit-code label with stderr.
+//
+// Empty fileGlobs is NOT a failure mode: we deliberately fall back to
+// the full diff so the rare leaves (~1/476) without globs still get
+// coverage. SKILL.md mentions this fallback explicitly.
 function computeFilteredDiff(baseSha, headSha, fileGlobs) {
   if (!baseSha || !headSha) {
     return "(diff unavailable: runner did not pass --base/--head shas)";
   }
-  const args = ["diff", `${baseSha}..${headSha}`];
+  // `--no-color` strips ANSI escapes a user's local `color.ui=always`
+  // would otherwise inject (token bloat + harder-to-parse prompt).
+  // `--no-ext-diff` ignores any `diff.external` filter the user has
+  // configured — we want the canonical unified diff, not the user's
+  // pretty-printer (e.g. `delta`).
+  const args = ["diff", "--no-color", "--no-ext-diff", `${baseSha}..${headSha}`];
   if (Array.isArray(fileGlobs) && fileGlobs.length > 0) {
     args.push("--");
     args.push(...fileGlobs);
   }
-  // No leaf-globs: fall back to the full diff. This matches SKILL.md's
-  // documented "if no globs, use the full diff" rule and keeps coverage
-  // for the rare leaves (~1/476 today) that omit file_globs.
+  // No leaf-globs: fall back to the full diff. This keeps coverage for
+  // the rare leaves (~1/476 today) that omit file_globs.
   const result = spawnSync("git", args, {
     encoding: "utf8",
     cwd: REPO_ROOT,
@@ -286,44 +298,6 @@ function computeFilteredDiff(baseSha, headSha, fileGlobs) {
     return `(diff unavailable: git diff exited ${result.status}: ${result.stderr?.trim() ?? ""})`;
   }
   return result.stdout ?? "";
-}
-
-// Lightweight frontmatter splitter. Returns {frontmatter: object|null,
-// body: string} on success, or null if the file has no frontmatter.
-// Pure dependency-free shape (we already use gray-matter elsewhere; this
-// inline parser keeps run-review.mjs's import surface narrow).
-function parseLeafFrontmatter(text) {
-  if (typeof text !== "string" || !text.startsWith("---\n")) return null;
-  const end = text.indexOf("\n---", 4);
-  if (end < 0) return null;
-  const yaml = text.slice(4, end);
-  const body = text.slice(end + 4).replace(/^\n/, "");
-  // We only need to read activation.file_globs (a list of strings under
-  // an `activation:` block). Avoid pulling a full YAML parser at the
-  // run-review.mjs layer; mirror verify-coverage.mjs's tiny scoped
-  // parser. The activate_leaves inline state uses gray-matter for
-  // richer parsing during enumeration; here we only need globs.
-  return { frontmatter: yaml, body };
-}
-
-function extractFileGlobs(yamlText) {
-  if (typeof yamlText !== "string") return [];
-  // Locate the activation: block. The corpus uses a canonical layout —
-  // `activation:` at the top level, then `  file_globs:` indented two
-  // spaces, then bullet items indented four. Mirrors the parser in
-  // scripts/inline-states/verify-coverage.mjs.
-  const activationIdx = yamlText.search(/(^|\n)activation:\s*(\n|$)/);
-  if (activationIdx < 0) return [];
-  const tail = yamlText.slice(activationIdx);
-  // Match the file_globs sub-block.
-  const globsMatch = tail.match(/\n {2}file_globs:\s*\n((?: {4}[^\n]*\n?)*)/);
-  if (!globsMatch) return [];
-  return globsMatch[1]
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith("- "))
-    .map((line) => line.slice(2).trim().replace(/^["']|["']$/g, ""))
-    .filter((g) => g.length > 0);
 }
 
 // PR for #76: run-dir as the source of truth.

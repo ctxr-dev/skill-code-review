@@ -240,10 +240,10 @@ export function enrichBriefWithSpecialistBodies(brief) {
       }
     }
     // Leaf body unreadable: pass through without `body` / `file_globs`.
-    // The orchestrator can still Read the file from leaf.path as a
-    // fallback. We do not surface this as a fault — that would block a
-    // run for one missing body when 19 of 20 specialists could still
-    // dispatch fine.
+    // The orchestrator can still use its Read tool against leaf.path
+    // as a fallback. We do not surface this as a fault — that would
+    // block a run for one missing body when 19 of 20 specialists could
+    // still dispatch fine.
     return leaf;
   });
   return {

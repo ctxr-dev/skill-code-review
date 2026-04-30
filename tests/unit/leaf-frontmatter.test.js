@@ -1,5 +1,5 @@
-// Unit tests for the shared leaf-frontmatter parser (PR #84, follow-up
-// from Copilot round-3 review on PR #84):
+// Unit tests for the shared leaf-frontmatter parser introduced for
+// issue #83:
 //   - splitFrontmatter: LF + CRLF tolerance
 //   - extractFileGlobs: scoped activation.file_globs[] extraction
 

@@ -34,10 +34,10 @@ while true; do
 
   if [ "$STATE" = "dispatch_specialists" ]; then
     # Specialist dispatch is a fan-out: K leaves, K parallel Agents.
-    # --print-dispatch-prompt requires --leaf-id in this state. The
-    # runner has already pre-computed the per-leaf filtered diff and
-    # embedded it inline in each per-leaf prompt — see the "Special
-    # case" section below for the full pattern.
+    # --print-dispatch-prompt requires --leaf-id in this state.
+    # The runner has already pre-computed the per-leaf filtered diff
+    # and embedded it inline in each per-leaf prompt; see the
+    # "Special case" section below for the full pattern.
     BRIEF_PATH="$RUN_DIR/workers/$STATE-brief.json"
     for LEAF_ID in $(jq -r '.inputs.picked_leaves[].id' "$BRIEF_PATH"); do
       PROMPT=$(node scripts/run-review.mjs --print-dispatch-prompt --run-id "$RUN_ID" --leaf-id "$LEAF_ID")

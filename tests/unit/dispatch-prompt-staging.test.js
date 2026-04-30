@@ -140,11 +140,13 @@ test("buildDispatchPromptText: per-specialist — embeds leaf id/path/dimensions
   assert.match(text, /--- CHANGED PATHS ---/);
   assert.match(text, /"src\/foo\.js"/);
   // PR for #83: header is no longer "(orchestrator appends below)" —
-  // the runner pre-computes the diff. With no shas in test, the body
-  // is the documented placeholder.
+  // the runner pre-computes the diff. buildDispatchPromptText is pure;
+  // the side-effecting computeFilteredDiff lives in
+  // writeSpecialistPromptsToDisk. When the unit test doesn't pass
+  // opts.filteredDiff, the builder emits a stable placeholder.
   assert.match(text, /--- FILTERED DIFF ---/);
   assert.doesNotMatch(text, /orchestrator appends below/);
-  assert.match(text, /\(diff unavailable: runner did not pass --base\/--head shas\)/);
+  assert.match(text, /\(diff unavailable: caller did not pre-compute the per-leaf diff\)/);
   // Per-specialist response contract: return JSON to the orchestrator,
   // do NOT write to outputs_path (the orchestrator aggregates K
   // responses and writes once). Outputs_path is mentioned in the

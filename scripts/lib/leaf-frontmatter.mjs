@@ -1,13 +1,22 @@
 // Shared tiny YAML-ish frontmatter parser scoped to a leaf's
-// `activation.file_globs[]` sub-block. Used by both:
-//   - scripts/run-review.mjs (per-leaf filtered diff staging, #83)
-//   - scripts/inline-states/verify-coverage.mjs (coverage narrowing)
+// `activation.file_globs[]` sub-block.
 //
-// Keeping the parser here avoids drift if the corpus frontmatter format
-// evolves: two slightly different inline parsers (Copilot review on PR
-// #84) is one too many. The corpus uses one canonical YAML layout —
-// `activation:` at top level, `  file_globs:` indented two spaces,
-// bullet items indented four — so a regex scan is sufficient.
+// Currently used by:
+//   - scripts/run-review.mjs (per-leaf filtered diff staging, #83)
+//
+// Not yet used by:
+//   - scripts/inline-states/verify-coverage.mjs — has its own
+//     readLeafGlobs() with caching + symlink hardening + tri-state
+//     return semantics (null vs []) that are load-bearing for its
+//     broad-credit downstream logic. Migrating verify-coverage onto
+//     this helper requires reconciling those semantics and is tracked
+//     as follow-up scope.
+//
+// Keeping the parser in one place lets future call sites import it
+// instead of inlining yet another regex. The corpus uses one
+// canonical YAML layout — `activation:` at top level, `  file_globs:`
+// indented two spaces, bullet items indented four — so a regex scan
+// is sufficient and doesn't justify a runtime YAML dep.
 
 // Split a leaf file's bytes into {frontmatter, body}. Returns null when
 // the file does not start with a `---\n` fence followed by a closing

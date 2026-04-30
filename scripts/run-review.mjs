@@ -272,7 +272,11 @@ export function enrichBriefWithSpecialistBodies(brief) {
 // coverage. SKILL.md mentions this fallback explicitly.
 function computeFilteredDiff(baseSha, headSha, fileGlobs) {
   if (!baseSha || !headSha) {
-    return "(diff unavailable: runner did not pass --base/--head shas)";
+    // Either the caller didn't ship shas (unit test path) OR the
+    // runner failed to read them from the manifest. Both end up here
+    // with null shas, so the message is generic — the writeSpecialist
+    // prompt path is best-effort and never throws.
+    return "(diff unavailable: base/head shas unavailable)";
   }
   // `--no-color` strips ANSI escapes a user's local `color.ui=always`
   // would otherwise inject (token bloat + harder-to-parse prompt).

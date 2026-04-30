@@ -295,12 +295,195 @@ export function writeBriefToDisk(brief) {
   if (!brief.run_id || !brief.state) return;
   const briefPath = defaultBriefPath(brief.run_id, brief.state);
   if (!briefPath) return;
-  const tmpPath = `${briefPath}.tmp-${process.pid}-${Date.now()}`;
+  atomicWriteFile(briefPath, JSON.stringify(brief, null, 2));
+}
+
+// PR for #79: pre-stage agent dispatch prompts under <run_dir>/workers/
+// so the orchestrator never composes prompts itself or reaches for
+// /tmp / python3 -c / jq to extract prompt_body and concat with inputs.
+//
+// Layout (additive on top of #76):
+//   <run_dir>/workers/<state>-dispatch-prompt.md
+//                                            ← single agent-ready prompt
+//   <run_dir>/workers/dispatch_specialists-prompt-<leaf-id>.md
+//                                            ← K per-leaf prompts (one per
+//                                              picked specialist)
+//
+// The orchestrator's dispatch step becomes:
+//   1. cat <run_dir>/workers/<state>-dispatch-prompt.md
+//   2. Feed the bytes to Agent
+// No JSON parsing, no field extraction, no /tmp.
+// FSM state-id shape per fsm/code-reviewer.fsm.yaml: snake_case ascii
+// (lowercase letters, digits, underscore). Reject anything else BEFORE
+// composing a filename so a tampered manifest (e.g. an attacker-controlled
+// current_state with `..` or path separators) cannot direct file
+// writes/reads outside <run_dir>/workers/. Same defense-in-depth pattern
+// as scripts/lib/worker-replay.mjs's assertSafeStateSegment.
+function isSafeStateSegment(state) {
+  return typeof state === "string" && /^[a-z][a-z0-9_]*$/.test(state);
+}
+
+export function defaultDispatchPromptPath(runId, state, leafId) {
+  if (!runId) return null;
+  if (!isSafeStateSegment(state)) return null;
+  const storageRoot = resolveStorageRoot();
+  const dir = join(runDirPath(runId, { storageRoot }), "workers");
+  if (state === "dispatch_specialists") {
+    // Strict branch: dispatch_specialists prompts are ONLY valid in the
+    // documented per-leaf layout. Reject missing or malformed leaf-ids
+    // (path-traversal guard: kebab-case alnum-and-dashes per the corpus
+    // contract) so the helper never falls back to the generic
+    // "<state>-dispatch-prompt.md" path that writeSpecialistPromptsToDisk
+    // does not produce.
+    if (typeof leafId !== "string" || !/^[a-z][a-z0-9-]*$/.test(leafId)) {
+      return null;
+    }
+    return join(dir, `dispatch_specialists-prompt-${leafId}.md`);
+  }
+  return join(dir, `${state}-dispatch-prompt.md`);
+}
+
+// Pure function: build the literal agent-ready prompt text from a brief.
+// Two shapes:
+//   - Standard worker (project-scanner, tree-descender, etc.): one prompt
+//     containing the worker's prompt_body verbatim plus a structured
+//     "INPUTS" section emitting JSON for every declared input, followed
+//     by brief.outputs_path as the location where the worker writes its
+//     JSON response.
+//   - dispatch_specialists per-leaf (when `opts.leaf` is provided):
+//     the per-specialist template plus the leaf's id/path/dimensions and
+//     body, the project_profile, the changed_paths, an orchestrator-fill
+//     filtered-diff placeholder, and tool_results. In this shape
+//     outputs_path is included only for audit/orchestration context;
+//     the specialist returns JSON to the orchestrator and does NOT
+//     write to disk directly (the orchestrator aggregates the K
+//     responses and writes once).
+export function buildDispatchPromptText(brief, opts = {}) {
+  const promptBody = brief?.worker?.prompt_body ?? "";
+  const declaredInputs = brief?.worker?.inputs ?? [];
+  const inputs = brief?.inputs ?? {};
+  const outputsPath = brief?.outputs_path ?? "<unknown>";
+  const leaf = opts.leaf ?? null;
+
+  if (leaf) {
+    // Per-specialist prompt for dispatch_specialists.
+    const projectProfile = inputs.project_profile ?? {};
+    const changedPaths = Array.isArray(inputs.changed_paths) ? inputs.changed_paths : [];
+    const toolResults = Array.isArray(inputs.tool_results) ? inputs.tool_results : [];
+    return [
+      promptBody,
+      "",
+      "--- THIS SPECIALIST ---",
+      `id = ${leaf.id ?? ""}`,
+      `path = ${leaf.path ?? ""}`,
+      `dimensions = ${JSON.stringify(leaf.dimensions ?? [])}`,
+      "",
+      "--- LEAF BODY ---",
+      String(leaf.body ?? ""),
+      "",
+      "--- PROJECT PROFILE ---",
+      JSON.stringify(projectProfile, null, 2),
+      "",
+      "--- CHANGED PATHS ---",
+      JSON.stringify(changedPaths, null, 2),
+      "",
+      // The runner does NOT pre-compute a per-leaf filtered diff —
+      // that would require reading each leaf's `activation.file_globs`
+      // from frontmatter at brief-build time (a follow-up; tracked
+      // separately). The orchestrator MUST append the filtered diff
+      // below this header before dispatching the Agent. SKILL.md's
+      // dispatch_specialists section names this as the one allowed
+      // form of prompt augmentation.
+      "--- FILTERED DIFF (orchestrator appends below) ---",
+      `(Append: git diff <base>..<head> -- <leaf's activation.file_globs from leaf.body frontmatter, or the full diff if no globs>)`,
+      "",
+      // Header reflects what the runner actually emits: ALL tool_results
+      // unfiltered. The dispatched specialist can filter itself using
+      // its leaf body's tools[] frontmatter, which IS shipped above.
+      "--- TOOL RESULTS ---",
+      JSON.stringify(toolResults, null, 2),
+      "",
+      // Per-specialist contract: return JSON to the orchestrator. The
+      // orchestrator collects K responses and aggregates them into a
+      // single specialist_outputs[] payload at outputs_path. K specialists
+      // writing directly to outputs_path would clobber each other and
+      // contradict fsm/workers/specialist.md.
+      "--- RESPONSE CONTRACT ---",
+      "Return ONLY the per-specialist JSON object to the orchestrator.",
+      "Do NOT write to disk or to any outputs path.",
+      "Required shape: { id, status, runtime_ms, tokens_in, tokens_out, findings[], optional skip_reason }",
+      "",
+      `(For audit context: the orchestrator aggregates the K responses into specialist_outputs[] and writes once to ${outputsPath}.)`,
+      "",
+    ].join("\n");
+  }
+
+  // Standard worker prompt.
+  const lines = [promptBody, "", "--- INPUTS (from FSM env) ---"];
+  for (const name of declaredInputs) {
+    // JSON.stringify(undefined) returns undefined (no string output);
+    // the surrounding template-literal interpolation would then coerce
+    // it to the string "undefined" and emit a non-JSON line
+    // `<name> = undefined`. Coerce missing inputs to null so the INPUTS
+    // section stays JSON-shaped and predictable for the dispatched agent.
+    const value = inputs[name] === undefined ? null : inputs[name];
+    lines.push(`${name} = ${JSON.stringify(value, null, 2)}`);
+    lines.push("");
+  }
+  lines.push("--- OUTPUTS PATH ---");
+  lines.push(`Write your JSON response (matching the response_schema in your prompt above) to:`);
+  lines.push(outputsPath);
+  lines.push("");
+  return lines.join("\n");
+}
+
+// Side-effecting helper. Persists the standard-worker dispatch prompt
+// to <run_dir>/workers/<state>-dispatch-prompt.md atomically. Fires
+// from handleWorkerStateBrief alongside writeBriefToDisk on every pause.
+// Best-effort: I/O failures are swallowed; the brief on disk is the
+// canonical record. SKILL.md forbids orchestrator-side prompt
+// composition as the normal path — if the prompt file goes missing,
+// reconstructing from the brief's prompt_body + inputs is a
+// last-resort, run-dir-scoped recovery, not standard workflow.
+export function writeDispatchPromptToDisk(brief) {
+  if (!brief?.has_worker) return;
+  if (brief.state === "dispatch_specialists") return; // handled by writeSpecialistPromptsToDisk
+  const promptPath = defaultDispatchPromptPath(brief.run_id, brief.state);
+  if (!promptPath) return;
+  const text = buildDispatchPromptText(brief);
+  atomicWriteFile(promptPath, text);
+}
+
+// Side-effecting helper. For dispatch_specialists ONLY, writes one
+// prompt file per picked leaf so the orchestrator dispatches K Agents
+// in parallel using K cat-of-file prompts. Files at:
+//   <run_dir>/workers/dispatch_specialists-prompt-<leaf-id>.md
+// Skip leaves with malformed ids (defaultDispatchPromptPath returns null).
+export function writeSpecialistPromptsToDisk(brief) {
+  if (!brief?.has_worker) return;
+  if (brief.state !== "dispatch_specialists") return;
+  const pickedLeaves = brief?.inputs?.picked_leaves;
+  if (!Array.isArray(pickedLeaves) || pickedLeaves.length === 0) return;
+  for (const leaf of pickedLeaves) {
+    if (!leaf || typeof leaf.id !== "string") continue;
+    const promptPath = defaultDispatchPromptPath(brief.run_id, brief.state, leaf.id);
+    if (!promptPath) continue;
+    const text = buildDispatchPromptText(brief, { leaf });
+    atomicWriteFile(promptPath, text);
+  }
+}
+
+// Shared atomic-write primitive used by writeBriefToDisk and the new
+// dispatch-prompt writers. Write to a uniquely-named tmp sibling, then
+// rename. Best-effort: any I/O failure is swallowed and the leftover tmp
+// file (if any) is cleaned up. Callers do NOT throw — these are
+// derivative artefacts, not load-bearing.
+function atomicWriteFile(targetPath, contents) {
+  const tmpPath = `${targetPath}.tmp-${process.pid}-${Date.now()}`;
   try {
-    writeFileSync(tmpPath, JSON.stringify(brief, null, 2));
-    renameSync(tmpPath, briefPath);
+    writeFileSync(tmpPath, contents);
+    renameSync(tmpPath, targetPath);
   } catch {
-    // Best-effort cleanup of the tmp file on failure; ignore secondary errors.
     try {
       rmSync(tmpPath, { force: true });
     } catch {
@@ -719,11 +902,19 @@ export function handleWorkerStateBrief(brief, runId, opts = {}, _deps = {}) {
   // --replay-mode=record` will not have a stash to record against;
   // record mode is per-run, not retroactive.
   if (replayMode === "live") {
-    // Persist the brief to <run_dir>/workers/<state>-brief.json before
-    // returning. The on-disk file is the canonical brief; stdout is
-    // a redundant convenience. Lost stdout (orchestrator pipes through
-    // a summarizer, etc.) becomes recoverable via --resume.
+    // Persist the brief to <run_dir>/workers/<state>-brief.json AND
+    // pre-stage the agent dispatch prompt(s) under <run_dir>/workers/
+    // before returning. The on-disk artefacts are the canonical record;
+    // stdout is a redundant convenience. Lost stdout (orchestrator
+    // pipes through a summarizer, etc.) becomes recoverable via --resume,
+    // and the orchestrator dispatches workers without ever composing
+    // prompts itself or touching /tmp.
     writeBriefToDisk(brief);
+    if (brief.state === "dispatch_specialists") {
+      writeSpecialistPromptsToDisk(brief);
+    } else {
+      writeDispatchPromptToDisk(brief);
+    }
     return {
       kind: "pause",
       payload: { status: "awaiting_worker", run_id: runId, brief },
@@ -842,10 +1033,16 @@ export function handleWorkerStateBrief(brief, runId, opts = {}, _deps = {}) {
     };
   }
 
-  // Persist the brief to <run_dir>/workers/<state>-brief.json before
-  // returning. Same reasoning as the live-mode branch above; the disk
-  // file is the canonical brief regardless of replay mode.
+  // Persist the brief to <run_dir>/workers/<state>-brief.json AND the
+  // dispatch prompt(s) before returning. Same reasoning as the
+  // live-mode branch above; disk artefacts are canonical regardless of
+  // replay mode.
   writeBriefToDisk(brief);
+  if (brief.state === "dispatch_specialists") {
+    writeSpecialistPromptsToDisk(brief);
+  } else {
+    writeDispatchPromptToDisk(brief);
+  }
   return {
     kind: "pause",
     payload: { status: "awaiting_worker", run_id: runId, brief },
@@ -1240,11 +1437,163 @@ async function main() {
     return;
   }
 
+  // PR for #79: three thin "print X" CLIs that let the orchestrator drive
+  // a shell loop using only run-dir paths and runner-emitted plaintext —
+  // no /tmp, no python3 -c, no jq extraction.
+  if (args["print-run-dir"]) {
+    const runId = args["run-id"];
+    if (!runId || typeof runId !== "string" || !isValidRunId(runId)) {
+      fail("--print-run-dir requires --run-id <id> (lowercase alnum + dashes, 3-64 chars)");
+    }
+    const storageRoot = resolveStorageRoot();
+    process.stdout.write(`${runDirPath(runId, { storageRoot })}\n`);
+    return;
+  }
+
+  if (args["print-current-state"]) {
+    const runId = args["run-id"];
+    if (!runId || typeof runId !== "string" || !isValidRunId(runId)) {
+      fail("--print-current-state requires --run-id <id> (lowercase alnum + dashes, 3-64 chars)");
+    }
+    const storageRoot = resolveStorageRoot();
+    const manifest = readManifest(runId, { storageRoot });
+    if (!manifest) {
+      fail(
+        `--print-current-state: no manifest found for run-id "${runId}".`,
+        { run_id: runId },
+      );
+    }
+    // Surface terminal/faulted as sentinels so a shell loop can branch
+    // on them without parsing the manifest itself.
+    if (manifest.status === "completed") {
+      process.stdout.write("terminal\n");
+      return;
+    }
+    if (manifest.status === "faulted") {
+      process.stdout.write("faulted\n");
+      return;
+    }
+    const currentState = manifest.current_state;
+    if (!currentState) {
+      fail(
+        `--print-current-state: manifest has no current_state for run-id "${runId}".`,
+        { run_id: runId, status: manifest.status },
+      );
+    }
+    // SKILL.md shows the orchestrator using $STATE to interpolate paths
+    // like $RUN_DIR/workers/$STATE-brief.json. A tampered manifest with
+    // current_state containing path separators or `..` would let the
+    // orchestrator's loop walk outside <run_dir>. Reject anything that
+    // doesn't match the documented snake_case ascii state-id shape so
+    // the printed value is always safe to interpolate.
+    if (!isSafeStateSegment(currentState)) {
+      fail(
+        `--print-current-state: manifest has invalid current_state for run-id "${runId}" (must match ^[a-z][a-z0-9_]*$).`,
+        { run_id: runId, status: manifest.status, current_state: currentState },
+      );
+    }
+    process.stdout.write(`${currentState}\n`);
+    return;
+  }
+
+  if (args["print-dispatch-prompt"]) {
+    const runId = args["run-id"];
+    if (!runId || typeof runId !== "string" || !isValidRunId(runId)) {
+      fail("--print-dispatch-prompt requires --run-id <id>");
+    }
+    const leafId = args["leaf-id"];
+    const storageRoot = resolveStorageRoot();
+    const manifest = readManifest(runId, { storageRoot });
+    if (!manifest) {
+      fail(
+        `--print-dispatch-prompt: no manifest found for run-id "${runId}".`,
+        { run_id: runId },
+      );
+    }
+    // Mirror --print-current-state: a finished run has no pause prompt.
+    // Without this branch the code falls through to a generic
+    // missing-file error that misleadingly claims the run pre-dates
+    // dispatch-prompt staging.
+    if (manifest.status === "completed") {
+      fail(
+        `--print-dispatch-prompt: run "${runId}" is terminal (verdict ${manifest.verdict ?? "unknown"}); there is no pause prompt to print.`,
+        { run_id: runId, status: "completed", verdict: manifest.verdict ?? null },
+      );
+    }
+    if (manifest.status === "faulted") {
+      fail(
+        `--print-dispatch-prompt: run "${runId}" is faulted (state ${manifest.current_state ?? "unknown"}); there is no pause prompt to print.`,
+        { run_id: runId, status: "faulted", current_state: manifest.current_state ?? null },
+      );
+    }
+    const currentState = manifest.current_state;
+    if (!currentState) {
+      fail(
+        `--print-dispatch-prompt: manifest has no current_state (run is ${manifest.status ?? "unknown"}).`,
+        { run_id: runId, status: manifest.status },
+      );
+    }
+    // Validate currentState BEFORE composing any path. Without this,
+    // a tampered manifest with current_state="../etc/passwd" would
+    // make defaultDispatchPromptPath return null and the downstream
+    // null check would misleadingly blame the leaf-id.
+    if (!isSafeStateSegment(currentState)) {
+      fail(
+        `--print-dispatch-prompt: manifest has invalid current_state for run-id "${runId}" (must match ^[a-z][a-z0-9_]*$).`,
+        { run_id: runId, current_state: currentState },
+      );
+    }
+    if (currentState === "dispatch_specialists" && (!leafId || typeof leafId !== "string")) {
+      fail(
+        `--print-dispatch-prompt for state "dispatch_specialists" requires --leaf-id <id>; one prompt per picked specialist sits at <run_dir>/workers/dispatch_specialists-prompt-<leaf-id>.md.`,
+        { run_id: runId, current_state: currentState },
+      );
+    }
+    const promptPath = defaultDispatchPromptPath(
+      runId,
+      currentState,
+      currentState === "dispatch_specialists" ? leafId : undefined,
+    );
+    // currentState is now guaranteed safe (isSafeStateSegment passed
+    // above). The only way promptPath can be null at this point is the
+    // dispatch_specialists branch rejecting a malformed leaf-id.
+    //   1. promptPath === null → invalid --leaf-id (must match
+    //      `^[a-z][a-z0-9-]*$`).
+    //   2. promptPath set but file missing → run pre-dates dispatch-prompt
+    //      staging, or the file was removed.
+    if (promptPath === null) {
+      fail(
+        `--print-dispatch-prompt: invalid --leaf-id "${leafId}" for state "dispatch_specialists" (must match ^[a-z][a-z0-9-]*$).`,
+        { run_id: runId, current_state: currentState, leaf_id: leafId },
+      );
+    }
+    if (!existsSync(promptPath)) {
+      fail(
+        `--print-dispatch-prompt: no prompt file at "${promptPath}". Either this run pre-dates dispatch-prompt staging or the file was removed.`,
+        { run_id: runId, current_state: currentState, leaf_id: leafId, expected_path: promptPath },
+      );
+    }
+    let body;
+    try {
+      body = readFileSync(promptPath, "utf8");
+    } catch (err) {
+      fail(
+        `--print-dispatch-prompt: prompt file at "${promptPath}" is unreadable: ${err?.message ?? String(err)}`,
+        { run_id: runId, current_state: currentState, prompt_path: promptPath },
+      );
+    }
+    process.stdout.write(body);
+    return;
+  }
+
   fail(
     "Usage:\n" +
       "  run-review.mjs --start --base <sha> --head <sha> [--args-file <path>] [--replay-mode <live|record|replay>]\n" +
       "  run-review.mjs --continue --run-id <id> [--outputs-file <path>] [--replay-mode <live|record|replay>]\n" +
-      "  run-review.mjs --resume --run-id <id>",
+      "  run-review.mjs --resume --run-id <id>\n" +
+      "  run-review.mjs --print-run-dir --run-id <id>\n" +
+      "  run-review.mjs --print-current-state --run-id <id>\n" +
+      "  run-review.mjs --print-dispatch-prompt --run-id <id> [--leaf-id <id>]",
   );
 }
 

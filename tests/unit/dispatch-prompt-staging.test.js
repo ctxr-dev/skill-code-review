@@ -96,7 +96,7 @@ test("buildDispatchPromptText: standard worker — embeds prompt_body, INPUTS, O
   assert.match(text, /\/run\/dir\/workers\/scan_project-output\.json/);
 });
 
-test("buildDispatchPromptText: per-specialist — embeds leaf id/path/dimensions/body, project_profile, changed_paths, filtered-diff placeholder", () => {
+test("buildDispatchPromptText: per-specialist — embeds leaf id/path/dimensions/file_globs/body, project_profile, changed_paths, pre-computed FILTERED DIFF section", () => {
   const brief = {
     has_worker: true,
     state: "dispatch_specialists",
@@ -117,24 +117,34 @@ test("buildDispatchPromptText: per-specialist — embeds leaf id/path/dimensions
     id: "lang-javascript",
     path: "tasks-task/lang-javascript.md",
     dimensions: ["correctness"],
+    file_globs: ["**/*.js", "**/*.mjs"],
     body: "# Lang JavaScript\n\nFlag use-after-await.",
   };
+  // No baseSha / headSha → builder emits the "(diff unavailable…)"
+  // placeholder. That preserves a stable section header for unit tests
+  // without spawning git.
   const text = buildDispatchPromptText(brief, { leaf });
   assert.match(text, /# Worker: specialist/);
   assert.match(text, /--- THIS SPECIALIST ---/);
   assert.match(text, /id = lang-javascript/);
   assert.match(text, /path = tasks-task\/lang-javascript\.md/);
   assert.match(text, /dimensions = \["correctness"\]/);
+  // PR for #83: file_globs surfaced inline so the specialist can see
+  // exactly which paths the runner used to scope the diff. (Audit
+  // surface for the per-leaf-filtered-diffs change.)
+  assert.match(text, /file_globs = \["\*\*\/\*\.js","\*\*\/\*\.mjs"\]/);
   assert.match(text, /--- LEAF BODY ---/);
   assert.match(text, /Flag use-after-await/);
   assert.match(text, /--- PROJECT PROFILE ---/);
   assert.match(text, /"languages":\s*\[\s*"javascript"/);
-  // Round-3 review: per-specialist prompt MUST include changed_paths and a
-  // filtered-diff placeholder (the orchestrator appends the diff before
-  // dispatch — it's the one allowed augmentation).
   assert.match(text, /--- CHANGED PATHS ---/);
   assert.match(text, /"src\/foo\.js"/);
-  assert.match(text, /--- FILTERED DIFF \(orchestrator appends below\) ---/);
+  // PR for #83: header is no longer "(orchestrator appends below)" —
+  // the runner pre-computes the diff. With no shas in test, the body
+  // is the documented placeholder.
+  assert.match(text, /--- FILTERED DIFF ---/);
+  assert.doesNotMatch(text, /orchestrator appends below/);
+  assert.match(text, /\(diff unavailable: runner did not pass --base\/--head shas\)/);
   // Per-specialist response contract: return JSON to the orchestrator,
   // do NOT write to outputs_path (the orchestrator aggregates K
   // responses and writes once). Outputs_path is mentioned in the

@@ -217,16 +217,29 @@ export function enrichBriefWithSpecialistBodies(brief) {
     const candidates = [resolve(wikiRoot, leaf.path), resolve(REPO_ROOT, leaf.path)];
     for (const candidate of candidates) {
       try {
-        const body = readFileSync(candidate, "utf8");
-        return { ...leaf, body };
+        const text = readFileSync(candidate, "utf8");
+        // PR for #83: parse the frontmatter so we can also surface
+        // activation.file_globs as a structured field. The runner
+        // (writeSpecialistPromptsToDisk → buildDispatchPromptText)
+        // uses file_globs to pre-compute a per-leaf filtered diff,
+        // eliminating SKILL.md's "orchestrator appends git diff per
+        // leaf" pattern that bloated specialist token spend by
+        // pasting the full diff K times when leaves had no globs.
+        // `body` keeps the full file (frontmatter + body) for
+        // backward compatibility with the specialist prompt template
+        // and the existing leaf.body.includes(...) tests.
+        const parsed = parseLeafFrontmatter(text);
+        const fileGlobs = extractFileGlobs(parsed?.frontmatter);
+        return { ...leaf, body: text, file_globs: fileGlobs };
       } catch {
         continue;
       }
     }
-    // Leaf body unreadable: pass through without `body`. The orchestrator
-    // can still Read the file from leaf.path as a fallback. We do not
-    // surface this as a fault — that would block a run for one missing
-    // body when 19 of 20 specialists could still dispatch fine.
+    // Leaf body unreadable: pass through without `body` / `file_globs`.
+    // The orchestrator can still Read the file from leaf.path as a
+    // fallback. We do not surface this as a fault — that would block a
+    // run for one missing body when 19 of 20 specialists could still
+    // dispatch fine.
     return leaf;
   });
   return {
@@ -236,6 +249,81 @@ export function enrichBriefWithSpecialistBodies(brief) {
       picked_leaves: enrichedLeaves,
     },
   };
+}
+
+// Pre-compute the filtered diff for one specialist at brief-stage time.
+// PR for #83: the orchestrator used to append `git diff` per leaf at
+// dispatch time, branching on globs-vs-no-globs and pasting the full
+// diff K times when leaves had no globs. The runner now spawns git
+// once per leaf and embeds the result inline so the staged prompt is
+// ready to paste.
+//
+// Failure modes (all return a labeled placeholder, never throw):
+//   - missing baseSha/headSha (e.g., unit test): "(diff unavailable)"
+//   - git spawn failure: stderr-or-error label
+//   - empty filteredGlobs and no full-diff fallback requested: empty diff
+function computeFilteredDiff(baseSha, headSha, fileGlobs) {
+  if (!baseSha || !headSha) {
+    return "(diff unavailable: runner did not pass --base/--head shas)";
+  }
+  const args = ["diff", `${baseSha}..${headSha}`];
+  if (Array.isArray(fileGlobs) && fileGlobs.length > 0) {
+    args.push("--");
+    args.push(...fileGlobs);
+  }
+  // No leaf-globs: fall back to the full diff. This matches SKILL.md's
+  // documented "if no globs, use the full diff" rule and keeps coverage
+  // for the rare leaves (~1/476 today) that omit file_globs.
+  const result = spawnSync("git", args, {
+    encoding: "utf8",
+    cwd: REPO_ROOT,
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  if (result.error) {
+    return `(diff unavailable: git spawn failed: ${result.error.message ?? "unknown"})`;
+  }
+  if (result.status !== 0) {
+    return `(diff unavailable: git diff exited ${result.status}: ${result.stderr?.trim() ?? ""})`;
+  }
+  return result.stdout ?? "";
+}
+
+// Lightweight frontmatter splitter. Returns {frontmatter: object|null,
+// body: string} on success, or null if the file has no frontmatter.
+// Pure dependency-free shape (we already use gray-matter elsewhere; this
+// inline parser keeps run-review.mjs's import surface narrow).
+function parseLeafFrontmatter(text) {
+  if (typeof text !== "string" || !text.startsWith("---\n")) return null;
+  const end = text.indexOf("\n---", 4);
+  if (end < 0) return null;
+  const yaml = text.slice(4, end);
+  const body = text.slice(end + 4).replace(/^\n/, "");
+  // We only need to read activation.file_globs (a list of strings under
+  // an `activation:` block). Avoid pulling a full YAML parser at the
+  // run-review.mjs layer; mirror verify-coverage.mjs's tiny scoped
+  // parser. The activate_leaves inline state uses gray-matter for
+  // richer parsing during enumeration; here we only need globs.
+  return { frontmatter: yaml, body };
+}
+
+function extractFileGlobs(yamlText) {
+  if (typeof yamlText !== "string") return [];
+  // Locate the activation: block. The corpus uses a canonical layout —
+  // `activation:` at the top level, then `  file_globs:` indented two
+  // spaces, then bullet items indented four. Mirrors the parser in
+  // scripts/inline-states/verify-coverage.mjs.
+  const activationIdx = yamlText.search(/(^|\n)activation:\s*(\n|$)/);
+  if (activationIdx < 0) return [];
+  const tail = yamlText.slice(activationIdx);
+  // Match the file_globs sub-block.
+  const globsMatch = tail.match(/\n {2}file_globs:\s*\n((?: {4}[^\n]*\n?)*)/);
+  if (!globsMatch) return [];
+  return globsMatch[1]
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("- "))
+    .map((line) => line.slice(2).trim().replace(/^["']|["']$/g, ""))
+    .filter((g) => g.length > 0);
 }
 
 // PR for #76: run-dir as the source of truth.
@@ -370,6 +458,19 @@ export function buildDispatchPromptText(brief, opts = {}) {
     const projectProfile = inputs.project_profile ?? {};
     const changedPaths = Array.isArray(inputs.changed_paths) ? inputs.changed_paths : [];
     const toolResults = Array.isArray(inputs.tool_results) ? inputs.tool_results : [];
+    const fileGlobs = Array.isArray(leaf.file_globs) ? leaf.file_globs : [];
+    // PR for #83: pre-compute the per-leaf filtered diff at brief-stage
+    // time using the leaf's `activation.file_globs[]` (extracted by
+    // enrichBriefWithSpecialistBodies above). The orchestrator no longer
+    // appends anything — the prompt is fully ready to paste. When the
+    // leaf has no globs (extremely rare in the corpus, ~1/476), fall
+    // back to the full diff.
+    //
+    // opts.baseSha / opts.headSha are required to compute the filtered
+    // diff. When absent (e.g., a unit-test invocation that doesn't ship
+    // git refs), emit a placeholder so the test still has a stable
+    // section header to assert against.
+    const filteredDiff = computeFilteredDiff(opts.baseSha, opts.headSha, fileGlobs);
     return [
       promptBody,
       "",
@@ -377,6 +478,7 @@ export function buildDispatchPromptText(brief, opts = {}) {
       `id = ${leaf.id ?? ""}`,
       `path = ${leaf.path ?? ""}`,
       `dimensions = ${JSON.stringify(leaf.dimensions ?? [])}`,
+      `file_globs = ${JSON.stringify(fileGlobs)}`,
       "",
       "--- LEAF BODY ---",
       String(leaf.body ?? ""),
@@ -387,15 +489,8 @@ export function buildDispatchPromptText(brief, opts = {}) {
       "--- CHANGED PATHS ---",
       JSON.stringify(changedPaths, null, 2),
       "",
-      // The runner does NOT pre-compute a per-leaf filtered diff —
-      // that would require reading each leaf's `activation.file_globs`
-      // from frontmatter at brief-build time (a follow-up; tracked
-      // separately). The orchestrator MUST append the filtered diff
-      // below this header before dispatching the Agent. SKILL.md's
-      // dispatch_specialists section names this as the one allowed
-      // form of prompt augmentation.
-      "--- FILTERED DIFF (orchestrator appends below) ---",
-      `(Append: git diff <base>..<head> -- <leaf's activation.file_globs from leaf.body frontmatter, or the full diff if no globs>)`,
+      "--- FILTERED DIFF ---",
+      filteredDiff,
       "",
       // Header reflects what the runner actually emits: ALL tool_results
       // unfiltered. The dispatched specialist can filter itself using
@@ -464,11 +559,29 @@ export function writeSpecialistPromptsToDisk(brief) {
   if (brief.state !== "dispatch_specialists") return;
   const pickedLeaves = brief?.inputs?.picked_leaves;
   if (!Array.isArray(pickedLeaves) || pickedLeaves.length === 0) return;
+  // PR for #83: read base_sha / head_sha from the manifest once so the
+  // per-leaf prompt builder can spawn `git diff` with the leaf's globs
+  // and embed the filtered diff inline. Best-effort: if the manifest
+  // is unreadable for any reason, fall through with null shas — the
+  // prompt then carries a "(diff unavailable)" placeholder rather
+  // than blocking the run.
+  let baseSha = null;
+  let headSha = null;
+  try {
+    const storageRoot = resolveStorageRoot();
+    const manifest = readManifest(brief.run_id, { storageRoot });
+    if (manifest) {
+      baseSha = manifest.base_sha ?? null;
+      headSha = manifest.head_sha ?? null;
+    }
+  } catch {
+    // Best-effort; staged prompt still ships, just with a placeholder.
+  }
   for (const leaf of pickedLeaves) {
     if (!leaf || typeof leaf.id !== "string") continue;
     const promptPath = defaultDispatchPromptPath(brief.run_id, brief.state, leaf.id);
     if (!promptPath) continue;
-    const text = buildDispatchPromptText(brief, { leaf });
+    const text = buildDispatchPromptText(brief, { leaf, baseSha, headSha });
     atomicWriteFile(promptPath, text);
   }
 }

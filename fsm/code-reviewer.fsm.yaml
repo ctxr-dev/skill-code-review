@@ -154,6 +154,39 @@ fsm:
                     minItems: 1
                     items:
                       enum: [file_globs, keyword_matches, structural_signals, escalation_from, focus_only]
+                  # PR for #87: v2 frontmatter fields pre-extracted by
+                  # the activate_leaves inline state so the trim worker
+                  # doesn't have to Read each candidate leaf separately.
+                  # All optional — present only when the corpus leaf
+                  # carries them (post-skill-llm-wiki#27 rebuild).
+                  file_globs:
+                    type: array
+                    items: { type: string }
+                    description: "Authored activation.file_globs[] forwarded so the trim worker can compute per-changed-file coverage without re-reading the leaf."
+                  focus: { type: string }
+                  dimensions: { type: array, items: { type: string } }
+                  audit_surface: { type: array, items: { type: string } }
+                  # `languages` is EITHER the literal string "all" OR
+                  # a NON-EMPTY array of language identifiers (see
+                  # scripts/inline-states/activate-leaves.mjs's
+                  # validateV2Field — empty arrays are dropped from
+                  # the projection).
+                  languages:
+                    oneOf:
+                      - { type: string, enum: [all] }
+                      - { type: array, items: { type: string }, minItems: 1 }
+                  tools:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, purpose]
+                      properties:
+                        name: { type: string, minLength: 1 }
+                        purpose: { type: string, minLength: 1 }
+                        command: { type: string }
+                  tags: { type: array, items: { type: string } }
+                  covers: { type: array, items: { type: string } }
+                  type: { type: string }
             descent_path:
               type: array
               items: { type: string }

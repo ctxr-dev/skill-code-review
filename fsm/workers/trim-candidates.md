@@ -8,7 +8,7 @@ You are the **trim-candidates** worker. Your job: pick **up to** K = `cap` leave
 - `changed_paths` — list of changed files.
 - `tier` — risk tier.
 - `cap` — integer (the upper bound on picks; you may pick fewer than `cap` if fewer candidates are genuinely relevant).
-- `stage_a_candidates` — list of `{id, path, activation_match[]}` from Step 3.
+- `stage_a_candidates` — list of `{id, path, activation_match[], file_globs?, focus?, dimensions?, audit_surface?, languages?, tools?, tags?, covers?, type?}` from Step 3. The `file_globs`, `focus`, `dimensions`, `audit_surface`, `languages`, `tools`, `tags`, `covers`, and `type` fields are pre-extracted from each leaf's frontmatter by the runner (#87) so you should NOT need to open any leaf file. `file_globs[]` is the leaf's `activation.file_globs[]` verbatim — match each pattern against `changed_paths` to determine per-file coverage. Each of these fields is OPTIONAL: a leaf may omit any subset (the runner drops malformed values silently). When `file_globs` is missing, treat the leaf as if its globs were empty and fall back to the `focus` / `covers` content-overlap heuristic for coverage.
 
 ## Task
 
@@ -17,9 +17,14 @@ Pick the K most relevant leaves for this diff. For each pick:
 - Write one sentence explaining what in the diff or `project_profile` triggered the relevance — be specific about file paths or code patterns.
 - Reject leaves whose focus is plausible but not actually triggered by the diff.
 
-Aim for diversity across `dimensions[]` so the cap covers a balanced set across correctness / security / tests / documentation / performance / readability / architecture rather than concentrating on one dimension. (You may need to read each candidate leaf's frontmatter to learn its `dimensions:` and `focus:` — that's allowed; the leaf BODY remains off-limits to you.)
+Aim for diversity across `dimensions[]` so the cap covers a balanced set across correctness / security / tests / documentation / performance / readability / architecture rather than concentrating on one dimension. The `dimensions:` and `focus:` you need are already in `stage_a_candidates[*]` — read them straight from the brief env. Do NOT open the leaf files. (Earlier revisions of this prompt told you to Read each leaf's frontmatter; that is no longer necessary because the runner has pre-extracted everything.)
 
-Coverage rule: every file in `changed_paths` must be covered by ≥ 2 picked leaves, by `file_globs` match OR by content overlap with the leaf's `covers:` / `focus:`. If a file falls below 2-coverage, add the next-most-relevant rejected leaf with a "coverage rescue" justification and record it in `coverage_rescues`.
+Coverage rule: every file in `changed_paths` must be covered by ≥ 2 picked leaves. A leaf "covers" a changed file when EITHER:
+
+- the file's path matches at least one pattern in the leaf's `file_globs[]` (this is the leaf's authored `activation.file_globs[]`, forwarded into `stage_a_candidates[*]` per #87 — match per-file, not just `activation_match`), OR
+- the changed file's path or extension is plausibly addressed by the leaf's `focus:` or `covers:` content.
+
+If a file falls below 2-coverage, add the next-most-relevant rejected leaf with a "coverage rescue" justification and record it in `coverage_rescues`. **Do not** open leaf files — `file_globs[]` plus `focus` / `covers` from `stage_a_candidates[*]` is everything you need.
 
 ## Output (JSON, schema-validated)
 
@@ -63,7 +68,7 @@ Fields:
 - `len(picked_leaves) <= cap`.
 - Every leaf in `stage_a_candidates` appears in EITHER `picked_leaves` OR `rejected_leaves` — no leaf left out.
 - Justifications must be specific. "Looks relevant" is rejected by review.
-- You may read `reviewers.wiki/<path>/<id>.md` frontmatter (top YAML block only) to look up `dimensions:` and `focus:`. Do NOT read leaf body content.
+- The runner has pre-extracted leaf frontmatter (`focus`, `dimensions`, `audit_surface`, etc.) into `stage_a_candidates[*]`. Read those fields from the brief env. You should NOT open the file at `stage_a_candidates[*].path` — opening leaf files at trim time wastes Agent tokens and the orchestrator may flag it as a divergence. Leaf body content is off-limits regardless. (`stage_a_candidates[*].path` is the leaf markdown file's path; it can be either wiki-relative `<sub>/<id>.md` or repo-relative `reviewers.wiki/<sub>/<id>.md`.)
 
 ## Validation will reject
 

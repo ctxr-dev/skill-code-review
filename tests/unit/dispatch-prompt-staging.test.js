@@ -6,7 +6,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 import {
@@ -364,6 +364,48 @@ test("buildDispatchPromptText: per-specialist with opts.shard emits --- THIS SHA
   assert.match(text, /--- FILTERED DIFF ---\n<this shard's diff>/);
   // Output path is the shard-suffixed one.
   assert.match(text, /dispatch_specialists-output-lang-javascript--1\.json/);
+});
+
+test("writeSpecialistPromptsToDisk: re-staging after threshold change cleans up stale OPPOSITE-shape files (#93 round-13)", async () => {
+  // Repro the threshold-change race: stage a leaf in sharded shape
+  // (writes shard-suffixed prompts), then re-stage with different
+  // settings that produce non-sharded output. Without cleanup, the
+  // old shard-suffixed prompts would coexist with the new canonical
+  // prompt and discoverLeafShards' ordering rule would mis-route
+  // (prefer non-sharded → ignore the sharded prompts that still
+  // physically exist). With cleanup, the old files are gone.
+  const { randomBytes } = await import("node:crypto");
+  const runId = `20991231-235959-${randomBytes(4).toString("hex").slice(0, 7)}`;
+  const state = "dispatch_specialists";
+  const leafId = "restage-leaf";
+  const canonicalPath = defaultDispatchPromptPath(runId, state, leafId);
+  const shardPath0 = defaultDispatchPromptPath(runId, state, leafId, 0);
+  const shardPath1 = defaultDispatchPromptPath(runId, state, leafId, 1);
+  const runDir = dirname(dirname(canonicalPath));
+  mkdirSync(dirname(canonicalPath), { recursive: true });
+  try {
+    // Plant a stale sharded layout directly on disk (simulating a
+    // previous staging pass with a low threshold).
+    mkdirSync(dirname(shardPath0), { recursive: true });
+    writeFileSync(shardPath0, "stale shard 0\n");
+    writeFileSync(shardPath1, "stale shard 1\n");
+    // Re-stage. The unit-test invocation produces a placeholder diff
+    // under threshold, so the new shape is non-sharded → cleanup
+    // should remove the stale shard files.
+    writeSpecialistPromptsToDisk({
+      has_worker: true,
+      run_id: runId,
+      state,
+      worker: { role: "specialist", inputs: [], prompt_body: "T" },
+      inputs: { picked_leaves: [{ id: leafId, path: "x/y.md", body: "body", file_globs: ["**/*"] }] },
+    });
+    // Stale shards gone; canonical present.
+    assert.ok(existsSync(canonicalPath), "canonical prompt should be staged");
+    assert.ok(!existsSync(shardPath0), "stale shard 0 prompt should be removed");
+    assert.ok(!existsSync(shardPath1), "stale shard 1 prompt should be removed");
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
+  }
 });
 
 test("writeSpecialistPromptsToDisk: single-shard output keeps the canonical non-sharded prompt path", async () => {

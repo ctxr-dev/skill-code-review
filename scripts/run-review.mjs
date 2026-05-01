@@ -928,6 +928,15 @@ export function writeSpecialistPromptsToDisk(brief) {
     const fileGlobs = Array.isArray(leaf.file_globs) ? leaf.file_globs : [];
     const filteredDiff = computeFilteredDiff(baseSha, headSha, fileGlobs);
     const shards = shardFilteredDiff(filteredDiff);
+    // Before writing, clean up the opposite shape's stale files so
+    // discoverLeafShards never sees both canonical and sharded
+    // prompts for the same leaf at the same time. This matters when
+    // a run is re-staged with a different shard threshold (e.g.
+    // SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES changed) — without
+    // cleanup, the previous shape's files would silently shadow the
+    // new shape and aggregate/pending-id discovery would read the
+    // wrong set.
+    cleanupStalePromptShape(brief.run_id, leaf.id, shards.length === 1);
     if (shards.length === 1) {
       // Common case: one prompt at the existing path shape, preserving
       // backward compatibility for non-sharded leaves.
@@ -960,6 +969,62 @@ export function writeSpecialistPromptsToDisk(brief) {
   // unit tests exercise both in one process and the cache would
   // otherwise return a stale pre-write listing.)
   clearLeafShardsCache();
+}
+
+// Clean up the OPPOSITE prompt shape (and any matching output files)
+// before staging a leaf's new prompts. Closes the
+// re-stage-with-different-threshold race where stale files from a
+// previous threshold's sharding outcome would silently shadow the
+// new shape and confuse discoverLeafShards.
+//
+//   willBeNonSharded = true  → delete `dispatch_specialists-prompt-<leaf>--<n>.md`
+//                              and `dispatch_specialists-output-<leaf>--<n>.json`
+//                              for every n that exists on disk.
+//   willBeNonSharded = false → delete `dispatch_specialists-prompt-<leaf>.md`
+//                              and `dispatch_specialists-output-<leaf>.json`
+//                              if they exist.
+//
+// Best-effort: rm failures are swallowed (these are derivative
+// artefacts; the primary write is the source of truth).
+function cleanupStalePromptShape(runId, leafId, willBeNonSharded) {
+  const samplePromptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leafId);
+  if (!samplePromptPath) return;
+  const dir = dirname(samplePromptPath);
+  if (willBeNonSharded) {
+    // Removing shard-suffixed files. Enumerate to pick up any N.
+    let entries;
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+    const promptPrefix = `dispatch_specialists-prompt-${leafId}--`;
+    const outputPrefix = `dispatch_specialists-output-${leafId}--`;
+    for (const ent of entries) {
+      const matchPrompt = ent.startsWith(promptPrefix) && ent.endsWith(".md") && /^\d+$/.test(ent.slice(promptPrefix.length, -".md".length));
+      const matchOutput = ent.startsWith(outputPrefix) && ent.endsWith(".json") && /^\d+$/.test(ent.slice(outputPrefix.length, -".json".length));
+      if (matchPrompt || matchOutput) {
+        try {
+          rmSync(join(dir, ent), { force: true });
+        } catch {
+          // ignore — best-effort cleanup
+        }
+      }
+    }
+  } else {
+    // Removing the canonical (non-sharded) files.
+    const canonicalPrompt = samplePromptPath;
+    const canonicalOutput = defaultSpecialistOutputPath(runId, leafId);
+    for (const p of [canonicalPrompt, canonicalOutput]) {
+      if (p && existsSync(p)) {
+        try {
+          rmSync(p, { force: true });
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
 }
 
 // Per-process cache of workers/ directory listings keyed by absolute

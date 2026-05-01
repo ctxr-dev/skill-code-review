@@ -654,6 +654,50 @@ function isValidLeafId(leafId) {
   return true;
 }
 
+// Shared parser for the two CLI modes that accept a leaf-id with an
+// optional shard suffix (--print-dispatch-prompt and
+// --print-agent-shim-prompt). The leaf-id can encode the shard via
+// `<leaf>--<idx>` (the format --print-pending-leaf-ids emits) OR the
+// caller can pass --shard-idx explicitly. Combining both forms works
+// when the values agree; mismatched values are rejected.
+//
+// Returns { leafId, shardIdx } on success (shardIdx may be null).
+// Calls fail() on any validation error — the calling CLI mode is
+// expected to be the entry point, so a hard exit is the right move.
+//
+// Inputs:
+//   - leafIdArg:    the raw --leaf-id value (or undefined)
+//   - shardIdxArg:  the raw --shard-idx value (or undefined)
+//   - cliName:      e.g. "--print-dispatch-prompt", used in error messages
+function parseLeafIdAndShardIdx({ leafIdArg, shardIdxArg, cliName }) {
+  if (typeof leafIdArg !== "string" || leafIdArg.length === 0) {
+    fail(`${cliName}: --leaf-id is required`);
+  }
+  const leafSuffixMatch = leafIdArg.match(/^([a-z][a-z0-9-]*?)--(\d+)$/);
+  if (shardIdxArg !== undefined) {
+    if (typeof shardIdxArg !== "string" || !/^\d+$/.test(shardIdxArg)) {
+      fail(
+        `${cliName}: --shard-idx must be a non-negative integer; got: ${JSON.stringify(shardIdxArg)}`,
+      );
+    }
+    const shardIdx = Number.parseInt(shardIdxArg, 10);
+    if (leafSuffixMatch) {
+      const suffixIdx = Number.parseInt(leafSuffixMatch[2], 10);
+      if (suffixIdx !== shardIdx) {
+        fail(
+          `${cliName}: --leaf-id "${leafIdArg}" encodes shard ${suffixIdx} but --shard-idx is ${shardIdx}; pass one form or matching values`,
+        );
+      }
+      return { leafId: leafSuffixMatch[1], shardIdx };
+    }
+    return { leafId: leafIdArg, shardIdx };
+  }
+  if (leafSuffixMatch) {
+    return { leafId: leafSuffixMatch[1], shardIdx: Number.parseInt(leafSuffixMatch[2], 10) };
+  }
+  return { leafId: leafIdArg, shardIdx: null };
+}
+
 export function defaultDispatchPromptPath(runId, state, leafId, shardIdx = null) {
   if (!runId) return null;
   if (!isSafeStateSegment(state)) return null;
@@ -2327,35 +2371,19 @@ async function main() {
     // For dispatch_specialists, accept either --shard-idx <N> or a
     // <leaf-id>--<N> suffix on the --leaf-id value (so the
     // orchestrator can pass --print-pending-leaf-ids output verbatim).
-    // Combining the two — --leaf-id "foo--3" --shard-idx 3 — works
-    // when the values agree; a mismatch is rejected.
+    // The shared parseLeafIdAndShardIdx helper handles both forms,
+    // including the combined "<leaf>--<idx> + --shard-idx <idx>"
+    // case (rejected when the values mismatch).
     let resolvedLeafId = leafId;
     let resolvedShardIdx = null;
     if (currentState === "dispatch_specialists") {
-      const leafSuffixMatch = typeof leafId === "string"
-        ? leafId.match(/^([a-z][a-z0-9-]*?)--(\d+)$/)
-        : null;
-      if (args["shard-idx"] !== undefined) {
-        if (typeof args["shard-idx"] !== "string" || !/^\d+$/.test(args["shard-idx"])) {
-          fail(
-            `--print-dispatch-prompt: --shard-idx must be a non-negative integer; got: ${JSON.stringify(args["shard-idx"])}`,
-          );
-        }
-        resolvedShardIdx = Number.parseInt(args["shard-idx"], 10);
-        if (leafSuffixMatch) {
-          const suffixIdx = Number.parseInt(leafSuffixMatch[2], 10);
-          if (suffixIdx !== resolvedShardIdx) {
-            fail(
-              `--print-dispatch-prompt: --leaf-id "${leafId}" encodes shard ${suffixIdx} but --shard-idx is ${resolvedShardIdx}; pass one form or matching values`,
-              { run_id: runId, leaf_id: leafId, shard_idx: resolvedShardIdx },
-            );
-          }
-          resolvedLeafId = leafSuffixMatch[1];
-        }
-      } else if (leafSuffixMatch) {
-        resolvedLeafId = leafSuffixMatch[1];
-        resolvedShardIdx = Number.parseInt(leafSuffixMatch[2], 10);
-      }
+      const parsed = parseLeafIdAndShardIdx({
+        leafIdArg: leafId,
+        shardIdxArg: args["shard-idx"],
+        cliName: "--print-dispatch-prompt",
+      });
+      resolvedLeafId = parsed.leafId;
+      resolvedShardIdx = parsed.shardIdx;
     }
     const promptPath = defaultDispatchPromptPath(
       runId,
@@ -2468,6 +2496,20 @@ async function main() {
         if (outPath && !existsSync(outPath)) pending.push(leaf.id);
       } else if (shards.length > 0) {
         for (const shardIdx of shards) {
+          // Only emit a shard as pending when BOTH its prompt is
+          // staged AND its output is missing. discoverLeafShards
+          // normalises observed indices to a contiguous [0..max]
+          // range to surface partial-staging gaps as failed rows in
+          // the aggregator. Without this prompt-exists check,
+          // --print-pending-leaf-ids would emit shard ids for
+          // gaps (e.g. shard 1 when prompts exist only for 0 and 2),
+          // and the orchestrator's --print-agent-shim-prompt call
+          // for that id would hard-fail (no prompt file), wedging
+          // the batch loop. The aggregator already surfaces the
+          // missing-prompt case as a "failed" row on --continue,
+          // so dropping un-staged shards here is the right move.
+          const promptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leaf.id, shardIdx);
+          if (!promptPath || !existsSync(promptPath)) continue;
           const outPath = defaultSpecialistOutputPath(runId, leaf.id, shardIdx);
           if (outPath && !existsSync(outPath)) pending.push(`${leaf.id}--${shardIdx}`);
         }
@@ -2501,37 +2543,17 @@ async function main() {
     if (typeof leafId !== "string" || leafId.length === 0) {
       fail("--print-agent-shim-prompt requires --leaf-id <id>");
     }
-    // Two ways to express a shard:
-    //   (a) --leaf-id <leaf>--<idx>   (the format --print-pending-leaf-ids
-    //                                  emits — orchestrator can pipe it
-    //                                  through verbatim).
-    //   (b) --leaf-id <leaf> --shard-idx <idx>  (explicit form).
-    // Both forms produce the same result. Combining them — passing
-    // --leaf-id "foo--3" AND --shard-idx 3 — works as long as the
-    // shard idx matches; mismatches are rejected. Combining --leaf-id
-    // "foo--3" with --shard-idx 5 is a contradiction.
-    const leafSuffixMatch = leafId.match(/^([a-z][a-z0-9-]*?)--(\d+)$/);
-    let resolvedLeafId = leafId;
-    let resolvedShardIdx = null;
-    if (args["shard-idx"] !== undefined) {
-      if (typeof args["shard-idx"] !== "string" || !/^\d+$/.test(args["shard-idx"])) {
-        fail("--shard-idx requires a non-negative integer");
-      }
-      resolvedShardIdx = Number.parseInt(args["shard-idx"], 10);
-      if (leafSuffixMatch) {
-        const suffixIdx = Number.parseInt(leafSuffixMatch[2], 10);
-        if (suffixIdx !== resolvedShardIdx) {
-          fail(
-            `--print-agent-shim-prompt: --leaf-id "${leafId}" encodes shard ${suffixIdx} but --shard-idx is ${resolvedShardIdx}; pass one form or matching values`,
-          );
-        }
-        resolvedLeafId = leafSuffixMatch[1];
-      }
-    } else if (leafSuffixMatch) {
-      resolvedLeafId = leafSuffixMatch[1];
-      resolvedShardIdx = Number.parseInt(leafSuffixMatch[2], 10);
-    }
-    return printShimForParsedId(runId, resolvedLeafId, resolvedShardIdx);
+    // The leaf-id may encode the shard via `<leaf>--<idx>` (the
+    // format --print-pending-leaf-ids emits — orchestrator pipes it
+    // through verbatim) OR the caller can pass --shard-idx
+    // explicitly. The shared parseLeafIdAndShardIdx helper handles
+    // both forms, including the combined case.
+    const parsed = parseLeafIdAndShardIdx({
+      leafIdArg: leafId,
+      shardIdxArg: args["shard-idx"],
+      cliName: "--print-agent-shim-prompt",
+    });
+    return printShimForParsedId(runId, parsed.leafId, parsed.shardIdx);
   }
 
   fail(

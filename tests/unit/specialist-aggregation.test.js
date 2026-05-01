@@ -438,6 +438,30 @@ test("discoverLeafShards: partial staging (shards 0 and 2, gap at 1) reports the
   }
 });
 
+test("discoverLeafShards: contiguous-range expansion is purely informational; pending-list filter must drop un-staged ids", () => {
+  // Companion test to "partial-staged shards surface the gap as a
+  // failed leaf row" below: discoverLeafShards normalises [0, 2] to
+  // [0, 1, 2] so the aggregator emits a failed row for shard 1's
+  // missing output. But the orchestrator's --print-pending-leaf-ids
+  // must NOT include shard 1 in the pending list — its prompt
+  // doesn't exist, and --print-agent-shim-prompt would hard-fail
+  // on dispatch. This locks down that the contiguity expansion is
+  // an aggregator-side concept; the pending-list code path filters
+  // by prompt-file existence (tested via the integration smoke
+  // since the pending list is a CLI mode, not a function).
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "gappy", 0);
+    // shard 1 prompt deliberately missing
+    writePrompt(runId, "gappy", 2);
+    // discoverLeafShards still returns the full range so the
+    // aggregator can synthesize the missing-shard failed row.
+    assert.deepEqual(discoverLeafShards(runId, "gappy"), [0, 1, 2]);
+  } finally {
+    cleanup();
+  }
+});
+
 test("aggregateSpecialistOutputs: partial-staged shards surface the gap as a failed leaf row", () => {
   // End-to-end: prompts staged for shards 0 and 2 (gap at 1), outputs
   // written for all three present (so the bug being closed is the

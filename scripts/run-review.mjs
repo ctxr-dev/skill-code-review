@@ -971,18 +971,24 @@ export function writeSpecialistPromptsToDisk(brief) {
   clearLeafShardsCache();
 }
 
-// Clean up the OPPOSITE prompt shape (and any matching output files)
-// before staging a leaf's new prompts. Closes the
-// re-stage-with-different-threshold race where stale files from a
-// previous threshold's sharding outcome would silently shadow the
-// new shape and confuse discoverLeafShards.
+// Clean up the OPPOSITE prompt shape's PROMPT files (only — never
+// delete output files) before staging a leaf's new prompts. Closes
+// the re-stage-with-different-threshold race where stale prompt
+// files from a previous threshold's sharding outcome would silently
+// shadow the new shape and confuse discoverLeafShards.
+//
+// Output files are preserved deliberately. They carry already-produced
+// specialist findings; deleting them on re-stage would force
+// unnecessary re-dispatch and lose audit artifacts. After
+// re-staging, the prompt set determines which outputs are still
+// "valid" (matching the new shape); orphan outputs from the old
+// shape can be left in place — the aggregator only reads outputs
+// whose paths match the present prompt shape, so they're harmless.
 //
 //   willBeNonSharded = true  → delete `dispatch_specialists-prompt-<leaf>--<n>.md`
-//                              and `dispatch_specialists-output-<leaf>--<n>.json`
 //                              for every n that exists on disk.
 //   willBeNonSharded = false → delete `dispatch_specialists-prompt-<leaf>.md`
-//                              and `dispatch_specialists-output-<leaf>.json`
-//                              if they exist.
+//                              if it exists.
 //
 // Best-effort: rm failures are swallowed (these are derivative
 // artefacts; the primary write is the source of truth).
@@ -991,7 +997,7 @@ function cleanupStalePromptShape(runId, leafId, willBeNonSharded) {
   if (!samplePromptPath) return;
   const dir = dirname(samplePromptPath);
   if (willBeNonSharded) {
-    // Removing shard-suffixed files. Enumerate to pick up any N.
+    // Removing shard-suffixed prompt files. Enumerate to pick up any N.
     let entries;
     try {
       entries = readdirSync(dir);
@@ -999,11 +1005,9 @@ function cleanupStalePromptShape(runId, leafId, willBeNonSharded) {
       return;
     }
     const promptPrefix = `dispatch_specialists-prompt-${leafId}--`;
-    const outputPrefix = `dispatch_specialists-output-${leafId}--`;
     for (const ent of entries) {
       const matchPrompt = ent.startsWith(promptPrefix) && ent.endsWith(".md") && /^\d+$/.test(ent.slice(promptPrefix.length, -".md".length));
-      const matchOutput = ent.startsWith(outputPrefix) && ent.endsWith(".json") && /^\d+$/.test(ent.slice(outputPrefix.length, -".json".length));
-      if (matchPrompt || matchOutput) {
+      if (matchPrompt) {
         try {
           rmSync(join(dir, ent), { force: true });
         } catch {
@@ -1012,16 +1016,12 @@ function cleanupStalePromptShape(runId, leafId, willBeNonSharded) {
       }
     }
   } else {
-    // Removing the canonical (non-sharded) files.
-    const canonicalPrompt = samplePromptPath;
-    const canonicalOutput = defaultSpecialistOutputPath(runId, leafId);
-    for (const p of [canonicalPrompt, canonicalOutput]) {
-      if (p && existsSync(p)) {
-        try {
-          rmSync(p, { force: true });
-        } catch {
-          // ignore
-        }
+    // Removing the canonical (non-sharded) prompt file only.
+    if (samplePromptPath && existsSync(samplePromptPath)) {
+      try {
+        rmSync(samplePromptPath, { force: true });
+      } catch {
+        // ignore
       }
     }
   }
@@ -1328,7 +1328,14 @@ function sanitiseSpecialistRow(row, authoritativeId) {
     tokens_out: finite(row.tokens_out),
     findings: findingsOk ? row.findings : [],
   };
-  if (skipReason !== null) out.skip_reason = skipReason;
+  // Drop skip_reason for status=completed: keeping a stale value
+  // (e.g., a worker that wrote both completed AND a skip_reason
+  // describing a previous attempt) would be misleading in the
+  // report. The schema doesn't require skip_reason for completed,
+  // so dropping is safe.
+  if (skipReason !== null && finalStatus !== "completed") {
+    out.skip_reason = skipReason;
+  }
   return out;
 }
 

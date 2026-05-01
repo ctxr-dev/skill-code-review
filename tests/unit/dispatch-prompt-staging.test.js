@@ -366,14 +366,16 @@ test("buildDispatchPromptText: per-specialist with opts.shard emits --- THIS SHA
   assert.match(text, /dispatch_specialists-output-lang-javascript--1\.json/);
 });
 
-test("writeSpecialistPromptsToDisk: re-staging after threshold change cleans up stale OPPOSITE-shape files (#93 round-13)", async () => {
-  // Repro the threshold-change race: stage a leaf in sharded shape
-  // (writes shard-suffixed prompts), then re-stage with different
-  // settings that produce non-sharded output. Without cleanup, the
-  // old shard-suffixed prompts would coexist with the new canonical
-  // prompt and discoverLeafShards' ordering rule would mis-route
-  // (prefer non-sharded → ignore the sharded prompts that still
-  // physically exist). With cleanup, the old files are gone.
+test("writeSpecialistPromptsToDisk: re-staging after threshold change removes stale OPPOSITE-shape PROMPT files but preserves OUTPUT files (#93 round-14)", async () => {
+  // Repro the threshold-change race: stale shard-suffixed prompts
+  // would otherwise coexist with the new canonical prompt and
+  // confuse discoverLeafShards. Cleanup removes ONLY prompt files;
+  // output files (specialist findings) are preserved as audit
+  // artifacts even when their shape no longer matches the staged
+  // prompts. Re-dispatch will produce new outputs under the new
+  // shape; the orphan outputs from the old shape live alongside
+  // them harmlessly (the aggregator only reads outputs whose paths
+  // match the current prompt shape).
   const { randomBytes } = await import("node:crypto");
   const runId = `20991231-235959-${randomBytes(4).toString("hex").slice(0, 7)}`;
   const state = "dispatch_specialists";
@@ -381,17 +383,23 @@ test("writeSpecialistPromptsToDisk: re-staging after threshold change cleans up 
   const canonicalPath = defaultDispatchPromptPath(runId, state, leafId);
   const shardPath0 = defaultDispatchPromptPath(runId, state, leafId, 0);
   const shardPath1 = defaultDispatchPromptPath(runId, state, leafId, 1);
-  const runDir = dirname(dirname(canonicalPath));
-  mkdirSync(dirname(canonicalPath), { recursive: true });
+  // The output files we want PRESERVED across re-staging.
+  const dir = dirname(canonicalPath);
+  const shardOutputPath0 = `${dir}/dispatch_specialists-output-${leafId}--0.json`;
+  const shardOutputPath1 = `${dir}/dispatch_specialists-output-${leafId}--1.json`;
+  const runDir = dirname(dir);
+  mkdirSync(dir, { recursive: true });
   try {
-    // Plant a stale sharded layout directly on disk (simulating a
-    // previous staging pass with a low threshold).
-    mkdirSync(dirname(shardPath0), { recursive: true });
-    writeFileSync(shardPath0, "stale shard 0\n");
-    writeFileSync(shardPath1, "stale shard 1\n");
-    // Re-stage. The unit-test invocation produces a placeholder diff
-    // under threshold, so the new shape is non-sharded → cleanup
-    // should remove the stale shard files.
+    // Plant a stale sharded layout (prompts AND outputs, simulating
+    // a previous staging pass that ran to completion with a low
+    // threshold).
+    writeFileSync(shardPath0, "stale shard 0 prompt\n");
+    writeFileSync(shardPath1, "stale shard 1 prompt\n");
+    writeFileSync(shardOutputPath0, '{"id":"restage-leaf","status":"completed","findings":[]}');
+    writeFileSync(shardOutputPath1, '{"id":"restage-leaf","status":"completed","findings":[]}');
+    // Re-stage. Single-shard now (placeholder diff under threshold)
+    // → cleanup should remove stale shard PROMPTS but PRESERVE
+    // shard outputs (audit-trail principle).
     writeSpecialistPromptsToDisk({
       has_worker: true,
       run_id: runId,
@@ -399,10 +407,13 @@ test("writeSpecialistPromptsToDisk: re-staging after threshold change cleans up 
       worker: { role: "specialist", inputs: [], prompt_body: "T" },
       inputs: { picked_leaves: [{ id: leafId, path: "x/y.md", body: "body", file_globs: ["**/*"] }] },
     });
-    // Stale shards gone; canonical present.
+    // Canonical present; stale shard prompts gone; stale shard
+    // outputs preserved.
     assert.ok(existsSync(canonicalPath), "canonical prompt should be staged");
     assert.ok(!existsSync(shardPath0), "stale shard 0 prompt should be removed");
     assert.ok(!existsSync(shardPath1), "stale shard 1 prompt should be removed");
+    assert.ok(existsSync(shardOutputPath0), "stale shard 0 output must be preserved (audit-trail)");
+    assert.ok(existsSync(shardOutputPath1), "stale shard 1 output must be preserved (audit-trail)");
   } finally {
     rmSync(runDir, { recursive: true, force: true });
   }

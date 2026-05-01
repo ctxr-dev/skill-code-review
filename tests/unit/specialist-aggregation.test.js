@@ -379,6 +379,34 @@ test("aggregateSpecialistOutputs: non-array findings → row downgraded to faile
   }
 });
 
+test("aggregateSpecialistOutputs: skip_reason is dropped for status=completed (#93 round-14)", () => {
+  // sanitiseSpecialistRow's docstring says skip_reason is dropped
+  // for status=completed (a stale value would be misleading in the
+  // report). The test locks the contract down: a worker that wrote
+  // BOTH status=completed AND skip_reason has skip_reason removed
+  // by the time it lands in specialist_outputs[].
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "completed-with-stale-reason");
+    writeOutput(runId, "completed-with-stale-reason", null, {
+      id: "completed-with-stale-reason",
+      status: "completed",
+      runtime_ms: 100,
+      tokens_in: 100,
+      tokens_out: 50,
+      findings: [],
+      skip_reason: "stale value from a previous attempt",
+    });
+    const out = aggregateSpecialistOutputs(brief(runId, ["completed-with-stale-reason"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.status, "completed");
+    assert.equal(row.skip_reason, undefined, "skip_reason must be dropped for status=completed");
+  } finally {
+    cleanup();
+  }
+});
+
 test("aggregateSpecialistOutputs: non-integer numeric fields are floored to integers (#93 round-12)", () => {
   // FSM response_schema declares runtime_ms / tokens_in / tokens_out
   // as integers. A worker that wrote 1.5 would otherwise pass

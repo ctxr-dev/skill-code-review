@@ -1082,37 +1082,13 @@ export function aggregateSpecialistOutputs(brief) {
     if (!leaf || typeof leaf.id !== "string") continue;
     const shards = discoverLeafShards(runId, leaf.id);
     if (shards === null) {
-      // Non-sharded leaf.
+      // Non-sharded leaf. sanitiseSpecialistRow normalises status,
+      // ensures findings is an array, sanitises numeric fields, and
+      // synthesises skip_reason when required — guarantees the row
+      // matches the FSM's specialist_outputs[*] schema.
       const outputPath = defaultSpecialistOutputPath(runId, leaf.id);
       const row = readSpecialistOutputOrFail(outputPath, leaf.id, null);
-      // Apply the same status normalisation as the sharded path. A
-      // worker that writes status="weird" must NOT propagate that
-      // value into specialist_outputs[] (the FSM's response_schema
-      // would reject it post-hoc); flatten to "failed" with the
-      // typo recorded in skip_reason for audit.
-      const normalised = normaliseShardStatus(row.status);
-      if (normalised !== row.status) {
-        const detail = `worker wrote status "${String(row.status)}"; not in {completed, failed, skipped}; treated as failed`;
-        out.push({
-          ...row,
-          status: "failed",
-          skip_reason: row.skip_reason ? `${row.skip_reason}; ${detail}` : detail,
-        });
-      } else {
-        // FSM schema requires skip_reason when status === "skipped".
-        // A worker that wrote status="skipped" without skip_reason
-        // would otherwise fail post-hoc schema validation. Synthesize
-        // a default reason naming the omission so the aggregate
-        // commits cleanly and the report shows what happened.
-        if (row.status === "skipped" && (typeof row.skip_reason !== "string" || row.skip_reason.length === 0)) {
-          out.push({
-            ...row,
-            skip_reason: "worker wrote status=skipped without skip_reason",
-          });
-        } else {
-          out.push(row);
-        }
-      }
+      out.push(sanitiseSpecialistRow(row, leaf.id));
       continue;
     }
     if (shards.length === 0) {
@@ -1228,24 +1204,79 @@ function normaliseShardStatus(rawStatus) {
   return "failed";
 }
 
+// Sanitise a worker-produced specialist row to match the FSM
+// response_schema for `specialist_outputs[*]`:
+//   - `id`             → stamped to authoritativeId (the picked_leaves
+//                        id; runner-side, not worker-side).
+//   - `status`         → normaliseShardStatus (out-of-vocabulary →
+//                        failed).
+//   - `findings`       → must be an array; non-array → [], status
+//                        downgraded to failed.
+//   - `runtime_ms` /
+//     `tokens_in` /
+//     `tokens_out`     → must be a finite non-negative number; missing
+//                        / non-finite / negative → 0.
+//   - `skip_reason`    → required when final status is skipped; if
+//                        absent in that case, synthesise a default.
+//                        For status=failed, kept as-is (encouraged but
+//                        not required). For status=completed, dropped.
+//
+// Any sanitisation that changed worker intent (status downgrade,
+// findings reset) appends a structured note to skip_reason so the
+// report shows what the worker actually wrote.
+function sanitiseSpecialistRow(row, authoritativeId) {
+  const issues = [];
+  const normalised = normaliseShardStatus(row.status);
+  if (normalised !== row.status) {
+    issues.push(`worker wrote status "${String(row.status)}"; not in {completed, failed, skipped}; treated as failed`);
+  }
+  const findingsOk = Array.isArray(row.findings);
+  if (!findingsOk) {
+    issues.push(`worker wrote findings=${describeForError(row.findings)}; expected array; treated as failed`);
+  }
+  let finalStatus = normalised;
+  if (issues.length > 0) finalStatus = "failed";
+  const finite = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
+  let skipReason = typeof row.skip_reason === "string" && row.skip_reason.length > 0
+    ? row.skip_reason
+    : null;
+  if (finalStatus === "skipped" && skipReason === null) {
+    skipReason = "worker wrote status=skipped without skip_reason";
+  }
+  if (issues.length > 0) {
+    const detail = issues.join("; ");
+    skipReason = skipReason ? `${skipReason}; ${detail}` : detail;
+  }
+  const out = {
+    id: authoritativeId,
+    status: finalStatus,
+    runtime_ms: finite(row.runtime_ms),
+    tokens_in: finite(row.tokens_in),
+    tokens_out: finite(row.tokens_out),
+    findings: findingsOk ? row.findings : [],
+  };
+  if (skipReason !== null) out.skip_reason = skipReason;
+  return out;
+}
+
+function describeForError(value) {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (Array.isArray(value)) return "array"; // shouldn't occur in this path
+  return typeof value;
+}
+
 function mergeShardedSpecialistOutputs(runId, leafId, shardIndices) {
   const shardRows = shardIndices.map((idx) => {
     const outputPath = defaultSpecialistOutputPath(runId, leafId, idx);
     const row = readSpecialistOutputOrFail(outputPath, leafId, idx);
-    // Normalise status here so downstream merging and skip_reason
-    // construction sees only legal values. If the worker wrote
-    // status="weird", record the original value in skip_reason so
-    // the report still surfaces what happened.
-    const normalised = normaliseShardStatus(row.status);
-    if (normalised !== row.status) {
-      const detail = `shard ${idx} status "${String(row.status)}" not in {completed, failed, skipped}; treated as failed`;
-      return {
-        ...row,
-        status: "failed",
-        skip_reason: row.skip_reason ? `${row.skip_reason}; ${detail}` : detail,
-      };
-    }
-    return row;
+    // Sanitise each shard with the same helper as the non-sharded
+    // path so status / findings / numeric-field validation is
+    // consistent across both code paths. The outer
+    // skip_reason-aggregation loop below adds the "shard <idx>:"
+    // prefix; sanitiseSpecialistRow itself doesn't know about
+    // shards, which avoids double-prefixing in the merged output.
+    return sanitiseSpecialistRow(row, leafId);
   });
   // Status precedence: any failed → failed; every skipped → skipped;
   // otherwise completed. (A mix of completed and skipped is "completed"

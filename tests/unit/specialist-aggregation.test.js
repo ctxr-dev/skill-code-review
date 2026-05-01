@@ -293,11 +293,16 @@ test("aggregateSpecialistOutputs: non-sharded leaf with status=skipped but no sk
   }
 });
 
-test("aggregateSpecialistOutputs: sharded leaf where every shard skipped without reason gets a default reason (#93 round-7)", () => {
+test("aggregateSpecialistOutputs: sharded leaf where every shard skipped without reason yields a non-empty merged skip_reason (#93 round-7)", () => {
   // Sharded equivalent: every shard returned status=skipped but no
   // shard provided skip_reason. The merged leaf's status is
-  // "skipped"; without the synthesized reason the FSM schema would
-  // reject the aggregate at commit time.
+  // "skipped"; without a synthesized reason the FSM schema would
+  // reject the aggregate at commit time. sanitiseSpecialistRow now
+  // synthesises a per-shard "worker wrote status=skipped without
+  // skip_reason" default; the merger prefixes each with "shard <idx>:"
+  // and joins them. The test asserts the merged skip_reason is
+  // present and non-empty (specific wording is implementation
+  // detail).
   const { runId, cleanup } = freshRun();
   try {
     for (const idx of [0, 1]) {
@@ -317,7 +322,10 @@ test("aggregateSpecialistOutputs: sharded leaf where every shard skipped without
     const row = out.specialist_outputs[0];
     assert.equal(row.status, "skipped");
     assert.equal(typeof row.skip_reason, "string");
-    assert.match(row.skip_reason, /every shard reported status=skipped/);
+    assert.ok(row.skip_reason.length > 0, "merged skip_reason must be non-empty for status=skipped");
+    // Each shard's per-shard prefix appears in the merged reason.
+    assert.match(row.skip_reason, /shard 0/);
+    assert.match(row.skip_reason, /shard 1/);
   } finally {
     cleanup();
   }
@@ -338,6 +346,61 @@ test("aggregateSpecialistOutputs: non-sharded leaf with invalid status is normal
     const row = out.specialist_outputs[0];
     assert.equal(row.status, "failed");
     assert.match(row.skip_reason, /weird-status/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: non-array findings → row downgraded to failed with structured skip_reason (#93 round-10)", () => {
+  // FSM schema requires findings to be an array. A worker that wrote
+  // findings: null (or a string, or undefined) would otherwise
+  // propagate into specialist_outputs[] and fail post-hoc schema
+  // validation. sanitiseSpecialistRow downgrades the row to failed
+  // and records what the worker wrote in skip_reason.
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "bad-findings-leaf");
+    writeOutput(runId, "bad-findings-leaf", null, {
+      id: "bad-findings-leaf",
+      status: "completed",
+      runtime_ms: 100,
+      tokens_in: 100,
+      tokens_out: 50,
+      findings: null, // wrong shape
+    });
+    const out = aggregateSpecialistOutputs(brief(runId, ["bad-findings-leaf"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.status, "failed");
+    assert.deepEqual(row.findings, []);
+    assert.match(row.skip_reason, /findings=null/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: missing/non-finite numeric fields default to 0 (#93 round-10)", () => {
+  // runtime_ms / tokens_in / tokens_out are typed as integers in the
+  // FSM schema. A worker that omits them or writes NaN / Infinity
+  // would otherwise fail schema validation. sanitiseSpecialistRow
+  // defaults each to 0.
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "missing-numerics-leaf");
+    writeOutput(runId, "missing-numerics-leaf", null, {
+      id: "missing-numerics-leaf",
+      status: "completed",
+      // runtime_ms intentionally missing
+      tokens_in: NaN,
+      tokens_out: -5,
+      findings: [],
+    });
+    const out = aggregateSpecialistOutputs(brief(runId, ["missing-numerics-leaf"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.runtime_ms, 0);
+    assert.equal(row.tokens_in, 0);
+    assert.equal(row.tokens_out, 0);
   } finally {
     cleanup();
   }

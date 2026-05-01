@@ -2242,10 +2242,24 @@ async function main() {
             // status-based gate caused legitimate failed rows to be
             // dropped and `--continue` to fail with "default outputs
             // file not found" even when output files existed.
-            const haveSomeOnDiskOutput = anySpecialistOutputOnDisk(brief);
-            if (haveSomeOnDiskOutput) {
-              const aggregate = aggregateSpecialistOutputs(brief);
-              atomicWriteFile(outputsFile, JSON.stringify(aggregate, null, 2));
+            //
+            // Both anySpecialistOutputOnDisk and aggregateSpecialistOutputs
+            // call discoverLeafShards, which throws on the corruption
+            // case where BOTH canonical AND sharded prompt files exist
+            // for the same leaf. Catch and route through fail(err.message,
+            // {run_id}) so the CLI emits a clean structured error rather
+            // than the generic "unhandled error: <stack>" wrapper.
+            try {
+              const haveSomeOnDiskOutput = anySpecialistOutputOnDisk(brief);
+              if (haveSomeOnDiskOutput) {
+                const aggregate = aggregateSpecialistOutputs(brief);
+                atomicWriteFile(outputsFile, JSON.stringify(aggregate, null, 2));
+              }
+            } catch (err) {
+              fail(
+                `--continue: ${err?.message ?? String(err)}`,
+                { run_id: runId, current_state: currentState },
+              );
             }
           }
         }
@@ -2724,7 +2738,22 @@ async function main() {
     const pending = [];
     for (const leaf of pickedLeaves) {
       if (!leaf || typeof leaf.id !== "string") continue;
-      const shards = discoverLeafShards(runId, leaf.id);
+      // discoverLeafShards throws on the corruption case where BOTH
+      // canonical AND sharded prompt files exist for the leaf. Catch
+      // here and route through fail(err.message, {run_id, leaf_id})
+      // so the CLI emits a clean structured error rather than the
+      // generic "unhandled error: <stack>" wrapper. The orchestrator
+      // can inspect the structured payload and abort the batch loop
+      // cleanly rather than trying to parse a stack trace.
+      let shards;
+      try {
+        shards = discoverLeafShards(runId, leaf.id);
+      } catch (err) {
+        fail(
+          `--print-pending-leaf-ids: ${err?.message ?? String(err)}`,
+          { run_id: runId, leaf_id: leaf.id },
+        );
+      }
       if (shards === null) {
         // Non-sharded leaf.
         const outPath = defaultSpecialistOutputPath(runId, leaf.id);

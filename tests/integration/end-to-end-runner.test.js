@@ -14,7 +14,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -602,4 +602,34 @@ test("--print-pending-leaf-ids and --print-agent-shim-prompt: end-to-end CLI con
   const wrongStateShimPayload = JSON.parse(wrongStateShim.stdout);
   assert.match(wrongStateShimPayload.message, /dispatch_specialists/);
   assert.match(wrongStateShimPayload.message, /scan_project/);
+
+  // discoverLeafShards corruption case (BOTH canonical AND sharded
+  // prompts coexist on disk): --print-pending-leaf-ids must surface
+  // the throw as a CLEAN structured fail() payload, NOT a generic
+  // "unhandled error: <stack>" wrapper. Restore manifest to
+  // dispatch_specialists and plant a corruption: cli-alpha already has
+  // a canonical prompt; add a shard-suffixed prompt so both shapes
+  // exist for the same leaf.
+  realManifest.current_state = "dispatch_specialists";
+  writeFileSync(manifestPath, JSON.stringify(realManifest));
+  // Drop cli-alpha's output so it would otherwise be pending.
+  rmSync(join(workersDir, "dispatch_specialists-output-cli-alpha.json"), { force: true });
+  // Plant a stale shard prompt to force the both-shapes corruption.
+  writeFileSync(join(workersDir, "dispatch_specialists-prompt-cli-alpha--0.md"), "stale\n");
+  const corrupt = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-pending-leaf-ids", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.notEqual(corrupt.status, 0, "--print-pending-leaf-ids on corrupted prompt state must hard-fail");
+  // The CLI must emit a parseable JSON payload (clean fail()), not a
+  // generic "unhandled error: <stack>" wrapper.
+  const corruptPayload = JSON.parse(corrupt.stdout);
+  assert.match(corruptPayload.message, /both canonical and sharded prompt files exist/);
+  assert.match(corruptPayload.message, /cli-alpha/);
+  // The structured payload carries leaf_id for orchestrator diagnostics.
+  assert.equal(corruptPayload.leaf_id, "cli-alpha");
+  // Critically: NO stack-frame paths in the message — that would
+  // signal we leaked the unhandled-error path.
+  assert.doesNotMatch(corruptPayload.message, /at\s+\S+:\d+:\d+/);
 });

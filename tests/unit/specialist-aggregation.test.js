@@ -379,6 +379,38 @@ test("aggregateSpecialistOutputs: non-array findings → row downgraded to faile
   }
 });
 
+test("aggregateSpecialistOutputs: non-integer numeric fields are floored to integers (#93 round-12)", () => {
+  // FSM response_schema declares runtime_ms / tokens_in / tokens_out
+  // as integers. A worker that wrote 1.5 would otherwise pass
+  // sanitisation (it's a finite non-negative number) but fail post-hoc
+  // commit-time schema validation. sanitiseSpecialistRow now floors
+  // to an integer so both sharded and non-sharded outputs always
+  // satisfy the schema.
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "fractional-numerics-leaf");
+    writeOutput(runId, "fractional-numerics-leaf", null, {
+      id: "fractional-numerics-leaf",
+      status: "completed",
+      runtime_ms: 1.7,
+      tokens_in: 100.9,
+      tokens_out: 50.5,
+      findings: [],
+    });
+    const out = aggregateSpecialistOutputs(brief(runId, ["fractional-numerics-leaf"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.ok(Number.isInteger(row.runtime_ms), "runtime_ms must be an integer");
+    assert.ok(Number.isInteger(row.tokens_in), "tokens_in must be an integer");
+    assert.ok(Number.isInteger(row.tokens_out), "tokens_out must be an integer");
+    assert.equal(row.runtime_ms, 1);
+    assert.equal(row.tokens_in, 100);
+    assert.equal(row.tokens_out, 50);
+  } finally {
+    cleanup();
+  }
+});
+
 test("aggregateSpecialistOutputs: missing/non-finite numeric fields default to 0 (#93 round-10)", () => {
   // runtime_ms / tokens_in / tokens_out are typed as integers in the
   // FSM schema. A worker that omits them or writes NaN / Infinity

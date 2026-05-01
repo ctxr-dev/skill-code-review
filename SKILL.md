@@ -78,7 +78,7 @@ else
 fi
 ```
 
-**The brief is at `$RUN_DIR/workers/$STATE-brief.json`** if you need to inspect any field directly (`outputs_path`, `worker.response_schema`, `inputs.picked_leaves[]` for `dispatch_specialists`, etc.). The dispatch prompt is at `$RUN_DIR/workers/$STATE-dispatch-prompt.md` — the literal text to feed to the Agent tool. **Both are canonical**; stdout is a redundant convenience.
+**The brief is at `$RUN_DIR/workers/$STATE-brief.json`** if you need to inspect any field directly (`outputs_path`, `worker.response_schema`, etc.). For non-`dispatch_specialists` states, the dispatch prompt is at `$RUN_DIR/workers/$STATE-dispatch-prompt.md` — the literal text to feed to the Agent tool. **For `dispatch_specialists` the prompt path differs** (it's per-leaf and possibly per-shard) and the orchestrator drives a batched loop via `--print-pending-leaf-ids` / `--print-agent-shim-prompt` rather than reading the brief's `picked_leaves[]` directly; see the "Special case" subsection below for the full pattern. **Both brief and prompt are canonical**; stdout is a redundant convenience.
 
 #### Special case: `STATE === "dispatch_specialists"` — batched fan-out
 

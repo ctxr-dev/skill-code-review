@@ -1236,7 +1236,15 @@ function sanitiseSpecialistRow(row, authoritativeId) {
   }
   let finalStatus = normalised;
   if (issues.length > 0) finalStatus = "failed";
-  const finite = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
+  // FSM response_schema declares runtime_ms / tokens_in / tokens_out as
+  // integer (with minimum: 0 implied; we enforce >= 0 here). A worker
+  // that wrote a finite non-integer (e.g. 1.5) would otherwise pass
+  // sanitisation but fail post-hoc commit-time validation. Floor to an
+  // integer; non-finite / negative / non-numeric → 0.
+  const finite = (v) => {
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) return 0;
+    return Math.floor(v);
+  };
   let skipReason = typeof row.skip_reason === "string" && row.skip_reason.length > 0
     ? row.skip_reason
     : null;
@@ -1285,10 +1293,14 @@ function mergeShardedSpecialistOutputs(runId, leafId, shardIndices) {
   const anyFailed = shardRows.some((r) => r.status === "failed");
   const allSkipped = shardRows.every((r) => r.status === "skipped");
   const status = anyFailed ? "failed" : (allSkipped ? "skipped" : "completed");
-  const findings = shardRows.flatMap((r) => Array.isArray(r.findings) ? r.findings : []);
-  const runtime_ms = shardRows.reduce((acc, r) => acc + (Number.isInteger(r.runtime_ms) ? r.runtime_ms : 0), 0);
-  const tokens_in = shardRows.reduce((acc, r) => acc + (Number.isInteger(r.tokens_in) ? r.tokens_in : 0), 0);
-  const tokens_out = shardRows.reduce((acc, r) => acc + (Number.isInteger(r.tokens_out) ? r.tokens_out : 0), 0);
+  // sanitiseSpecialistRow has already coerced findings to an array
+  // and runtime_ms / tokens_in / tokens_out to non-negative integers,
+  // so the per-shard values can be summed directly. No defensive
+  // Number.isInteger guard needed at this layer.
+  const findings = shardRows.flatMap((r) => r.findings);
+  const runtime_ms = shardRows.reduce((acc, r) => acc + r.runtime_ms, 0);
+  const tokens_in = shardRows.reduce((acc, r) => acc + r.tokens_in, 0);
+  const tokens_out = shardRows.reduce((acc, r) => acc + r.tokens_out, 0);
   const merged = {
     id: leafId,
     status,

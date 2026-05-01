@@ -825,7 +825,7 @@ export function buildDispatchPromptText(brief, opts = {}) {
       "Write your JSON output to:",
       outputPath,
       "Required shape: { id, status, runtime_ms, tokens_in, tokens_out, findings[] }",
-      "Include `skip_reason: \"<one sentence>\"` ONLY when status == \"skipped\" (the FSM schema requires it then; omitting it for status=completed or failed is fine).",
+      "Include `skip_reason: \"<one sentence>\"` when status == \"skipped\" (the FSM schema requires it then) OR when status == \"failed\" (encouraged — gives the report an actionable diagnostic). For status == \"completed\" the field is omitted.",
       "",
       "Do NOT return JSON to the orchestrator inline; the runner reads from the path above on --continue and aggregates all per-leaf outputs into specialist_outputs[]. Concurrent specialists writing to the same path would clobber each other; the per-leaf path is unique.",
       "",
@@ -953,6 +953,38 @@ export function writeSpecialistPromptsToDisk(brief) {
       }
     }
   }
+  // Invalidate the workers-directory cache so any subsequent
+  // discoverLeafShards call in this process picks up the prompt
+  // files we just staged. (In practice writeSpecialistPromptsToDisk
+  // and discoverLeafShards run in separate process invocations, but
+  // unit tests exercise both in one process and the cache would
+  // otherwise return a stale pre-write listing.)
+  clearLeafShardsCache();
+}
+
+// Per-process cache of workers/ directory listings keyed by absolute
+// path. discoverLeafShards is called once per picked_leaf during
+// --continue aggregation and again during --print-pending-leaf-ids;
+// without this cache, K calls each readdirSync the workers/ dir
+// (O(K * entries) per aggregation/pending pass). The cache is
+// invalidated by clearLeafShardsCache when the runner stages new
+// prompts (writeSpecialistPromptsToDisk → invalidate at end).
+const _workersDirCache = new Map();
+function listWorkersDir(workersDirPath) {
+  if (_workersDirCache.has(workersDirPath)) {
+    return _workersDirCache.get(workersDirPath);
+  }
+  let entries;
+  try {
+    entries = readdirSync(workersDirPath);
+  } catch {
+    entries = [];
+  }
+  _workersDirCache.set(workersDirPath, entries);
+  return entries;
+}
+function clearLeafShardsCache() {
+  _workersDirCache.clear();
 }
 
 // Discover the shard layout for a single picked leaf by listing the
@@ -991,13 +1023,12 @@ export function discoverLeafShards(runId, leafId) {
   // Non-sharded path exists → single-shard leaf.
   if (existsSync(promptPath)) return null;
   // Otherwise enumerate dispatch_specialists-prompt-<leaf-id>--<n>.md.
+  // Cached one-pass listing of workers/ — the directory is shared by
+  // every leaf in the run, so a single readdirSync covers all K
+  // calls during aggregation/pending-list rather than K separate
+  // syscalls.
   const dir = dirname(promptPath);
-  let entries;
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return [];
-  }
+  const entries = listWorkersDir(dir);
   const prefix = `dispatch_specialists-prompt-${leafId}--`;
   const shards = [];
   for (const ent of entries) {
@@ -2594,7 +2625,7 @@ function printShimForParsedId(runId, leafId, shardIdx) {
     "",
     `Write your JSON output to: ${outputPath}`,
     "Required shape: { id, status, runtime_ms, tokens_in, tokens_out, findings[] }.",
-    "Include `skip_reason: \"<one sentence>\"` ONLY when status == \"skipped\" (FSM schema requires it then).",
+    "Include `skip_reason: \"<one sentence>\"` when status == \"skipped\" (FSM schema requires it then) OR when status == \"failed\" (encouraged for actionable diagnostics).",
     "",
     "Do NOT return JSON inline; the runner aggregates from this file path on --continue.",
     `Repository root: ${REPO_ROOT}`,

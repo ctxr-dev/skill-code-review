@@ -184,16 +184,27 @@ function normalizeWikiPath(p) {
 }
 
 // Read a single leaf's `activation.file_globs[]` from disk. Returns:
-//   - { found: true, globs: [...] }  when the leaf carries an `activation.file_globs:` block
-//   - { found: true, globs: [] }     when the leaf carries an activation block but no globs
-//   - { found: false }               when the leaf is unreadable / missing / has no frontmatter
+//   - { found: true, globs: [...] }  when extractFileGlobs found a populated
+//                                    activation.file_globs[] block.
+//   - { found: true, globs: [] }     when extractFileGlobs returned [] —
+//                                    EITHER the leaf has no activation block
+//                                    at all, OR it has activation but no
+//                                    file_globs sub-block, OR the sub-block
+//                                    is explicitly empty. extractFileGlobs
+//                                    deliberately collapses these three
+//                                    cases (see leaf-frontmatter.mjs); the
+//                                    coverage-gate semantics are identical
+//                                    for all three (broad credit).
+//   - { found: false }               when the leaf is unreadable / missing /
+//                                    has no frontmatter fences at all.
 //
 // The {found, globs} shape lets callers distinguish "this leaf has empty
 // globs (broad credit)" from "we couldn't read this leaf at all". For the
 // pre-dispatch coverage gate, an unreadable leaf doesn't help cover any
 // file (we can't reason about what it would see), so it's treated as
-// no-credit. An empty-globs leaf gets broad credit — its specialist
-// receives the full diff per scripts/run-review.mjs:computeFilteredDiff.
+// no-credit. An empty-globs leaf — whatever the underlying authoring
+// shape — gets broad credit, because its specialist receives the full
+// diff per scripts/run-review.mjs:computeFilteredDiff.
 //
 // Cached per-process keyed by realpath of the wiki leaf to avoid repeat
 // frontmatter reads when the same trim output is validated multiple times

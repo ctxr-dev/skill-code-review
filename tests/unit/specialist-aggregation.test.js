@@ -544,49 +544,30 @@ test("discoverLeafShards: returns empty array when neither shape is staged", () 
   }
 });
 
-test("discoverLeafShards: throws when shard index exceeds SHARD_INDEX_MAX (corrupted/hand-edited workers/)", () => {
+test("discoverLeafShards: filters out above-cap shard indices to prevent OOM allocation (SHARD_INDEX_MAX defense)", () => {
   // Defends against the OOM/hang case where workers/ contains a
   // prompt with an implausibly large shard index (e.g. a manual
   // edit, cosmic ray, or buggy external tooling planted
   // dispatch_specialists-prompt-leaf--999999.md). Without the cap,
   // the contiguous-range allocation `for (let i = 0; i <= max; i++)`
   // would try to push 1M+ entries and either hang the runner or
-  // OOM. The cap (1024) is well above the worst legitimate case
-  // (~100-200 shards on a multi-megabyte filtered diff at the
-  // default 32KB threshold) but low enough to surface corruption
-  // as a clean error before allocation.
+  // OOM. The cap (SHARD_INDEX_MAX=1024) is well above the worst
+  // legitimate case (~100-200 shards on a multi-megabyte filtered
+  // diff at the default 32KB threshold) but low enough to surface
+  // corruption as a clean state before allocation.
+  //
+  // Defense in depth: the per-entry filter (this test) drops the
+  // bogus shard before it lands in shards[]. The post-sort
+  // `max > SHARD_INDEX_MAX` throw inside discoverLeafShards is the
+  // safety net for corruption modes that bypass the per-entry
+  // filter (e.g. a future code change that broadens the regex).
+  // Both guards exist; only one is exercised here because the
+  // per-entry filter fires first on legitimate filesystem state.
   const { runId, cleanup } = freshRun();
   try {
-    // Plant a single shard with an index just above the cap. The
-    // 4-digit gate in discoverLeafShards rejects 5+ digit indices
-    // before parseInt, so an index like 99999 would be silently
-    // skipped. Test the integer-cap path: index 1025 (one above
-    // SHARD_INDEX_MAX=1024) DOES parse but exceeds the cap, so
-    // the entry is filtered out and the shards array stays empty.
-    // To exercise the throw, plant TWO shards: one valid (0) and
-    // one well above the cap (we use a 4-digit value like 9999 →
-    // also above cap → filtered out). Plant a valid shard 0 and
-    // a shard at exactly index 9999 (4-digit gate passes, but
-    // 9999 > 1024 → filtered). Then plant something sneaky: a
-    // shard index that PASSES the 4-digit gate AND is > 1024 to
-    // get into shards[]. Wait — the per-entry filter rejects
-    // idx > SHARD_INDEX_MAX, so it never lands in shards[].
-    //
-    // Different approach: directly write a bogus shard with a
-    // 4-digit index just below the gate (1234) which still
-    // exceeds SHARD_INDEX_MAX (1024). The per-entry filter
-    // catches it and we end up with shards=[] (silent skip
-    // rather than throw). The throw fires when shards has VALID
-    // entries with max > SHARD_INDEX_MAX — but that can't happen
-    // given the per-entry filter. The defense in depth: BOTH the
-    // per-entry filter AND the post-sort throw guard against
-    // distinct corruption modes (per-entry: implausibly large
-    // single index; post-sort: corruption that bypasses the
-    // per-entry filter, e.g. future code changes).
-    //
-    // What we CAN observe: a shard with an above-cap index does
-    // NOT appear in the result. Plant shard 0 (legit) + shard 1500
-    // (above cap), expect result === [0] (just the legit one).
+    // Plant shard 0 (legit) + shard 1500 (1500 > 1024 = SHARD_INDEX_MAX,
+    // 4-digit so it passes the regex gate). The per-entry idx-cap
+    // check filters 1500 out, so result === [0].
     writePrompt(runId, "high-shard", 0);
     writePrompt(runId, "high-shard", 1500);
     const result = discoverLeafShards(runId, "high-shard");
@@ -644,17 +625,19 @@ test("discoverLeafShards: partial staging (shards 0 and 2, gap at 1) reports the
   }
 });
 
-test("discoverLeafShards: contiguous-range expansion is purely informational; pending-list filter must drop un-staged ids", () => {
-  // Companion test to "partial-staged shards surface the gap as a
-  // failed leaf row" below: discoverLeafShards normalises [0, 2] to
-  // [0, 1, 2] so the aggregator emits a failed row for shard 1's
-  // missing output. But the orchestrator's --print-pending-leaf-ids
-  // must NOT include shard 1 in the pending list — its prompt
-  // doesn't exist, and --print-agent-shim-prompt would hard-fail
-  // on dispatch. This locks down that the contiguity expansion is
-  // an aggregator-side concept; the pending-list code path filters
-  // by prompt-file existence (tested via the integration smoke
-  // since the pending list is a CLI mode, not a function).
+test("discoverLeafShards: contiguous-range expansion fills gaps so the aggregator can flag missing shards", () => {
+  // discoverLeafShards normalises [0, 2] to [0, 1, 2] so the
+  // aggregator emits a failed row for shard 1's missing output.
+  // The orchestrator-side pending-list path must NOT include shard 1
+  // (its prompt doesn't exist, --print-agent-shim-prompt would
+  // hard-fail on dispatch); the pending-list code path's
+  // prompt-file-existence filter is what enforces that, and is
+  // covered by tests/integration/end-to-end-runner.test.js's
+  // "--print-pending-leaf-ids and --print-agent-shim-prompt:
+  // end-to-end CLI contract" smoke test (where the CLI is exercised
+  // via spawnSync). This unit test only locks down the function-level
+  // contract: contiguity expansion happens regardless of which
+  // shards' outputs were actually written.
   const { runId, cleanup } = freshRun();
   try {
     writePrompt(runId, "gappy", 0);

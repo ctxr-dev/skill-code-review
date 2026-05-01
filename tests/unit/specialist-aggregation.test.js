@@ -40,9 +40,15 @@ function uniqueRunId() {
   return `20991231-235959-${hex}`;
 }
 
-// Schedule cleanup of a run-dir's workers directory. Each test calls
-// this with its own runId so cleanup is scoped (no rmSync of another
-// test's dir even if `node --test` runs in parallel).
+// Schedule cleanup of a test's full run-dir (parent of workers/). Each
+// test calls this with its own runId so cleanup is scoped (no rmSync
+// of another test's dir even if `node --test` runs in parallel). We
+// remove the entire run-dir rather than just workers/ so the per-run
+// metadata (manifest.json, fsm-trace/) — which the runner's
+// resolveStorageRoot would create as side-effects of any future helper
+// extension — also gets cleaned up; for these tests the runner doesn't
+// create anything else, so deleting the whole dir is equivalent to
+// deleting the workers/ subtree.
 function scheduleCleanup(runId) {
   // Workers dir lives under `<storage_root>/yyyy/mm/dd/<2-hex>/<5-hex>/workers`.
   // defaultSpecialistOutputPath gives us a path inside it; dirname

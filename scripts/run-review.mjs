@@ -2158,14 +2158,36 @@ async function main() {
     }
     if (currentState === "dispatch_specialists" && (!leafId || typeof leafId !== "string")) {
       fail(
-        `--print-dispatch-prompt for state "dispatch_specialists" requires --leaf-id <id>; one prompt per picked specialist sits at <run_dir>/workers/dispatch_specialists-prompt-<leaf-id>.md.`,
+        `--print-dispatch-prompt for state "dispatch_specialists" requires --leaf-id <id>; one prompt per picked specialist sits at <run_dir>/workers/dispatch_specialists-prompt-<leaf-id>.md (or --<shardIdx>.md when sharded).`,
         { run_id: runId, current_state: currentState },
       );
+    }
+    // For dispatch_specialists, accept either --shard-idx <N> or a
+    // <leaf-id>--<N> suffix on the --leaf-id value (so the
+    // orchestrator can pass --print-pending-leaf-ids output verbatim).
+    let resolvedLeafId = leafId;
+    let resolvedShardIdx = null;
+    if (currentState === "dispatch_specialists") {
+      if (args["shard-idx"] !== undefined) {
+        if (typeof args["shard-idx"] !== "string" || !/^\d+$/.test(args["shard-idx"])) {
+          fail(
+            `--print-dispatch-prompt: --shard-idx must be a non-negative integer; got: ${JSON.stringify(args["shard-idx"])}`,
+          );
+        }
+        resolvedShardIdx = Number.parseInt(args["shard-idx"], 10);
+      } else if (typeof leafId === "string") {
+        const m = leafId.match(/^([a-z][a-z0-9-]*?)--(\d+)$/);
+        if (m) {
+          resolvedLeafId = m[1];
+          resolvedShardIdx = Number.parseInt(m[2], 10);
+        }
+      }
     }
     const promptPath = defaultDispatchPromptPath(
       runId,
       currentState,
-      currentState === "dispatch_specialists" ? leafId : undefined,
+      currentState === "dispatch_specialists" ? resolvedLeafId : undefined,
+      currentState === "dispatch_specialists" ? resolvedShardIdx : null,
     );
     // currentState is now guaranteed safe (isSafeStateSegment passed
     // above). The only way promptPath can be null at this point is the
@@ -2176,14 +2198,14 @@ async function main() {
     //      staging, or the file was removed.
     if (promptPath === null) {
       fail(
-        `--print-dispatch-prompt: invalid --leaf-id "${leafId}" for state "dispatch_specialists" (must match ^[a-z][a-z0-9-]*$).`,
-        { run_id: runId, current_state: currentState, leaf_id: leafId },
+        `--print-dispatch-prompt: invalid --leaf-id "${resolvedLeafId}" / --shard-idx ${resolvedShardIdx} for state "dispatch_specialists" (leaf-id must match ^[a-z][a-z0-9-]*$; shard-idx must be a non-negative integer).`,
+        { run_id: runId, current_state: currentState, leaf_id: resolvedLeafId, shard_idx: resolvedShardIdx },
       );
     }
     if (!existsSync(promptPath)) {
       fail(
-        `--print-dispatch-prompt: no prompt file at "${promptPath}". Either this run pre-dates dispatch-prompt staging or the file was removed.`,
-        { run_id: runId, current_state: currentState, leaf_id: leafId, expected_path: promptPath },
+        `--print-dispatch-prompt: no prompt file at "${promptPath}". Either this run pre-dates dispatch-prompt staging, the leaf is sharded but you didn't pass --shard-idx, or the file was removed.`,
+        { run_id: runId, current_state: currentState, leaf_id: resolvedLeafId, shard_idx: resolvedShardIdx, expected_path: promptPath },
       );
     }
     let body;
@@ -2321,7 +2343,7 @@ async function main() {
       "  run-review.mjs --resume --run-id <id>\n" +
       "  run-review.mjs --print-run-dir --run-id <id>\n" +
       "  run-review.mjs --print-current-state --run-id <id>\n" +
-      "  run-review.mjs --print-dispatch-prompt --run-id <id> [--leaf-id <id>]\n" +
+      "  run-review.mjs --print-dispatch-prompt --run-id <id> [--leaf-id <id>] [--shard-idx <N>]\n" +
       "  run-review.mjs --print-pending-leaf-ids --run-id <id> [--batch-size <N>]\n" +
       "  run-review.mjs --print-agent-shim-prompt --run-id <id> --leaf-id <id> [--shard-idx <N>]",
   );

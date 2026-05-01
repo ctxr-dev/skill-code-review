@@ -971,58 +971,52 @@ export function writeSpecialistPromptsToDisk(brief) {
   clearLeafShardsCache();
 }
 
-// Clean up the OPPOSITE prompt shape's PROMPT files (only — never
-// delete output files) before staging a leaf's new prompts. Closes
-// the re-stage-with-different-threshold race where stale prompt
-// files from a previous threshold's sharding outcome would silently
-// shadow the new shape and confuse discoverLeafShards.
+// Clean up ALL existing prompt files for this leaf — canonical and
+// every shard-suffixed variant — before staging the new shape.
+// Output files are preserved (they carry already-produced specialist
+// findings; deleting them on re-stage would force unnecessary
+// re-dispatch and lose audit artifacts). After re-staging, the
+// prompt set determines which outputs are still "valid" (matching
+// the new shape); orphan outputs from the old shape can be left in
+// place — the aggregator only reads outputs whose paths match the
+// present prompt shape, so they're harmless.
 //
-// Output files are preserved deliberately. They carry already-produced
-// specialist findings; deleting them on re-stage would force
-// unnecessary re-dispatch and lose audit artifacts. After
-// re-staging, the prompt set determines which outputs are still
-// "valid" (matching the new shape); orphan outputs from the old
-// shape can be left in place — the aggregator only reads outputs
-// whose paths match the present prompt shape, so they're harmless.
-//
-//   willBeNonSharded = true  → delete `dispatch_specialists-prompt-<leaf>--<n>.md`
-//                              for every n that exists on disk.
-//   willBeNonSharded = false → delete `dispatch_specialists-prompt-<leaf>.md`
-//                              if it exists.
+// Why total cleanup (not just the opposite shape): three failure
+// modes the previous "opposite-only" cleanup left open —
+//   1. Threshold change non-sharded → sharded: the canonical
+//      prompt is deleted (good); shard prompts written (good).
+//   2. Threshold change sharded → non-sharded: shard prompts
+//      deleted (good); canonical written (good).
+//   3. Threshold change wide → narrow sharded (e.g. 0..4 → 0..2):
+//      the new staging writes 0, 1, 2 but stale 3 and 4 prompts
+//      remain. discoverLeafShards sees [0, 1, 2, 3, 4] and the
+//      aggregator expects outputs for 3 and 4 that never come.
+//      Total cleanup closes (3) by removing every prompt before
+//      writing.
 //
 // Best-effort: rm failures are swallowed (these are derivative
 // artefacts; the primary write is the source of truth).
-function cleanupStalePromptShape(runId, leafId, willBeNonSharded) {
+function cleanupStalePromptShape(runId, leafId, _willBeNonSharded) {
   const samplePromptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leafId);
   if (!samplePromptPath) return;
   const dir = dirname(samplePromptPath);
-  if (willBeNonSharded) {
-    // Removing shard-suffixed prompt files. Enumerate to pick up any N.
-    let entries;
+  let entries;
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return;
+  }
+  const canonicalPromptName = `dispatch_specialists-prompt-${leafId}.md`;
+  const promptPrefix = `dispatch_specialists-prompt-${leafId}--`;
+  for (const ent of entries) {
+    const matchCanonical = ent === canonicalPromptName;
+    const matchShard = ent.startsWith(promptPrefix) && ent.endsWith(".md")
+      && /^\d+$/.test(ent.slice(promptPrefix.length, -".md".length));
+    if (!matchCanonical && !matchShard) continue;
     try {
-      entries = readdirSync(dir);
+      rmSync(join(dir, ent), { force: true });
     } catch {
-      return;
-    }
-    const promptPrefix = `dispatch_specialists-prompt-${leafId}--`;
-    for (const ent of entries) {
-      const matchPrompt = ent.startsWith(promptPrefix) && ent.endsWith(".md") && /^\d+$/.test(ent.slice(promptPrefix.length, -".md".length));
-      if (matchPrompt) {
-        try {
-          rmSync(join(dir, ent), { force: true });
-        } catch {
-          // ignore — best-effort cleanup
-        }
-      }
-    }
-  } else {
-    // Removing the canonical (non-sharded) prompt file only.
-    if (samplePromptPath && existsSync(samplePromptPath)) {
-      try {
-        rmSync(samplePromptPath, { force: true });
-      } catch {
-        // ignore
-      }
+      // ignore — best-effort cleanup
     }
   }
 }

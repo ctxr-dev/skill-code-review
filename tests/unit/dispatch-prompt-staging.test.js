@@ -366,6 +366,46 @@ test("buildDispatchPromptText: per-specialist with opts.shard emits --- THIS SHA
   assert.match(text, /dispatch_specialists-output-lang-javascript--1\.json/);
 });
 
+test("writeSpecialistPromptsToDisk: re-staging from wide to narrow shard set removes stale higher-index shard prompts (#93 round-15)", async () => {
+  // Threshold change wide → narrow case: a previous staging produced
+  // shards 0..4; a later staging produces fewer shards (or non-sharded).
+  // Without cleaning up ALL existing prompts (not just the opposite
+  // shape), stale --3.md and --4.md prompts would survive and
+  // discoverLeafShards would route them as live shards.
+  //
+  // Simulate by planting shards 0..4, then re-staging via the
+  // single-shard path (placeholder diff) and asserting all 5 stale
+  // shard prompts are gone.
+  const { randomBytes } = await import("node:crypto");
+  const runId = `20991231-235959-${randomBytes(4).toString("hex").slice(0, 7)}`;
+  const state = "dispatch_specialists";
+  const leafId = "wide-to-narrow-leaf";
+  const canonicalPath = defaultDispatchPromptPath(runId, state, leafId);
+  const dir = dirname(canonicalPath);
+  const runDir = dirname(dir);
+  mkdirSync(dir, { recursive: true });
+  try {
+    for (let i = 0; i < 5; i++) {
+      const p = defaultDispatchPromptPath(runId, state, leafId, i);
+      writeFileSync(p, `stale shard ${i}\n`);
+    }
+    writeSpecialistPromptsToDisk({
+      has_worker: true,
+      run_id: runId,
+      state,
+      worker: { role: "specialist", inputs: [], prompt_body: "T" },
+      inputs: { picked_leaves: [{ id: leafId, path: "x/y.md", body: "body", file_globs: ["**/*"] }] },
+    });
+    assert.ok(existsSync(canonicalPath), "canonical prompt should be staged after re-stage");
+    for (let i = 0; i < 5; i++) {
+      const p = defaultDispatchPromptPath(runId, state, leafId, i);
+      assert.ok(!existsSync(p), `stale shard ${i} prompt must be removed`);
+    }
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
 test("writeSpecialistPromptsToDisk: re-staging after threshold change removes stale OPPOSITE-shape PROMPT files but preserves OUTPUT files (#93 round-14)", async () => {
   // Repro the threshold-change race: stale shard-suffixed prompts
   // would otherwise coexist with the new canonical prompt and

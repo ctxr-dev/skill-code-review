@@ -407,16 +407,22 @@ test("writeSpecialistPromptsToDisk: re-staging from wide to narrow shard set rem
   }
 });
 
-test("writeSpecialistPromptsToDisk: re-staging after threshold change removes stale OPPOSITE-shape PROMPT files but preserves OUTPUT files (#93 round-14)", async () => {
-  // Repro the threshold-change race: stale shard-suffixed prompts
-  // would otherwise coexist with the new canonical prompt and
-  // confuse discoverLeafShards. Cleanup removes ONLY prompt files;
-  // output files (specialist findings) are preserved as audit
-  // artifacts even when their shape no longer matches the staged
-  // prompts. Re-dispatch will produce new outputs under the new
-  // shape; the orphan outputs from the old shape live alongside
-  // them harmlessly (the aggregator only reads outputs whose paths
-  // match the current prompt shape).
+test("writeSpecialistPromptsToDisk: re-staging after threshold change removes stale prompts AND stale outputs (#93 round-28)", async () => {
+  // Repro the threshold-change silent-corruption case: the same shard
+  // index can map to a different file partition between staging
+  // passes (e.g. shard 0 of the old staging covered files A,B; shard
+  // 0 of the new staging covers files A,B,C because the threshold
+  // widened). Output paths are keyed only on (leaf-id, shard-idx),
+  // so a stale shard-0 output from the old partition would be
+  // silently reused for the new partition's prompt — and the
+  // aggregator would commit findings that don't match the prompt the
+  // new specialist would see.
+  //
+  // Re-staging therefore invalidates ALL prior artifacts (prompts
+  // AND outputs) for the leaf. The audit trail of "what did the
+  // specialist say at this point" lives in the FSM manifest /
+  // fsm-trace once the run progresses; not in stale workers/* files
+  // that no longer match the prompts they were written against.
   const { randomBytes } = await import("node:crypto");
   const runId = `20991231-235959-${randomBytes(4).toString("hex").slice(0, 7)}`;
   const state = "dispatch_specialists";
@@ -424,15 +430,15 @@ test("writeSpecialistPromptsToDisk: re-staging after threshold change removes st
   const canonicalPath = defaultDispatchPromptPath(runId, state, leafId);
   const shardPath0 = defaultDispatchPromptPath(runId, state, leafId, 0);
   const shardPath1 = defaultDispatchPromptPath(runId, state, leafId, 1);
-  // The output files we want PRESERVED across re-staging. Use the
-  // runner's exported defaultSpecialistOutputPath helper rather than
-  // hand-rolling the filename: keeps the test in lockstep with the
-  // production path contract so any future rename or layout change
-  // (e.g. dispatch_specialists-output- prefix evolution) propagates
-  // automatically.
+  // Use the runner's exported defaultSpecialistOutputPath helper
+  // rather than hand-rolling the filename: keeps the test in
+  // lockstep with the production path contract so any future rename
+  // or layout change (e.g. dispatch_specialists-output- prefix
+  // evolution) propagates automatically.
   const dir = dirname(canonicalPath);
   const shardOutputPath0 = defaultSpecialistOutputPath(runId, leafId, 0);
   const shardOutputPath1 = defaultSpecialistOutputPath(runId, leafId, 1);
+  const canonicalOutputPath = defaultSpecialistOutputPath(runId, leafId);
   const runDir = dirname(dir);
   mkdirSync(dir, { recursive: true });
   try {
@@ -444,8 +450,9 @@ test("writeSpecialistPromptsToDisk: re-staging after threshold change removes st
     writeFileSync(shardOutputPath0, '{"id":"restage-leaf","status":"completed","findings":[]}');
     writeFileSync(shardOutputPath1, '{"id":"restage-leaf","status":"completed","findings":[]}');
     // Re-stage. Single-shard now (placeholder diff under threshold)
-    // → cleanup should remove stale shard PROMPTS but PRESERVE
-    // shard outputs (audit-trail principle).
+    // → cleanup must remove BOTH stale shard prompts AND stale shard
+    // outputs (no audit-trail preservation; outputs keyed on
+    // shard-idx alone are unsafe under threshold change).
     writeSpecialistPromptsToDisk({
       has_worker: true,
       run_id: runId,
@@ -453,13 +460,15 @@ test("writeSpecialistPromptsToDisk: re-staging after threshold change removes st
       worker: { role: "specialist", inputs: [], prompt_body: "T" },
       inputs: { picked_leaves: [{ id: leafId, path: "x/y.md", body: "body", file_globs: ["**/*"] }] },
     });
-    // Canonical present; stale shard prompts gone; stale shard
-    // outputs preserved.
+    // Canonical prompt present; stale shard prompts gone; stale
+    // shard outputs gone; canonical output not yet written (the new
+    // specialist hasn't run yet).
     assert.ok(existsSync(canonicalPath), "canonical prompt should be staged");
     assert.ok(!existsSync(shardPath0), "stale shard 0 prompt should be removed");
     assert.ok(!existsSync(shardPath1), "stale shard 1 prompt should be removed");
-    assert.ok(existsSync(shardOutputPath0), "stale shard 0 output must be preserved (audit-trail)");
-    assert.ok(existsSync(shardOutputPath1), "stale shard 1 output must be preserved (audit-trail)");
+    assert.ok(!existsSync(shardOutputPath0), "stale shard 0 output must be removed (silent-corruption defense)");
+    assert.ok(!existsSync(shardOutputPath1), "stale shard 1 output must be removed (silent-corruption defense)");
+    assert.ok(!existsSync(canonicalOutputPath), "canonical output should not exist until the new specialist writes it");
   } finally {
     rmSync(runDir, { recursive: true, force: true });
   }

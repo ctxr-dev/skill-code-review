@@ -961,18 +961,21 @@ export function writeSpecialistPromptsToDisk(brief) {
     const fileGlobs = Array.isArray(leaf.file_globs) ? leaf.file_globs : [];
     const filteredDiff = computeFilteredDiff(baseSha, headSha, fileGlobs);
     const shards = shardFilteredDiff(filteredDiff);
-    // Before writing, remove any stale prompt files for this leaf so
-    // discoverLeafShards never sees old and newly staged prompt
-    // layouts at the same time. cleanupStalePromptShape clears the
-    // canonical prompt AND every shard-indexed prompt path for the
-    // leaf (a full sweep, not just the opposite shape — see the long
-    // comment block above the helper for the three failure modes that
-    // motivated this). This matters when a run is re-staged with a
-    // different shard threshold (e.g. SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES
-    // changed) — without cleanup, the previous shape's files would
-    // silently shadow the new shape and aggregate/pending-id discovery
-    // would read the wrong set.
-    cleanupStalePromptShape(brief.run_id, leaf.id);
+    // Before writing, remove any stale prompt AND output files for
+    // this leaf so we never have a mix of old and newly staged
+    // artifacts on disk. cleanupStaleLeafArtifacts clears the
+    // canonical prompt + every shard-indexed prompt + canonical
+    // output + every shard-indexed output for the leaf. This matters
+    // when a run is re-staged with a different shard threshold (e.g.
+    // SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES changed): the same shard
+    // index can map to a different file partition between passes, so
+    // a stale output keyed only on (leaf-id, shard-idx) would
+    // silently be reused for the wrong content and the aggregator
+    // would commit findings that don't match the prompt the new
+    // specialist would see. See the long comment block above
+    // cleanupStaleLeafArtifacts for the audit-trail rationale and
+    // the three failure modes the full sweep closes.
+    cleanupStaleLeafArtifacts(brief.run_id, leaf.id);
     if (shards.length === 1) {
       // Common case: one prompt at the existing path shape, preserving
       // backward compatibility for non-sharded leaves.
@@ -1007,18 +1010,30 @@ export function writeSpecialistPromptsToDisk(brief) {
   clearLeafShardsCache();
 }
 
-// Clean up ALL existing prompt files for this leaf — canonical and
-// every shard-suffixed variant — before staging the new shape.
-// Output files are preserved (they carry already-produced specialist
-// findings; deleting them on re-stage would force unnecessary
-// re-dispatch and lose audit artifacts). After re-staging, the
-// prompt set determines which outputs are still "valid" (matching
-// the new shape); orphan outputs from the old shape can be left in
-// place — the aggregator only reads outputs whose paths match the
-// present prompt shape, so they're harmless.
+// Clean up ALL existing prompt AND output files for this leaf —
+// canonical and every shard-suffixed variant — before staging the
+// new shape.
 //
-// Why total cleanup (not just the opposite shape): three failure
-// modes the previous "opposite-only" cleanup left open —
+// Why outputs go too: a previous version of this helper preserved
+// output files across re-staging on an "audit-trail principle". That
+// was unsound under threshold change. Same shard index can map to a
+// DIFFERENT file partition between staging passes (e.g. shard 0 of
+// the old staging covered files A,B; shard 0 of the new staging
+// covers files A,B,C because the threshold widened). The output
+// path is keyed only on (leaf-id, shard-idx), so a stale shard-0
+// output written against the old partition would be silently reused
+// for the new partition, and the aggregator would commit findings
+// that don't match the prompt the new specialist would see. That's
+// silent corruption of the review result.
+//
+// Re-staging therefore invalidates all prior outputs for the leaf.
+// The audit trail of "what did the specialist say at this point"
+// lives in the FSM manifest / fsm-trace once the run progresses;
+// not in stale workers/* files that no longer match the prompts
+// they were written against.
+//
+// Why total prompt cleanup (not just the opposite shape): three
+// failure modes the previous "opposite-only" cleanup left open —
 //   1. Threshold change non-sharded → sharded: the canonical
 //      prompt is deleted (good); shard prompts written (good).
 //   2. Threshold change sharded → non-sharded: shard prompts
@@ -1032,7 +1047,7 @@ export function writeSpecialistPromptsToDisk(brief) {
 //
 // Best-effort: rm failures are swallowed (these are derivative
 // artefacts; the primary write is the source of truth).
-function cleanupStalePromptShape(runId, leafId) {
+function cleanupStaleLeafArtifacts(runId, leafId) {
   const samplePromptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leafId);
   if (!samplePromptPath) return;
   const dir = dirname(samplePromptPath);
@@ -1044,11 +1059,17 @@ function cleanupStalePromptShape(runId, leafId) {
   }
   const canonicalPromptName = `dispatch_specialists-prompt-${leafId}.md`;
   const promptPrefix = `dispatch_specialists-prompt-${leafId}--`;
+  const canonicalOutputName = `dispatch_specialists-output-${leafId}.json`;
+  const outputPrefix = `dispatch_specialists-output-${leafId}--`;
   for (const ent of entries) {
-    const matchCanonical = ent === canonicalPromptName;
-    const matchShard = ent.startsWith(promptPrefix) && ent.endsWith(".md")
+    const matchCanonicalPrompt = ent === canonicalPromptName;
+    const matchShardPrompt = ent.startsWith(promptPrefix) && ent.endsWith(".md")
       && /^\d+$/.test(ent.slice(promptPrefix.length, -".md".length));
-    if (!matchCanonical && !matchShard) continue;
+    const matchCanonicalOutput = ent === canonicalOutputName;
+    const matchShardOutput = ent.startsWith(outputPrefix) && ent.endsWith(".json")
+      && /^\d+$/.test(ent.slice(outputPrefix.length, -".json".length));
+    if (!matchCanonicalPrompt && !matchShardPrompt
+        && !matchCanonicalOutput && !matchShardOutput) continue;
     try {
       rmSync(join(dir, ent), { force: true });
     } catch {
@@ -1118,7 +1139,7 @@ export function discoverLeafShards(runId, leafId) {
   const canonicalPresent = existsSync(promptPath);
   // Enumerate dispatch_specialists-prompt-<leaf-id>--<n>.md regardless
   // of canonical presence so we can detect the corruption case where
-  // BOTH shapes exist on disk simultaneously (cleanupStalePromptShape's
+  // BOTH shapes exist on disk simultaneously (cleanupStaleLeafArtifacts's
   // best-effort rmSync silently swallows I/O errors, so it's possible
   // to end up with a canonical prompt and shard prompts coexisting
   // after a re-stage). Returning `null` early on canonical presence
@@ -1150,7 +1171,7 @@ export function discoverLeafShards(runId, leafId) {
   shards.sort((a, b) => a - b);
   if (canonicalPresent && shards.length > 0) {
     throw new Error(
-      `discoverLeafShards: both canonical and sharded prompt files exist for leaf "${leafId}" (canonical: ${promptPath}; shards: ${shards.map((i) => `${prefix}${i}.md`).join(", ")}). This indicates cleanupStalePromptShape failed to remove the previous shape during re-staging — the run is in a corrupted state. Re-run from --start, or remove the stale files manually before retrying.`,
+      `discoverLeafShards: both canonical and sharded prompt files exist for leaf "${leafId}" (canonical: ${promptPath}; shards: ${shards.map((i) => `${prefix}${i}.md`).join(", ")}). This indicates cleanupStaleLeafArtifacts failed to remove the previous shape during re-staging — the run is in a corrupted state. Re-run from --start, or remove the stale files manually before retrying.`,
     );
   }
   if (canonicalPresent) return null;
@@ -1423,15 +1444,17 @@ function describeForError(value) {
 function mergeShardedSpecialistOutputs(runId, leafId, shardIndices) {
   const shardRows = shardIndices.map((idx) => {
     // Prompt-files-as-source-of-truth: a shard is only "valid" when
-    // its dispatch prompt was successfully staged. Output files are
-    // intentionally preserved across re-staging (audit-trail
-    // principle); without this prompt-existence check, a stale
-    // dispatch_specialists-output-<leaf>--<idx>.json from a previous
-    // staging pass could mask a missing prompt (re-stage I/O failure)
-    // and the shard would aggregate as completed even though no
-    // specialist actually reviewed the current shard's diff. Treat a
-    // missing prompt as a failed row regardless of whether the
-    // (potentially stale) output file is present.
+    // its dispatch prompt was successfully staged. cleanupStaleLeafArtifacts
+    // wipes both prompt and output files for the leaf at the start of
+    // each staging pass, so in normal operation a missing prompt also
+    // means no output. But the per-shard rmSync inside cleanup is
+    // best-effort, so a stale dispatch_specialists-output-<leaf>--<idx>.json
+    // from a previous staging pass could survive an rmSync I/O error
+    // and mask a missing prompt — the shard would aggregate as
+    // completed even though no specialist actually reviewed the
+    // current shard's diff. Treat a missing prompt as a failed row
+    // regardless of whether the (potentially stale) output file is
+    // present.
     const promptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leafId, idx);
     if (!promptPath || !existsSync(promptPath)) {
       return sanitiseSpecialistRow(

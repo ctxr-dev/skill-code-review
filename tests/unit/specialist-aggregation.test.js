@@ -613,7 +613,7 @@ test("discoverLeafShards: silently ignores 5+ digit shard indices (regex gate is
 });
 
 test("discoverLeafShards: throws when BOTH canonical and sharded prompt files coexist on disk", () => {
-  // Defends against the corruption case where cleanupStalePromptShape's
+  // Defends against the corruption case where cleanupStaleLeafArtifacts's
   // best-effort rmSync fails silently and leaves stale files of the
   // other shape behind during a re-stage. If discoverLeafShards
   // silently preferred the canonical path here, the runner would drop
@@ -687,18 +687,20 @@ test("discoverLeafShards: contiguous-range expansion fills gaps so the aggregato
 });
 
 test("aggregateSpecialistOutputs: stale output without staged prompt is treated as failed (prompt-files-as-truth)", () => {
-  // Closes a subtle masking bug: re-staging intentionally preserves
-  // OUTPUT files (audit-trail principle) but not PROMPT files. If the
-  // re-stage fails for one shard mid-flight (atomicWriteFile swallows
-  // I/O errors), that shard would lack a current prompt — but a stale
-  // dispatch_specialists-output-<leaf>--<idx>.json from a previous
-  // staging pass might still exist. Without the prompt-existence check
-  // in mergeShardedSpecialistOutputs, the aggregator would read the
+  // Closes a subtle masking bug. cleanupStaleLeafArtifacts wipes
+  // both prompt and output files for the leaf at the start of each
+  // staging pass, so in normal operation a missing prompt also means
+  // no output. But the per-entry rmSync inside cleanup is
+  // best-effort: an I/O error on one rm could leave a stale output
+  // behind even though its prompt was successfully removed (or never
+  // re-written, e.g. due to atomicWriteFile failure on the new
+  // prompt). Without the prompt-existence check in
+  // mergeShardedSpecialistOutputs, the aggregator would read the
   // stale output and treat the shard as completed even though no
-  // specialist ran against the current diff. This test plants prompts
-  // for shards 0 and 2 (gap at 1), AND a stale output for shard 1.
-  // The aggregator must surface shard 1 as failed, not propagate the
-  // stale completed row.
+  // specialist ran against the current diff. This test plants
+  // prompts for shards 0 and 2 (gap at 1), AND a stale output for
+  // shard 1. The aggregator must surface shard 1 as failed, not
+  // propagate the stale completed row.
   const { runId, cleanup } = freshRun();
   try {
     writePrompt(runId, "stale-out", 0);

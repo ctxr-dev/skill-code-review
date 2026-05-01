@@ -19,8 +19,10 @@
 // engine's declarative `referential_integrity:` block subsumes this;
 // we migrate to the declarative form and delete the bespoke validator.
 //
-// Six violation classes (the original five from #13 plus a stage-A pair check
-// added in round 4 to close a subtle id/path-split fabrication path):
+// Seven violation classes (the original five from #13 plus a stage-A pair check
+// added in round 4 to close a subtle id/path-split fabrication path; class 7
+// added by the per-leaf-coverage-gate work to make sure no changed_path
+// reaches dispatch_specialists with zero specialists looking at it):
 //   1. picked_leaves[*].id        ∈ leaf ids in reviewers.wiki/
 //   2. picked_leaves[*].path      resolves to a real wiki file
 //   3. picked_leaves[*]           matches a stage_a_candidates entry with the
@@ -31,6 +33,14 @@
 //   4. rejected_leaves[*].id      ∈ stage_a_candidates ids
 //   5. coverage_rescues[*].file   ∈ changed_paths
 //   6. coverage_rescues[*].rescued_leaf ∈ rejected_leaves[*].id
+//   7. every changed_paths[*]     is matched by ≥1 picked_leaf — either via an
+//                                 `activation.file_globs[]` glob OR a leaf with
+//                                 no globs (broad credit; specialist receives
+//                                 the full diff) OR explicit listing in
+//                                 coverage_rescues[*].file. Closes the
+//                                 "orphan changed_path reaches dispatch with
+//                                 zero specialists" gap surfaced in the
+//                                 most recent end-to-end review.
 //
 // The validator is a pure function: same `(outputs, env, opts)` →
 // same `{ ok, errors[] }`. It does fs reads to enumerate the wiki when
@@ -41,6 +51,9 @@
 import { readdirSync, lstatSync, realpathSync, existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { splitFrontmatter, extractFileGlobs } from "./leaf-frontmatter.mjs";
+import { minimatch } from "./minimatch-shim.mjs";
 
 // Cache keyed by realpath of `<repoRoot>/reviewers.wiki`. A single-process
 // run that walks two different repos (tests, multi-repo tooling) gets a
@@ -168,6 +181,80 @@ function normalizeWikiPath(p) {
   let out = p.replace(/^\.\/+/, "");
   if (out.startsWith("reviewers.wiki/")) out = out.slice("reviewers.wiki/".length);
   return out;
+}
+
+// Read a single leaf's `activation.file_globs[]` from disk. Returns:
+//   - { found: true, globs: [...] }  when extractFileGlobs found a populated
+//                                    activation.file_globs[] block.
+//   - { found: true, globs: [] }     when extractFileGlobs returned [] —
+//                                    EITHER the leaf has no activation block
+//                                    at all, OR it has activation but no
+//                                    file_globs sub-block, OR the sub-block
+//                                    is explicitly empty. extractFileGlobs
+//                                    deliberately collapses these three
+//                                    cases (see leaf-frontmatter.mjs); the
+//                                    coverage-gate semantics are identical
+//                                    for all three (broad credit).
+//   - { found: false }               when the leaf is unreadable / missing /
+//                                    has no frontmatter fences at all.
+//
+// The {found, globs} shape lets callers distinguish "this leaf has empty
+// globs (broad credit)" from "we couldn't read this leaf at all". For the
+// pre-dispatch coverage gate, an unreadable leaf doesn't help cover any
+// file (we can't reason about what it would see), so it's treated as
+// no-credit. An empty-globs leaf — whatever the underlying authoring
+// shape — gets broad credit, because its specialist receives the full
+// diff per scripts/run-review.mjs:computeFilteredDiff.
+//
+// Cached per-process keyed by realpath of the wiki leaf to avoid repeat
+// frontmatter reads when the same trim output is validated multiple times
+// in one run (e.g., dry-run + commit).
+const _leafGlobsCache = new Map();
+function readLeafFileGlobs(repoRoot, leafPath) {
+  if (typeof leafPath !== "string" || leafPath.length === 0) return { found: false };
+  if (!leafPath.endsWith(".md")) return { found: false };
+  const base = leafPath.split(/[/\\]+/).pop();
+  if (!base || base === "index.md" || base.startsWith(".")) return { found: false };
+  const wikiRoot = resolve(repoRoot, "reviewers.wiki");
+  let realWiki;
+  try {
+    realWiki = realpathSync(wikiRoot);
+  } catch {
+    return { found: false };
+  }
+  let real = null;
+  for (const candidate of [resolve(wikiRoot, leafPath), resolve(repoRoot, leafPath)]) {
+    if (!existsSync(candidate)) continue;
+    let r;
+    try {
+      r = realpathSync(candidate);
+    } catch {
+      continue;
+    }
+    if (!isInside(realWiki, r)) continue;
+    real = r;
+    break;
+  }
+  if (real === null) return { found: false };
+  if (_leafGlobsCache.has(real)) return _leafGlobsCache.get(real);
+  let text;
+  try {
+    text = readFileSync(real, "utf8");
+  } catch {
+    const result = { found: false };
+    _leafGlobsCache.set(real, result);
+    return result;
+  }
+  const parsed = splitFrontmatter(text);
+  if (!parsed) {
+    const result = { found: false };
+    _leafGlobsCache.set(real, result);
+    return result;
+  }
+  const globs = extractFileGlobs(parsed.frontmatter);
+  const result = { found: true, globs };
+  _leafGlobsCache.set(real, result);
+  return result;
 }
 
 function looksLikeTrimOutput(outputs) {
@@ -354,6 +441,67 @@ export function validateTrimOutput(outputs, env, opts = {}) {
     if (!rejectedIds.has(rescue.rescued_leaf)) {
       errors.push(
         `coverage_rescues[].rescued_leaf "${rescue.rescued_leaf}" is not in rejected_leaves`,
+      );
+    }
+  }
+
+  // (7) Every changed_paths[*] is matched by ≥1 picked_leaf glob OR appears
+  //     in coverage_rescues[*].file. A leaf with no globs (broad credit)
+  //     covers everything because its specialist receives the full diff
+  //     per scripts/run-review.mjs:computeFilteredDiff. A leaf whose
+  //     frontmatter is unreadable does NOT count — we can't reason about
+  //     what its specialist would see, so treat as no-credit.
+  //
+  //     This closes the orphan-changed-path gap: under the previous five
+  //     checks, the trim worker could pick K leaves whose globs covered
+  //     only a subset of changed_paths and still pass validation. The
+  //     missed file would never appear in any specialist's filtered
+  //     diff; verify_coverage's post-dispatch check would surface it as
+  //     a coverage gap, but only after specialist tokens were spent.
+  //     Here we fail the trim output BEFORE dispatch.
+  const rescuedFiles = new Set(
+    coverageRescues
+      .map((r) => (r && typeof r.file === "string" ? r.file : null))
+      .filter((f) => f !== null),
+  );
+  // Build the broad-credit short-circuit ONCE: if any picked_leaf has
+  // empty globs (or a found-but-no-globs frontmatter), every changed_path
+  // is automatically covered and we skip the per-file loop entirely.
+  // This keeps the common case (one broad-purpose leaf among the picks)
+  // O(K) rather than O(K × len(changed_paths) × avg_globs_per_leaf).
+  let hasBroadCreditLeaf = false;
+  const leafGlobsByPath = new Map(); // leaf.path → string[] of globs
+  for (const leaf of pickedLeaves) {
+    if (!leaf || typeof leaf.path !== "string") continue;
+    const result = readLeafFileGlobs(repoRoot, leaf.path);
+    if (!result.found) continue; // unreadable: no credit
+    if (result.globs.length === 0) {
+      hasBroadCreditLeaf = true;
+      break;
+    }
+    leafGlobsByPath.set(leaf.path, result.globs);
+  }
+  if (!hasBroadCreditLeaf) {
+    const orphanFiles = [];
+    for (const file of (Array.isArray(env?.changed_paths) ? env.changed_paths : [])) {
+      if (rescuedFiles.has(file)) continue;
+      let covered = false;
+      for (const globs of leafGlobsByPath.values()) {
+        for (const glob of globs) {
+          if (minimatch(file, glob)) {
+            covered = true;
+            break;
+          }
+        }
+        if (covered) break;
+      }
+      if (!covered) orphanFiles.push(file);
+    }
+    if (orphanFiles.length > 0) {
+      errors.push(
+        `changed_paths not covered by any picked_leaf glob and not rescued: ` +
+          orphanFiles.map((f) => `"${f}"`).join(", ") +
+          ` — add a coverage_rescue for each, or pick a leaf whose activation.file_globs[] matches.`,
       );
     }
   }

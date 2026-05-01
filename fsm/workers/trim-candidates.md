@@ -26,6 +26,8 @@ Coverage rule: every file in `changed_paths` must be covered by ≥ 2 picked lea
 
 If a file falls below 2-coverage, add the next-most-relevant rejected leaf with a "coverage rescue" justification and record it in `coverage_rescues`. **Do not** open leaf files — `file_globs[]` plus `focus` / `covers` from `stage_a_candidates[*]` is everything you need.
 
+**Hard pre-dispatch gate:** every file in `changed_paths` MUST be matched by at least ONE picked leaf's `activation.file_globs[]` OR appear explicitly in `coverage_rescues[*].file`. A leaf with empty / missing globs counts as broad credit (its specialist receives the full diff). The runner-side trim-output-validator will reject your output with a structured `changed_paths not covered ...` error if any path is left orphan; rescue the gap with a `coverage_rescues` entry rather than silently leaving the file uncovered.
+
 ## Output (JSON, schema-validated)
 
 ```json

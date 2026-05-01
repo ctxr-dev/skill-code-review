@@ -32,12 +32,19 @@ if (existsSync(NONEXISTENT_REPO_ROOT)) {
 // independent of the real corpus.
 let HERMETIC_REPO_ROOT;
 
-function writeLeaf(repoRoot, relPath, id) {
+function writeLeaf(repoRoot, relPath, id, fileGlobs) {
   const abs = join(repoRoot, "reviewers.wiki", relPath);
   mkdirSync(dirname(abs), { recursive: true });
+  let activation = "";
+  if (Array.isArray(fileGlobs)) {
+    const items = fileGlobs.length > 0
+      ? fileGlobs.map((g) => `    - "${g}"`).join("\n") + "\n"
+      : "";
+    activation = `activation:\n  file_globs:\n${items}`;
+  }
   writeFileSync(
     abs,
-    `---\nid: ${id}\ntype: leaf\n---\n\n# ${id}\n`,
+    `---\nid: ${id}\ntype: leaf\n${activation}---\n\n# ${id}\n`,
   );
 }
 
@@ -307,4 +314,168 @@ test("validateTrimOutput: missing fields on a trim output produce specific error
   assert.match(joined, /missing or not a string|does not resolve/);
   assert.match(joined, /missing string `file`/);
   assert.match(joined, /missing string `rescued_leaf`/);
+});
+
+// ─── Class 7: pre-dispatch coverage gate ───────────────────────────────
+//
+// Hermetic fixture for class 7: two leaves with explicit, non-overlapping
+// activation.file_globs[]. We pick from a stage-A set whose union of
+// globs covers the whole VALID_ENV.changed_paths set, then deviate the
+// picks to expose orphan files.
+
+let COVERAGE_REPO_ROOT;
+
+before(() => {
+  COVERAGE_REPO_ROOT = mkdtempSync(join(tmpdir(), "trim-coverage-"));
+  // Two real leaves under the coverage repo with disjoint globs:
+  //   ts-leaf  matches **/*.ts
+  //   util-leaf matches src/util/**
+  writeLeaf(COVERAGE_REPO_ROOT, "cluster-a/ts-leaf.md", "ts-leaf", ["**/*.ts"]);
+  writeLeaf(COVERAGE_REPO_ROOT, "cluster-a/util-leaf.md", "util-leaf", ["src/util/**"]);
+  // Third leaf with NO activation block at all (broad-credit case).
+  writeLeaf(COVERAGE_REPO_ROOT, "cluster-a/broad-leaf.md", "broad-leaf");
+  // Fourth with explicit empty file_globs (also broad-credit, distinct shape).
+  writeLeaf(COVERAGE_REPO_ROOT, "cluster-a/empty-globs-leaf.md", "empty-globs-leaf", []);
+});
+
+after(() => {
+  if (COVERAGE_REPO_ROOT) rmSync(COVERAGE_REPO_ROOT, { recursive: true, force: true });
+});
+
+const COVERAGE_STAGE_A = [
+  { id: "ts-leaf",          path: "cluster-a/ts-leaf.md",          activation_match: ["file_globs"] },
+  { id: "util-leaf",        path: "cluster-a/util-leaf.md",        activation_match: ["file_globs"] },
+  { id: "broad-leaf",       path: "cluster-a/broad-leaf.md",       activation_match: ["focus_only"] },
+  { id: "empty-globs-leaf", path: "cluster-a/empty-globs-leaf.md", activation_match: ["focus_only"] },
+];
+
+test("validateTrimOutput: class 7 — every changed_path covered by some leaf glob (passes)", () => {
+  // ts-leaf covers **/*.ts, util-leaf covers src/util/**. Together they
+  // cover both changed_paths.
+  const out = {
+    picked_leaves: [
+      { id: "ts-leaf", path: "cluster-a/ts-leaf.md", justification: "j", dimensions: ["correctness"] },
+      { id: "util-leaf", path: "cluster-a/util-leaf.md", justification: "j", dimensions: ["correctness"] },
+    ],
+    rejected_leaves: [],
+    coverage_rescues: [],
+  };
+  const env = {
+    stage_a_candidates: COVERAGE_STAGE_A,
+    changed_paths: ["src/api/auth.ts", "src/util/jwt.js"],
+  };
+  const result = validateTrimOutput(out, env, { repoRoot: COVERAGE_REPO_ROOT });
+  assert.deepEqual(result, { ok: true, errors: [] });
+});
+
+test("validateTrimOutput: class 7 — orphan changed_path with no rescue fails", () => {
+  // Pick only ts-leaf (covers **/*.ts). The .py changed_path is orphan.
+  const out = {
+    picked_leaves: [
+      { id: "ts-leaf", path: "cluster-a/ts-leaf.md", justification: "j", dimensions: ["correctness"] },
+    ],
+    rejected_leaves: [
+      { id: "util-leaf", reason: "irrelevant" },
+    ],
+    coverage_rescues: [],
+  };
+  const env = {
+    stage_a_candidates: COVERAGE_STAGE_A,
+    changed_paths: ["src/api/auth.ts", "scripts/migrate.py"],
+  };
+  const result = validateTrimOutput(out, env, { repoRoot: COVERAGE_REPO_ROOT });
+  assert.equal(result.ok, false);
+  assert.ok(
+    result.errors.some(
+      (e) => e.includes("changed_paths not covered") && e.includes("scripts/migrate.py"),
+    ),
+    `expected an orphan-changed-path error naming scripts/migrate.py, got: ${result.errors.join("; ")}`,
+  );
+  // The covered path must NOT appear in the orphan list.
+  assert.ok(
+    !result.errors.some((e) => e.includes("changed_paths not covered") && e.includes("src/api/auth.ts")),
+  );
+});
+
+test("validateTrimOutput: class 7 — coverage_rescue closes the orphan gap", () => {
+  // Same orphan scenario, but the migrate.py path is in coverage_rescues.
+  const out = {
+    picked_leaves: [
+      { id: "ts-leaf", path: "cluster-a/ts-leaf.md", justification: "j", dimensions: ["correctness"] },
+    ],
+    rejected_leaves: [
+      { id: "util-leaf", reason: "irrelevant" },
+    ],
+    coverage_rescues: [
+      { file: "scripts/migrate.py", rescued_leaf: "util-leaf", reason: "fallback" },
+    ],
+  };
+  const env = {
+    stage_a_candidates: COVERAGE_STAGE_A,
+    changed_paths: ["src/api/auth.ts", "scripts/migrate.py"],
+  };
+  const result = validateTrimOutput(out, env, { repoRoot: COVERAGE_REPO_ROOT });
+  assert.deepEqual(result, { ok: true, errors: [] });
+});
+
+test("validateTrimOutput: class 7 — broad-credit leaf (no activation block) covers everything", () => {
+  // broad-leaf has no activation block in its frontmatter → broad credit.
+  // Even with globs that don't match, the broad-credit short-circuit makes
+  // every changed_path covered.
+  const out = {
+    picked_leaves: [
+      { id: "ts-leaf", path: "cluster-a/ts-leaf.md", justification: "j", dimensions: ["correctness"] },
+      { id: "broad-leaf", path: "cluster-a/broad-leaf.md", justification: "j", dimensions: ["correctness"] },
+    ],
+    rejected_leaves: [],
+    coverage_rescues: [],
+  };
+  const env = {
+    stage_a_candidates: COVERAGE_STAGE_A,
+    changed_paths: ["src/api/auth.ts", "scripts/migrate.py"],
+  };
+  const result = validateTrimOutput(out, env, { repoRoot: COVERAGE_REPO_ROOT });
+  assert.deepEqual(result, { ok: true, errors: [] });
+});
+
+test("validateTrimOutput: class 7 — broad-credit leaf with empty file_globs[] also covers everything", () => {
+  // empty-globs-leaf has activation: file_globs: [] explicitly. The
+  // computeFilteredDiff fallback gives that specialist the full diff,
+  // so for coverage purposes it credits every changed_path.
+  const out = {
+    picked_leaves: [
+      { id: "empty-globs-leaf", path: "cluster-a/empty-globs-leaf.md", justification: "j", dimensions: ["correctness"] },
+    ],
+    rejected_leaves: [],
+    coverage_rescues: [],
+  };
+  const env = {
+    stage_a_candidates: COVERAGE_STAGE_A,
+    changed_paths: ["any/path/here.xyz", "another/file.unknown"],
+  };
+  const result = validateTrimOutput(out, env, { repoRoot: COVERAGE_REPO_ROOT });
+  assert.deepEqual(result, { ok: true, errors: [] });
+});
+
+test("validateTrimOutput: class 7 — multiple orphans listed in one error", () => {
+  // No picked leaves cover anything; no rescues. All N changed_paths
+  // surface in the same error string.
+  const out = {
+    picked_leaves: [
+      { id: "ts-leaf", path: "cluster-a/ts-leaf.md", justification: "j", dimensions: ["correctness"] },
+    ],
+    rejected_leaves: [],
+    coverage_rescues: [],
+  };
+  const env = {
+    stage_a_candidates: COVERAGE_STAGE_A,
+    changed_paths: ["a.py", "b.rb", "c.go"],
+  };
+  const result = validateTrimOutput(out, env, { repoRoot: COVERAGE_REPO_ROOT });
+  assert.equal(result.ok, false);
+  const orphanErr = result.errors.find((e) => e.includes("changed_paths not covered"));
+  assert.ok(orphanErr, `expected an orphan-changed-path error, got: ${result.errors.join("; ")}`);
+  assert.ok(orphanErr.includes("a.py"));
+  assert.ok(orphanErr.includes("b.rb"));
+  assert.ok(orphanErr.includes("c.go"));
 });

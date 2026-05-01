@@ -962,7 +962,7 @@ export function writeSpecialistPromptsToDisk(brief) {
     // cleanup, the previous shape's files would silently shadow the
     // new shape and aggregate/pending-id discovery would read the
     // wrong set.
-    cleanupStalePromptShape(brief.run_id, leaf.id, shards.length === 1);
+    cleanupStalePromptShape(brief.run_id, leaf.id);
     if (shards.length === 1) {
       // Common case: one prompt at the existing path shape, preserving
       // backward compatibility for non-sharded leaves.
@@ -1022,7 +1022,7 @@ export function writeSpecialistPromptsToDisk(brief) {
 //
 // Best-effort: rm failures are swallowed (these are derivative
 // artefacts; the primary write is the source of truth).
-function cleanupStalePromptShape(runId, leafId, _willBeNonSharded) {
+function cleanupStalePromptShape(runId, leafId) {
   const samplePromptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leafId);
   if (!samplePromptPath) return;
   const dir = dirname(samplePromptPath);

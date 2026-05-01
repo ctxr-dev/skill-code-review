@@ -107,7 +107,15 @@ function canonicalJson(value) {
 //   - repoRoot:        optional; only used to read the prompt body. When
 //                      omitted, only the path is hashed (back-compat with
 //                      callers that don't have repo-root context).
-export function computeHashKey({ state, promptTemplate, inputs, repoRoot }) {
+//   - responseSchema:  optional; the FSM-declared response_schema for
+//                      this state. Issue #85 made the schema part of
+//                      the worker-visible dispatch prompt, so a schema
+//                      tweak now changes the effective worker contract
+//                      even when prompt_body / inputs are unchanged. We
+//                      canonicalise it into the hash so old fixtures
+//                      recorded against a looser schema get a replay
+//                      miss when the schema tightens.
+export function computeHashKey({ state, promptTemplate, inputs, repoRoot, responseSchema }) {
   const h = createHash("sha256");
   h.update(String(state ?? ""));
   h.update("\u001f"); // unit-separator — unlikely to appear in any field
@@ -186,6 +194,15 @@ export function computeHashKey({ state, promptTemplate, inputs, repoRoot }) {
   h.update(promptBody);
   h.update("\u001f");
   h.update(canonicalJson(inputs ?? {}));
+  h.update("\u001f");
+  // Include the response_schema (canonicalised) so a schema tweak in
+  // the FSM yaml busts the hash even when the prompt body and inputs
+  // are byte-identical. Issue #85 made the schema part of the
+  // worker-visible dispatch prompt, so the effective contract now
+  // depends on it. `null` (legacy callers that don't pass it) hashes
+  // distinctly from the canonical-form of an empty object so we can
+  // tell back-compat callers from "I really meant {}".
+  h.update(canonicalJson(responseSchema ?? null));
   return h.digest("hex");
 }
 

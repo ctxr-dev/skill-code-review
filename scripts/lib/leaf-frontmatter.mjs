@@ -30,8 +30,17 @@ export function splitFrontmatter(text) {
   const openingMatch = text.match(/^---\r?\n/);
   if (!openingMatch) return null;
   const openingLen = openingMatch[0].length;
-  const closingMatch = text.slice(openingLen).match(/(\r?\n)---(\r?\n|$)/);
+  // Closing-fence regex allows an empty frontmatter block (`---\n---\n…`)
+  // by treating the leading newline as optional when the fence sits at
+  // the very start of the slice. The captured prefix-length is then 0
+  // and frontmatter slices to the empty string.
+  const remainder = text.slice(openingLen);
+  const closingMatch = remainder.match(/(^|\r?\n)---(\r?\n|$)/);
   if (!closingMatch) return null;
+  // closingMatch.index points at the start of the leading newline (or
+  // at 0 when the empty-frontmatter `^` alternative matched). Slicing
+  // up to that index drops the leading newline from the frontmatter
+  // value, which is what callers expect.
   const fmEnd = openingLen + closingMatch.index;
   const bodyStart = openingLen + closingMatch.index + closingMatch[0].length;
   return {

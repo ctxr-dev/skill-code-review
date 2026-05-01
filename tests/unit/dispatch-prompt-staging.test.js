@@ -96,7 +96,63 @@ test("buildDispatchPromptText: standard worker — embeds prompt_body, INPUTS, O
   assert.match(text, /\/run\/dir\/workers\/scan_project-output\.json/);
 });
 
-test("buildDispatchPromptText: per-specialist — embeds leaf id/path/dimensions/file_globs/body, project_profile, changed_paths, pre-computed FILTERED DIFF section", () => {
+test("buildDispatchPromptText: standard worker — embeds RESPONSE SCHEMA when brief carries one (#85)", () => {
+  // Regression: previously the prompt's tail said "matching the
+  // response_schema in your prompt above" but no schema was embedded,
+  // and workers schema-faulted on first attempt. Lock the contract:
+  // when brief.worker.response_schema is present, the staged prompt
+  // emits a verbatim "--- RESPONSE SCHEMA ---" block.
+  const brief = {
+    has_worker: true,
+    state: "scan_project",
+    worker: {
+      role: "project-scanner",
+      inputs: ["args"],
+      prompt_body: "# Worker: project-scanner",
+      response_schema: {
+        type: "object",
+        required: ["project_profile"],
+        properties: {
+          project_profile: {
+            type: "object",
+            required: ["languages"],
+            properties: {
+              languages: { type: "array", items: { type: "string" } },
+            },
+          },
+        },
+      },
+    },
+    inputs: { args: {} },
+    outputs_path: "/run/dir/workers/scan_project-output.json",
+  };
+  const text = buildDispatchPromptText(brief);
+  assert.match(text, /--- RESPONSE SCHEMA \(your JSON output must match this\) ---/);
+  assert.match(text, /"required":\s*\[\s*"project_profile"/);
+  assert.match(text, /"languages":\s*\{\s*"type":\s*"array"/);
+  // OUTPUTS PATH preamble now references the schema section directly
+  // (replacing the misleading "in your prompt above" wording).
+  assert.match(text, /matching the RESPONSE SCHEMA above/);
+  assert.doesNotMatch(text, /response_schema in your prompt above/);
+});
+
+test("buildDispatchPromptText: standard worker — falls back gracefully when brief omits response_schema", () => {
+  // No FSM state today omits response_schema, but the prompt builder
+  // shouldn't break if a future state intentionally goes schema-less.
+  const brief = {
+    has_worker: true,
+    state: "future_schemaless_state",
+    worker: { role: "x", inputs: [], prompt_body: "# X" },
+    inputs: {},
+    outputs_path: "/run/dir/workers/future-output.json",
+  };
+  const text = buildDispatchPromptText(brief);
+  assert.match(text, /--- OUTPUTS PATH ---/);
+  assert.doesNotMatch(text, /--- RESPONSE SCHEMA/);
+  assert.match(text, /Write your JSON response to:/);
+});
+
+test("buildDispatchPromptText: per-specialist (no opts.filteredDiff) — emits FILTERED DIFF placeholder; checks leaf id/path/dimensions/file_globs/body, project_profile, changed_paths shape", () => {
   const brief = {
     has_worker: true,
     state: "dispatch_specialists",

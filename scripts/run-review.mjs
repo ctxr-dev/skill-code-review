@@ -29,8 +29,8 @@
 // handler emits a `fault` so callers can react uniformly.
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync, mkdtempSync, existsSync, rmSync, renameSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { readFileSync, writeFileSync, mkdtempSync, existsSync, rmSync, renameSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve, relative, sep } from "node:path";
 import { tmpdir, platform } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -213,15 +213,57 @@ export function enrichBriefWithSpecialistBodies(brief) {
   const pickedLeaves = inputs?.picked_leaves;
   if (!Array.isArray(pickedLeaves) || pickedLeaves.length === 0) return brief;
   const wikiRoot = resolve(REPO_ROOT, "reviewers.wiki");
+  // Realpath the wiki root once. We require every resolved leaf path
+  // to land INSIDE this realpath, so an LLM-supplied `leaf.path` can't
+  // walk out via `..` segments or symlinks (defense-in-depth — the
+  // trim worker is supposed to produce only valid leaf paths, but this
+  // helper reads the file directly so the boundary check is local).
+  // Fail closed: if the wiki root can't be realpathed, return the brief
+  // unenriched rather than reading arbitrary files. The orchestrator
+  // can still Read leaves from leaf.path itself.
+  let realWikiRoot;
+  try {
+    realWikiRoot = realpathSync(wikiRoot);
+  } catch {
+    return brief;
+  }
   const enrichedLeaves = pickedLeaves.map((leaf) => {
     if (!leaf || typeof leaf.path !== "string") return leaf;
+    // Apply the same leaf-shape guards as
+    // scripts/lib/trim-output-validator.mjs leafPathExists():
+    //   - must end in `.md`
+    //   - basename cannot be `index.md` (cluster summary, not a leaf)
+    //   - basename cannot start with `.` (dotfiles like `.gitignore`)
+    // The realpath boundary check below blocks paths outside the wiki,
+    // but `reviewers.wiki/index.md` and `reviewers.wiki/.gitignore`
+    // ARE inside the wiki — these guards stop a malformed brief from
+    // baking either into a specialist prompt.
+    if (!leaf.path.endsWith(".md")) return leaf;
+    const baseSeg = leaf.path.split(/[\\/]/).pop() ?? "";
+    if (!baseSeg || baseSeg === "index.md" || baseSeg.startsWith(".")) {
+      return leaf;
+    }
     // Try wiki-relative first (the canonical shape from tree_descend),
     // then repo-relative as a fallback (some upstream tooling carries the
     // longer prefix). Mirrors verify-coverage.mjs's resolution order.
     const candidates = [resolve(wikiRoot, leaf.path), resolve(REPO_ROOT, leaf.path)];
     for (const candidate of candidates) {
       try {
-        const text = readFileSync(candidate, "utf8");
+        // Realpath-then-boundary: if a candidate resolves to a path
+        // outside the wiki tree (via ../ segments or symlinks), refuse
+        // to read it. We allow either the canonical wiki-relative
+        // candidate OR a repo-relative candidate that ALSO realpaths
+        // into the wiki, since the wiki lives under the repo.
+        const realCandidate = realpathSync(candidate);
+        const rel = relative(realWikiRoot, realCandidate);
+        // The isAbsolute(rel) guard catches Windows cross-drive paths
+        // (`D:\...`) where path.relative returns an absolute string —
+        // those wouldn't start with `..` or `sep` and would otherwise
+        // pass the boundary check incorrectly.
+        if (rel === "" || rel.startsWith("..") || rel.startsWith(sep) || isAbsolute(rel)) {
+          continue; // outside the wiki — skip silently to next candidate
+        }
+        const text = readFileSync(realCandidate, "utf8");
         // PR for #83: parse the frontmatter so we can also surface
         // activation.file_globs as a structured field. The runner
         // (writeSpecialistPromptsToDisk → buildDispatchPromptText)
@@ -296,6 +338,12 @@ function computeFilteredDiff(baseSha, headSha, fileGlobs) {
     maxBuffer: 32 * 1024 * 1024,
   });
   if (result.error) {
+    // ENOBUFS: spawnSync's maxBuffer (32MB) was exceeded by the diff.
+    // Surface this distinctly so the placeholder names the cap rather
+    // than reading like a generic "spawn failed".
+    if (result.error.code === "ENOBUFS") {
+      return "(diff unavailable: filtered diff exceeded the 32 MB buffer cap; consider tightening the leaf's activation.file_globs[] to scope the diff)";
+    }
     return `(diff unavailable: git spawn failed: ${result.error.message ?? "unknown"})`;
   }
   // spawnSync sets `signal` (and leaves `status` null) when the child
@@ -512,8 +560,29 @@ export function buildDispatchPromptText(brief, opts = {}) {
     lines.push(`${name} = ${JSON.stringify(value, null, 2)}`);
     lines.push("");
   }
-  lines.push("--- OUTPUTS PATH ---");
-  lines.push(`Write your JSON response (matching the response_schema in your prompt above) to:`);
+  // PR for #85: embed the FSM-declared response_schema verbatim so the
+  // worker has a machine-readable contract for what to return. Before
+  // this, the prompt's tail said "matching the response_schema in your
+  // prompt above" but no schema was actually in the prompt — workers
+  // wrote blind and discovered the contract only at FSM commit time
+  // (post-hoc schema_violation faults). Some workers (project-scanner)
+  // shipped non-conforming shapes on first attempt under that regime.
+  const responseSchema = brief?.worker?.response_schema;
+  if (responseSchema && typeof responseSchema === "object") {
+    lines.push("--- RESPONSE SCHEMA (your JSON output must match this) ---");
+    lines.push(JSON.stringify(responseSchema, null, 2));
+    lines.push("");
+    lines.push("--- OUTPUTS PATH ---");
+    lines.push("Write your JSON response (matching the RESPONSE SCHEMA above) to:");
+  } else {
+    // Fallback: brief without a schema. Emit a generic OUTPUTS PATH
+    // preamble that doesn't mention any schema (since none exists for
+    // the worker to match). No state in the current FSM omits
+    // response_schema, but keeping the branch defensive avoids churn
+    // if a future state is intentionally schema-less.
+    lines.push("--- OUTPUTS PATH ---");
+    lines.push("Write your JSON response to:");
+  }
   lines.push(outputsPath);
   lines.push("");
   return lines.join("\n");
@@ -610,6 +679,12 @@ function hashKeyForBrief(brief, env) {
     // SHA in the hash — editing the prose without renaming the file
     // invalidates every recorded fixture for that worker.
     repoRoot: REPO_ROOT,
+    // PR for #85: the dispatch prompt now embeds the response_schema
+    // (so workers don't write blind). Including the schema in the
+    // hash means old fixtures get a replay-miss when the schema
+    // tightens — schema-related regressions can no longer be masked
+    // by stale cache hits.
+    responseSchema: brief?.worker?.response_schema ?? null,
   });
 }
 

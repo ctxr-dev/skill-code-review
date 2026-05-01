@@ -82,6 +82,52 @@ test("computeHashKey: same inputs → same hash; any input change → different 
   assert.notEqual(a, diffInputs);
 });
 
+test("computeHashKey: responseSchema participates in the hash (issue #85 cache-busting)", () => {
+  // Issue #85 made the FSM's response_schema part of the worker-visible
+  // dispatch prompt. The hash key must therefore include it: tightening
+  // a schema in the FSM yaml without renaming the prompt template
+  // would otherwise leave old fixtures replayable under the new
+  // contract, masking schema-related regressions.
+  const baseArgs = {
+    state: "scan_project",
+    promptTemplate: "fsm/workers/project-scanner.md",
+    inputs: { args: { foo: "bar" } },
+  };
+  const noSchema = computeHashKey(baseArgs);
+  const withSchemaA = computeHashKey({
+    ...baseArgs,
+    responseSchema: {
+      type: "object",
+      required: ["project_profile"],
+      properties: { project_profile: { type: "object" } },
+    },
+  });
+  const withSchemaB = computeHashKey({
+    ...baseArgs,
+    responseSchema: {
+      type: "object",
+      // Tightened: now also requires `changed_paths`.
+      required: ["project_profile", "changed_paths"],
+      properties: {
+        project_profile: { type: "object" },
+        changed_paths: { type: "array" },
+      },
+    },
+  });
+  assert.notEqual(noSchema, withSchemaA, "no schema vs. some schema must hash differently");
+  assert.notEqual(withSchemaA, withSchemaB, "tightening the schema must bust the hash");
+  // Same schema in different key order canonicalises to the same hash.
+  const withSchemaA2 = computeHashKey({
+    ...baseArgs,
+    responseSchema: {
+      properties: { project_profile: { type: "object" } },
+      required: ["project_profile"],
+      type: "object",
+    },
+  });
+  assert.equal(withSchemaA, withSchemaA2, "byte-different but logically-identical schemas must hash equal");
+});
+
 test("computeHashKey: same prompt body in CRLF and LF produces the same hash", async () => {
   // Without CRLF normalization, a Windows checkout (core.autocrlf=true)
   // would hash the same logical prompt to a different value than a

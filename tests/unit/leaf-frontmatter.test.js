@@ -41,6 +41,18 @@ test("splitFrontmatter: CRLF input is parsed identically (Windows checkout)", ()
   assert.equal(out.body, "# Body\r\nsome content\r\n");
 });
 
+test("splitFrontmatter: parses empty frontmatter `---\\n---\\n<body>`", () => {
+  // Edge case: `---\n---\nbody` previously returned null because the
+  // closing-fence regex required a leading newline before the `---`.
+  // Empty frontmatter is valid markdown; the parser now accepts it
+  // and returns frontmatter="" with body intact.
+  const text = "---\n---\nbody starts here\n";
+  const out = splitFrontmatter(text);
+  assert.ok(out, "expected a result for empty frontmatter");
+  assert.equal(out.frontmatter, "");
+  assert.equal(out.body, "body starts here\n");
+});
+
 test("extractFileGlobs: returns empty when no activation block / no file_globs", () => {
   assert.deepEqual(extractFileGlobs(null), []);
   assert.deepEqual(extractFileGlobs(""), []);

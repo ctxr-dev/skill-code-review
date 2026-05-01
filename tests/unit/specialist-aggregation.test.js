@@ -544,6 +544,37 @@ test("discoverLeafShards: returns empty array when neither shape is staged", () 
   }
 });
 
+test("discoverLeafShards: throws when BOTH canonical and sharded prompt files coexist on disk", () => {
+  // Defends against the corruption case where cleanupStalePromptShape's
+  // best-effort rmSync fails silently and leaves stale files of the
+  // other shape behind during a re-stage. If discoverLeafShards
+  // silently preferred the canonical path here, the runner would drop
+  // the shard work; if it silently preferred shards, it would drop
+  // the non-sharded work. Hard-failing forces the corruption to
+  // surface to the caller (orchestrator or aggregator) so the run
+  // can be aborted and re-staged cleanly rather than producing a
+  // partial review.
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "both-shapes");
+    writePrompt(runId, "both-shapes", 0);
+    writePrompt(runId, "both-shapes", 1);
+    assert.throws(
+      () => discoverLeafShards(runId, "both-shapes"),
+      (err) => {
+        return (
+          err instanceof Error &&
+          /both canonical and sharded prompt files exist/.test(err.message) &&
+          /both-shapes/.test(err.message)
+        );
+      },
+      "must throw a clear corruption error when both prompt shapes are present",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
 test("discoverLeafShards: partial staging (shards 0 and 2, gap at 1) reports the FULL contiguous range", () => {
   // Simulates atomicWriteFile swallowing shard 1's I/O error during
   // staging. discoverLeafShards must NOT pretend shard 1 doesn't

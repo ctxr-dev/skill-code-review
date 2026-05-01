@@ -52,6 +52,11 @@ import {
   splitFrontmatter,
   extractFileGlobs as extractFileGlobsFromYaml,
 } from "./lib/leaf-frontmatter.mjs";
+// ID_PATTERN is the project's canonical leaf-id regex (kebab-case
+// ASCII, no leading/trailing hyphens, no consecutive hyphens). Import
+// rather than re-declare so leaf-id validation stays consistent across
+// the runner, the source-side validators, and the FSM workers.
+import { ID_PATTERN } from "./lib/reviewer-schema.mjs";
 
 // Apply the B8 referential-integrity check to a worker output. Returns
 // `{ ok: true }` for no-op (output isn't a trim shape) or for a clean
@@ -649,17 +654,17 @@ function isSafeStateSegment(state) {
 // match the forbidden pattern.
 function isValidLeafId(leafId) {
   if (typeof leafId !== "string") return false;
-  // Strict kebab-case (matches scripts/lib/reviewer-schema.mjs's
-  // existing leaf-id validator): start with a lowercase alnum
-  // segment, then zero or more `-<segment>` groups. No leading
-  // hyphens, no trailing hyphens, no consecutive hyphens, no
-  // uppercase. The corpus's 476 leaves all match this shape.
-  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(leafId)) return false;
+  // Reuse ID_PATTERN from scripts/lib/reviewer-schema.mjs (the
+  // canonical leaf-id regex: strict kebab-case ASCII, no
+  // leading/trailing hyphens, no consecutive hyphens). Importing the
+  // single source of truth guarantees runner-side validation stays in
+  // lockstep with the source-side validators if the schema regex ever
+  // changes.
+  if (!ID_PATTERN.test(leafId)) return false;
   // Also reject ids whose tail looks like the shard suffix
-  // (`--<digits>`). The pattern above already rejects `foo--1` (it
-  // has an empty segment between the two hyphens), but the explicit
-  // check makes the contract clear and survives any future loosening
-  // of the kebab-case regex.
+  // (`--<digits>`). ID_PATTERN already rejects this (consecutive
+  // hyphens), but the explicit check makes the contract clear and
+  // survives any future loosening of ID_PATTERN.
   if (/--\d+$/.test(leafId)) return false;
   return true;
 }
@@ -1100,9 +1105,16 @@ function clearLeafShardsCache() {
 export function discoverLeafShards(runId, leafId) {
   const promptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leafId);
   if (!promptPath) return [];
-  // Non-sharded path exists → single-shard leaf.
-  if (existsSync(promptPath)) return null;
-  // Otherwise enumerate dispatch_specialists-prompt-<leaf-id>--<n>.md.
+  const canonicalPresent = existsSync(promptPath);
+  // Enumerate dispatch_specialists-prompt-<leaf-id>--<n>.md regardless
+  // of canonical presence so we can detect the corruption case where
+  // BOTH shapes exist on disk simultaneously (cleanupStalePromptShape's
+  // best-effort rmSync silently swallows I/O errors, so it's possible
+  // to end up with a canonical prompt and shard prompts coexisting
+  // after a re-stage). Returning `null` early on canonical presence
+  // would silently drop shard work; throwing forces the corruption to
+  // surface to whatever caller is iterating leaves so it can stop and
+  // demand a clean re-stage rather than aggregating partial results.
   // Cached one-pass listing of workers/ — the directory is shared by
   // every leaf in the run, so a single readdirSync covers all K
   // calls during aggregation/pending-list rather than K separate
@@ -1118,6 +1130,12 @@ export function discoverLeafShards(runId, leafId) {
     shards.push(Number.parseInt(tail, 10));
   }
   shards.sort((a, b) => a - b);
+  if (canonicalPresent && shards.length > 0) {
+    throw new Error(
+      `discoverLeafShards: both canonical and sharded prompt files exist for leaf "${leafId}" (canonical: ${promptPath}; shards: ${shards.map((i) => `${prefix}${i}.md`).join(", ")}). This indicates cleanupStalePromptShape failed to remove the previous shape during re-staging — the run is in a corrupted state. Re-run from --start, or remove the stale files manually before retrying.`,
+    );
+  }
+  if (canonicalPresent) return null;
   if (shards.length === 0) return [];
   // Contiguity normalisation: if the on-disk indices are
   // [0, 2] (gap at 1) we return [0, 1, 2]. The aggregator then tries
@@ -2555,8 +2573,13 @@ async function main() {
     // currentState is now guaranteed safe (isSafeStateSegment passed
     // above). The only way promptPath can be null at this point is the
     // dispatch_specialists branch rejecting a malformed leaf-id.
-    // isValidLeafId enforces TWO rules:
-    //   - must match `^[a-z][a-z0-9-]*$` (kebab-case ASCII).
+    // isValidLeafId enforces TWO rules (against ID_PATTERN imported
+    // from scripts/lib/reviewer-schema.mjs, the canonical leaf-id
+    // regex):
+    //   - must match `^[a-z0-9]+(-[a-z0-9]+)*$` (strict kebab-case
+    //     ASCII: lowercase letters and digits, single hyphens between
+    //     segments only; no leading/trailing hyphens and no
+    //     consecutive hyphens).
     //   - must NOT end in `--<digits>` (reserved as shard suffix on
     //     disk; pass shard ids via --shard-idx, or via the
     //     --print-pending-leaf-ids `<leaf>--<idx>` shorthand which

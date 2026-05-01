@@ -649,7 +649,17 @@ function isSafeStateSegment(state) {
 // match the forbidden pattern.
 function isValidLeafId(leafId) {
   if (typeof leafId !== "string") return false;
-  if (!/^[a-z][a-z0-9-]*$/.test(leafId)) return false;
+  // Strict kebab-case (matches scripts/lib/reviewer-schema.mjs's
+  // existing leaf-id validator): start with a lowercase alnum
+  // segment, then zero or more `-<segment>` groups. No leading
+  // hyphens, no trailing hyphens, no consecutive hyphens, no
+  // uppercase. The corpus's 476 leaves all match this shape.
+  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(leafId)) return false;
+  // Also reject ids whose tail looks like the shard suffix
+  // (`--<digits>`). The pattern above already rejects `foo--1` (it
+  // has an empty segment between the two hyphens), but the explicit
+  // check makes the contract clear and survives any future loosening
+  // of the kebab-case regex.
   if (/--\d+$/.test(leafId)) return false;
   return true;
 }
@@ -2600,10 +2610,30 @@ async function main() {
         fail("--batch-size must be between 1 and 50 (default 10)");
       }
     }
+    // Validate the run is ACTUALLY paused on dispatch_specialists,
+    // not just that a stale brief file exists. Brief files are
+    // retained on disk after the FSM advances; without the manifest
+    // check, this mode could silently operate on a stale brief from
+    // a finished/advanced run and mislead the orchestrator into
+    // re-dispatching against an obsolete picked_leaves set.
+    const storageRoot = resolveStorageRoot();
+    const manifest = readManifest(runId, { storageRoot });
+    if (!manifest) {
+      fail(
+        `--print-pending-leaf-ids: no manifest found for run-id "${runId}".`,
+        { run_id: runId },
+      );
+    }
+    if (manifest.current_state !== "dispatch_specialists") {
+      fail(
+        `--print-pending-leaf-ids: run "${runId}" is in state "${manifest.current_state ?? "unknown"}" (status: ${manifest.status ?? "unknown"}); the run must be paused on dispatch_specialists.`,
+        { run_id: runId, current_state: manifest.current_state ?? null, status: manifest.status ?? null },
+      );
+    }
     const briefPath = defaultBriefPath(runId, "dispatch_specialists");
     if (!briefPath || !existsSync(briefPath)) {
       fail(
-        `--print-pending-leaf-ids: no dispatch_specialists brief at "${briefPath}". The run must be paused on dispatch_specialists.`,
+        `--print-pending-leaf-ids: no dispatch_specialists brief at "${briefPath}". The run is in state dispatch_specialists per the manifest, but the brief file is missing.`,
         { run_id: runId, expected_path: briefPath },
       );
     }

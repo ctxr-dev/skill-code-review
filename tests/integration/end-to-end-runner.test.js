@@ -497,6 +497,15 @@ test("--print-pending-leaf-ids and --print-agent-shim-prompt: end-to-end CLI con
     join(workersDir, "dispatch_specialists-output-cli-beta.json"),
     JSON.stringify({ id: "cli-beta", status: "completed", findings: [] }),
   );
+  // --print-pending-leaf-ids validates manifest.current_state is
+  // dispatch_specialists before reading the brief (defends against
+  // stale-brief mis-reads on advanced runs). The run is actually
+  // paused at scan_project; mutate the manifest in place to
+  // simulate the dispatch_specialists pause for this CLI smoke test.
+  const manifestPath = `${runDir}/manifest.json`;
+  const realManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  realManifest.current_state = "dispatch_specialists";
+  writeFileSync(manifestPath, JSON.stringify(realManifest));
 
   // --print-pending-leaf-ids returns just "cli-alpha" (cli-beta has its
   // output already on disk).
@@ -559,4 +568,21 @@ test("--print-pending-leaf-ids and --print-agent-shim-prompt: end-to-end CLI con
     { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
   );
   assert.notEqual(missingLeaf.status, 0, "--print-agent-shim-prompt without --leaf-id must hard-fail");
+
+  // Restore manifest to a non-dispatch_specialists state, then assert
+  // --print-pending-leaf-ids hard-fails with a state-mismatch error
+  // (defense against stale-brief reads on advanced runs).
+  const restored = { ...realManifest, current_state: "scan_project" };
+  writeFileSync(manifestPath, JSON.stringify(restored));
+  const wrongState = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-pending-leaf-ids", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.notEqual(wrongState.status, 0, "--print-pending-leaf-ids on a non-dispatch_specialists state must hard-fail");
+  // The error names the actual current_state so the orchestrator can
+  // diagnose ("oh, I'm not actually paused on dispatch_specialists").
+  const wrongStatePayload = JSON.parse(wrongState.stdout);
+  assert.match(wrongStatePayload.message, /dispatch_specialists/);
+  assert.match(wrongStatePayload.message, /scan_project/);
 });

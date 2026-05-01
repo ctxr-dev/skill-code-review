@@ -1,0 +1,785 @@
+// specialist-aggregation.test.js — unit tests for aggregateSpecialistOutputs
+// and discoverLeafShards.
+//
+// The runner aggregates per-leaf (and per-shard) specialist output files
+// into the canonical { specialist_outputs: [...] } payload that the FSM
+// commits as the dispatch_specialists state's output. These tests
+// exercise:
+//   - non-sharded leaves (one prompt → one output)
+//   - sharded leaves (N prompts → N outputs → one merged row)
+//   - mixed (some sharded, some not)
+//   - missing per-leaf output → synthesized "failed" row
+//   - missing one shard for a sharded leaf → status reflects gap
+//
+// Hermeticity: `resolveStorageRoot` reads `.fsmrc.json` relative to the
+// runner's REPO_ROOT (the skill-code-review repo), not process.cwd().
+// We can't redirect storage_root via chdir in-process. Instead, each
+// test generates its OWN unique run-id (random 7-hex date-time) so its
+// run-dir under the real `.skill-code-review/` tree never collides
+// with another test's. Cleanup deletes only that test's run-dir.
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { dirname } from "node:path";
+
+import {
+  aggregateSpecialistOutputs,
+  discoverLeafShards,
+  defaultSpecialistOutputPath,
+  defaultDispatchPromptPath,
+} from "../../scripts/run-review.mjs";
+
+// Generate a unique run-id matching the parseRunId regex
+// `^\d{8}-\d{6}-[0-9a-f]{7}$`. We use a fixed far-future date so test
+// run-dirs sort to the bottom of `.skill-code-review/` and are easy to
+// identify / sweep, plus a random 7-hex tail per test invocation.
+function uniqueRunId() {
+  const hex = randomBytes(4).toString("hex").slice(0, 7);
+  return `20991231-235959-${hex}`;
+}
+
+// Schedule cleanup of a test's full run-dir (parent of workers/). Each
+// test calls this with its own runId so cleanup is scoped (no rmSync
+// of another test's dir even if `node --test` runs in parallel). We
+// remove the entire run-dir rather than just workers/ so the per-run
+// metadata (manifest.json, fsm-trace/) — which the runner's
+// resolveStorageRoot would create as side-effects of any future helper
+// extension — also gets cleaned up; for these tests the runner doesn't
+// create anything else, so deleting the whole dir is equivalent to
+// deleting the workers/ subtree.
+function scheduleCleanup(runId) {
+  // Workers dir lives under `<storage_root>/yyyy/mm/dd/<2-hex>/<5-hex>/workers`.
+  // defaultSpecialistOutputPath gives us a path inside it; dirname
+  // takes us to the workers/ dir; dirname again to the run-dir itself.
+  const samplePath = defaultSpecialistOutputPath(runId, "x");
+  if (!samplePath) return;
+  const runDir = dirname(dirname(samplePath));
+  return () => rmSync(runDir, { recursive: true, force: true });
+}
+
+// Helper: set up a clean workers dir for the run. Returns the runId
+// and a cleanup callback the test must invoke in its finally block.
+function freshRun() {
+  const runId = uniqueRunId();
+  const samplePath = defaultSpecialistOutputPath(runId, "x");
+  const workersDir = dirname(samplePath);
+  mkdirSync(workersDir, { recursive: true });
+  return { runId, cleanup: scheduleCleanup(runId) };
+}
+
+function writePrompt(runId, leafId, shardIdx = null) {
+  const path = defaultDispatchPromptPath(runId, "dispatch_specialists", leafId, shardIdx);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, "<staged prompt>\n");
+}
+
+function writeOutput(runId, leafId, shardIdx, payload) {
+  const path = defaultSpecialistOutputPath(runId, leafId, shardIdx);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(payload));
+}
+
+function specialistRow(id, overrides = {}) {
+  return {
+    id,
+    status: "completed",
+    runtime_ms: 100,
+    tokens_in: 1000,
+    tokens_out: 50,
+    findings: [],
+    ...overrides,
+  };
+}
+
+function brief(runId, pickedLeafIds) {
+  return {
+    run_id: runId,
+    state: "dispatch_specialists",
+    inputs: {
+      picked_leaves: pickedLeafIds.map((id) => ({ id, path: `cluster/${id}.md`, justification: "j", dimensions: ["correctness"] })),
+    },
+  };
+}
+
+test("aggregateSpecialistOutputs: 3 non-sharded leaves with outputs → ordered specialist_outputs[]", () => {
+  const { runId, cleanup } = freshRun();
+  try {
+    for (const id of ["leaf-alpha", "leaf-beta", "leaf-gamma"]) {
+      writePrompt(runId, id);
+      writeOutput(runId, id, null, specialistRow(id, {
+        findings: [{ severity: "minor", file: "a.ts", title: `from ${id}`, description: "d", impact: "i", fix: "f" }],
+      }));
+    }
+    const out = aggregateSpecialistOutputs(brief(runId, ["leaf-alpha", "leaf-beta", "leaf-gamma"]));
+    assert.equal(out.specialist_outputs.length, 3);
+    assert.deepEqual(out.specialist_outputs.map((r) => r.id), ["leaf-alpha", "leaf-beta", "leaf-gamma"]);
+    for (const row of out.specialist_outputs) {
+      assert.equal(row.findings.length, 1);
+      assert.match(row.findings[0].title, /from /);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: sharded leaf merges shard findings into ONE row", () => {
+  const { runId, cleanup } = freshRun();
+  try {
+    for (const idx of [0, 1, 2]) {
+      writePrompt(runId, "split-leaf", idx);
+      writeOutput(runId, "split-leaf", idx, specialistRow("split-leaf", {
+        runtime_ms: 100 + idx,
+        tokens_in: 1000 + idx,
+        tokens_out: 50 + idx,
+        findings: [{ severity: "minor", file: `f${idx}.ts`, title: `shard-${idx}-finding`, description: "d", impact: "i", fix: "f" }],
+      }));
+    }
+    const out = aggregateSpecialistOutputs(brief(runId, ["split-leaf"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.id, "split-leaf");
+    assert.equal(row.status, "completed");
+    assert.equal(row.findings.length, 3);
+    assert.deepEqual(row.findings.map((f) => f.title).sort(), ["shard-0-finding", "shard-1-finding", "shard-2-finding"]);
+    assert.equal(row.runtime_ms, 100 + 101 + 102);
+    assert.equal(row.tokens_in, 1000 + 1001 + 1002);
+    assert.equal(row.tokens_out, 50 + 51 + 52);
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: missing per-leaf output → synthesized failed row with skip_reason", () => {
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "ghost-leaf");
+    const out = aggregateSpecialistOutputs(brief(runId, ["ghost-leaf"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.id, "ghost-leaf");
+    assert.equal(row.status, "failed");
+    assert.equal(row.findings.length, 0);
+    assert.match(row.skip_reason, /no per-leaf output/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: missing ONE shard out of N → leaf marked failed with reason naming the shard", () => {
+  const { runId, cleanup } = freshRun();
+  try {
+    for (const idx of [0, 1, 2]) writePrompt(runId, "partial-leaf", idx);
+    writeOutput(runId, "partial-leaf", 0, specialistRow("partial-leaf"));
+    writeOutput(runId, "partial-leaf", 2, specialistRow("partial-leaf"));
+    const out = aggregateSpecialistOutputs(brief(runId, ["partial-leaf"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.status, "failed");
+    assert.match(row.skip_reason, /shard 1/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: leaf with no staged prompt at all → failed with 'no dispatch prompt'", () => {
+  const { runId, cleanup } = freshRun();
+  try {
+    const out = aggregateSpecialistOutputs(brief(runId, ["unstaged-leaf"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.status, "failed");
+    assert.match(row.skip_reason, /no dispatch prompt staged/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: mixed sharded + non-sharded leaves both end up in specialist_outputs[]", () => {
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "narrow-leaf");
+    writeOutput(runId, "narrow-leaf", null, specialistRow("narrow-leaf", {
+      findings: [{ severity: "minor", file: "narrow.ts", title: "narrow", description: "d", impact: "i", fix: "f" }],
+    }));
+    writePrompt(runId, "wide-leaf", 0);
+    writePrompt(runId, "wide-leaf", 1);
+    writeOutput(runId, "wide-leaf", 0, specialistRow("wide-leaf", {
+      findings: [{ severity: "minor", file: "w0.ts", title: "wide-shard-0", description: "d", impact: "i", fix: "f" }],
+    }));
+    writeOutput(runId, "wide-leaf", 1, specialistRow("wide-leaf", {
+      findings: [{ severity: "minor", file: "w1.ts", title: "wide-shard-1", description: "d", impact: "i", fix: "f" }],
+    }));
+    const out = aggregateSpecialistOutputs(brief(runId, ["narrow-leaf", "wide-leaf"]));
+    assert.equal(out.specialist_outputs.length, 2);
+    assert.deepEqual(out.specialist_outputs.map((r) => r.id), ["narrow-leaf", "wide-leaf"]);
+    const wide = out.specialist_outputs.find((r) => r.id === "wide-leaf");
+    assert.equal(wide.findings.length, 2);
+    assert.deepEqual(wide.findings.map((f) => f.title).sort(), ["wide-shard-0", "wide-shard-1"]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: stamps id authoritatively even if worker wrote a different id", () => {
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "good-id");
+    writeOutput(runId, "good-id", null, specialistRow("WRONG-ID-FROM-WORKER", { findings: [] }));
+    const out = aggregateSpecialistOutputs(brief(runId, ["good-id"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    assert.equal(out.specialist_outputs[0].id, "good-id");
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: non-object JSON payload (null, array, scalar) surfaces as failed (#93 round-5)", () => {
+  // A worker that writes a syntactically-valid JSON value that isn't
+  // an object — `null`, `42`, `[1,2,3]` — must NOT crash the aggregator
+  // (object-spread on null throws at runtime) and must NOT be silently
+  // treated as a completed row. The aggregator emits a failed row with
+  // skip_reason naming what was actually written.
+  const { runId, cleanup } = freshRun();
+  try {
+    for (const [leafId, raw] of [
+      ["null-payload-leaf", "null"],
+      ["array-payload-leaf", "[1,2,3]"],
+      ["scalar-payload-leaf", "42"],
+    ]) {
+      writePrompt(runId, leafId);
+      const path = defaultSpecialistOutputPath(runId, leafId);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, raw);
+    }
+    const out = aggregateSpecialistOutputs(brief(runId, ["null-payload-leaf", "array-payload-leaf", "scalar-payload-leaf"]));
+    assert.equal(out.specialist_outputs.length, 3);
+    for (const row of out.specialist_outputs) {
+      assert.equal(row.status, "failed");
+      assert.match(row.skip_reason, /not a JSON object/);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: non-sharded leaf with status=skipped but no skip_reason gets a default reason (#93 round-7)", () => {
+  // FSM response_schema requires skip_reason iff status == skipped.
+  // A worker that wrote status=skipped without skip_reason would
+  // otherwise fail the post-hoc commit-time schema check. The
+  // aggregator synthesizes a default reason naming the omission so
+  // the aggregate commits cleanly.
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "skipped-no-reason");
+    writeOutput(runId, "skipped-no-reason", null, {
+      id: "skipped-no-reason",
+      status: "skipped",
+      runtime_ms: 100,
+      tokens_in: 100,
+      tokens_out: 0,
+      findings: [],
+      // skip_reason intentionally omitted
+    });
+    const out = aggregateSpecialistOutputs(brief(runId, ["skipped-no-reason"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.status, "skipped");
+    assert.equal(typeof row.skip_reason, "string");
+    assert.match(row.skip_reason, /skip_reason/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: sharded leaf where every shard skipped without reason yields a non-empty merged skip_reason (#93 round-7)", () => {
+  // Sharded equivalent: every shard returned status=skipped but no
+  // shard provided skip_reason. The merged leaf's status is
+  // "skipped"; without a synthesized reason the FSM schema would
+  // reject the aggregate at commit time. sanitiseSpecialistRow now
+  // synthesises a per-shard "worker wrote status=skipped without
+  // skip_reason" default; the merger prefixes each with "shard <idx>:"
+  // and joins them. The test asserts the merged skip_reason is
+  // present and non-empty (specific wording is implementation
+  // detail).
+  const { runId, cleanup } = freshRun();
+  try {
+    for (const idx of [0, 1]) {
+      writePrompt(runId, "all-skipped-no-reason", idx);
+      writeOutput(runId, "all-skipped-no-reason", idx, {
+        id: "all-skipped-no-reason",
+        status: "skipped",
+        runtime_ms: 50,
+        tokens_in: 100,
+        tokens_out: 0,
+        findings: [],
+        // no skip_reason from any shard
+      });
+    }
+    const out = aggregateSpecialistOutputs(brief(runId, ["all-skipped-no-reason"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.status, "skipped");
+    assert.equal(typeof row.skip_reason, "string");
+    assert.ok(row.skip_reason.length > 0, "merged skip_reason must be non-empty for status=skipped");
+    // Each shard's per-shard prefix appears in the merged reason.
+    assert.match(row.skip_reason, /shard 0/);
+    assert.match(row.skip_reason, /shard 1/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: non-sharded leaf with invalid status is normalised to failed (#93 round-6)", () => {
+  // Symmetric to the sharded "typo status" test above. A non-sharded
+  // worker that writes status="weird-status" must NOT propagate the
+  // invalid value into specialist_outputs[] — the FSM's response_schema
+  // would reject post-hoc. Aggregation flattens to failed and records
+  // the typo in skip_reason.
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "non-shard-typo-leaf");
+    writeOutput(runId, "non-shard-typo-leaf", null, specialistRow("non-shard-typo-leaf", { status: "weird-status" }));
+    const out = aggregateSpecialistOutputs(brief(runId, ["non-shard-typo-leaf"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.status, "failed");
+    assert.match(row.skip_reason, /weird-status/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: non-array findings → row downgraded to failed with structured skip_reason (#93 round-10)", () => {
+  // FSM schema requires findings to be an array. A worker that wrote
+  // findings: null (or a string, or undefined) would otherwise
+  // propagate into specialist_outputs[] and fail post-hoc schema
+  // validation. sanitiseSpecialistRow downgrades the row to failed
+  // and records what the worker wrote in skip_reason.
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "bad-findings-leaf");
+    writeOutput(runId, "bad-findings-leaf", null, {
+      id: "bad-findings-leaf",
+      status: "completed",
+      runtime_ms: 100,
+      tokens_in: 100,
+      tokens_out: 50,
+      findings: null, // wrong shape
+    });
+    const out = aggregateSpecialistOutputs(brief(runId, ["bad-findings-leaf"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.status, "failed");
+    assert.deepEqual(row.findings, []);
+    assert.match(row.skip_reason, /findings=null/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: skip_reason is dropped for status=completed (#93 round-14)", () => {
+  // sanitiseSpecialistRow's docstring says skip_reason is dropped
+  // for status=completed (a stale value would be misleading in the
+  // report). The test locks the contract down: a worker that wrote
+  // BOTH status=completed AND skip_reason has skip_reason removed
+  // by the time it lands in specialist_outputs[].
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "completed-with-stale-reason");
+    writeOutput(runId, "completed-with-stale-reason", null, {
+      id: "completed-with-stale-reason",
+      status: "completed",
+      runtime_ms: 100,
+      tokens_in: 100,
+      tokens_out: 50,
+      findings: [],
+      skip_reason: "stale value from a previous attempt",
+    });
+    const out = aggregateSpecialistOutputs(brief(runId, ["completed-with-stale-reason"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.status, "completed");
+    assert.equal(row.skip_reason, undefined, "skip_reason must be dropped for status=completed");
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: non-integer numeric fields are floored to integers (#93 round-12)", () => {
+  // FSM response_schema declares runtime_ms / tokens_in / tokens_out
+  // as integers. A worker that wrote 1.5 would otherwise pass
+  // sanitisation (it's a finite non-negative number) but fail post-hoc
+  // commit-time schema validation. sanitiseSpecialistRow now floors
+  // to an integer so both sharded and non-sharded outputs always
+  // satisfy the schema.
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "fractional-numerics-leaf");
+    writeOutput(runId, "fractional-numerics-leaf", null, {
+      id: "fractional-numerics-leaf",
+      status: "completed",
+      runtime_ms: 1.7,
+      tokens_in: 100.9,
+      tokens_out: 50.5,
+      findings: [],
+    });
+    const out = aggregateSpecialistOutputs(brief(runId, ["fractional-numerics-leaf"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.ok(Number.isInteger(row.runtime_ms), "runtime_ms must be an integer");
+    assert.ok(Number.isInteger(row.tokens_in), "tokens_in must be an integer");
+    assert.ok(Number.isInteger(row.tokens_out), "tokens_out must be an integer");
+    assert.equal(row.runtime_ms, 1);
+    assert.equal(row.tokens_in, 100);
+    assert.equal(row.tokens_out, 50);
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: missing/non-finite numeric fields default to 0 (#93 round-10)", () => {
+  // runtime_ms / tokens_in / tokens_out are typed as integers in the
+  // FSM schema. A worker that omits them or writes NaN / Infinity
+  // would otherwise fail schema validation. sanitiseSpecialistRow
+  // defaults each to 0.
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "missing-numerics-leaf");
+    writeOutput(runId, "missing-numerics-leaf", null, {
+      id: "missing-numerics-leaf",
+      status: "completed",
+      // runtime_ms intentionally missing
+      tokens_in: NaN,
+      tokens_out: -5,
+      findings: [],
+    });
+    const out = aggregateSpecialistOutputs(brief(runId, ["missing-numerics-leaf"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.runtime_ms, 0);
+    assert.equal(row.tokens_in, 0);
+    assert.equal(row.tokens_out, 0);
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: shard with invalid status (typo) is normalised to failed (#93 round-5)", () => {
+  // A worker that writes status="weird-status" must NOT cause the
+  // merged leaf row to silently slip through as completed. The
+  // aggregator normalises any out-of-vocabulary status to failed
+  // and records what the worker actually wrote in skip_reason.
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "typo-status-leaf", 0);
+    writePrompt(runId, "typo-status-leaf", 1);
+    writeOutput(runId, "typo-status-leaf", 0, specialistRow("typo-status-leaf", { status: "completed" }));
+    writeOutput(runId, "typo-status-leaf", 1, specialistRow("typo-status-leaf", { status: "weird-status" }));
+    const out = aggregateSpecialistOutputs(brief(runId, ["typo-status-leaf"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.status, "failed");
+    assert.match(row.skip_reason, /weird-status/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: unparseable per-leaf JSON surfaces in skip_reason", () => {
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "broken-json-leaf");
+    const path = defaultSpecialistOutputPath(runId, "broken-json-leaf");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "{ not valid json");
+    const out = aggregateSpecialistOutputs(brief(runId, ["broken-json-leaf"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    assert.equal(out.specialist_outputs[0].status, "failed");
+    assert.match(out.specialist_outputs[0].skip_reason, /unparseable/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: empty picked_leaves[] returns empty specialist_outputs[]", () => {
+  // No filesystem writes needed; just exercise the empty-pickedLeaves branch.
+  const out = aggregateSpecialistOutputs({
+    run_id: uniqueRunId(),
+    state: "dispatch_specialists",
+    inputs: { picked_leaves: [] },
+  });
+  assert.deepEqual(out, { specialist_outputs: [] });
+});
+
+test("discoverLeafShards: returns null for non-sharded leaf (single prompt at canonical path)", () => {
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "single-leaf");
+    assert.equal(discoverLeafShards(runId, "single-leaf"), null);
+  } finally {
+    cleanup();
+  }
+});
+
+test("discoverLeafShards: returns sorted shard indices when only sharded prompts exist", () => {
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "sharded-leaf", 2);
+    writePrompt(runId, "sharded-leaf", 0);
+    writePrompt(runId, "sharded-leaf", 1);
+    assert.deepEqual(discoverLeafShards(runId, "sharded-leaf"), [0, 1, 2]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("discoverLeafShards: returns empty array when neither shape is staged", () => {
+  const { runId, cleanup } = freshRun();
+  try {
+    assert.deepEqual(discoverLeafShards(runId, "never-staged"), []);
+  } finally {
+    cleanup();
+  }
+});
+
+test("discoverLeafShards: hard-fails when shard index exceeds SHARD_INDEX_MAX (corrupted/hand-edited workers/)", () => {
+  // Defends against the OOM/hang case where workers/ contains a
+  // prompt with an implausibly large shard index (e.g. a manual
+  // edit, cosmic ray, or buggy external tooling planted
+  // dispatch_specialists-prompt-leaf--999999.md). Without the cap,
+  // the contiguous-range allocation `for (let i = 0; i <= max; i++)`
+  // would try to push 1M+ entries and either hang the runner or
+  // OOM. The cap (SHARD_INDEX_MAX=1024) is well above the worst
+  // legitimate case (~100-200 shards on a multi-megabyte filtered
+  // diff at the default 32KB threshold) but low enough to surface
+  // corruption as a hard error before allocation.
+  //
+  // Two-tier defense: the per-entry 4-digit regex gate rejects 5+
+  // digit tails (e.g. 99999) before parseInt — that's about avoiding
+  // wasted cycles on absurd strings. The post-sort throw fires on
+  // ANY in-bounds-shape index > SHARD_INDEX_MAX (e.g. 1025-9999).
+  // Both contribute: the gate keeps the parse cheap; the throw
+  // surfaces real corruption loudly rather than silently skipping
+  // shards (silent skip would let the runner aggregate against an
+  // incomplete shard set and produce a misleading "all green" review).
+  const { runId, cleanup } = freshRun();
+  try {
+    // Plant shard 0 (legit) + shard 1500 (4-digit, passes regex gate,
+    // > SHARD_INDEX_MAX → must throw on the post-sort check).
+    writePrompt(runId, "high-shard", 0);
+    writePrompt(runId, "high-shard", 1500);
+    assert.throws(
+      () => discoverLeafShards(runId, "high-shard"),
+      (err) => {
+        return (
+          err instanceof Error &&
+          /exceeds SHARD_INDEX_MAX/.test(err.message) &&
+          /high-shard/.test(err.message) &&
+          /1500/.test(err.message)
+        );
+      },
+      "above-cap shard indices must hard-fail with a clear corruption error",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("discoverLeafShards: silently ignores 5+ digit shard indices (regex gate is parse-cost only)", () => {
+  // Companion to the SHARD_INDEX_MAX hard-fail above: 5+ digit tails
+  // (e.g. 99999) are filtered out by the regex gate BEFORE parseInt,
+  // so they never land in shards[]. This is parse-cost optimisation,
+  // not corruption defense — corruption defense lives in the
+  // post-sort throw above. Document the asymmetry so a future
+  // reader doesn't mistake the regex gate for the cap enforcement.
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "absurd-shard", 0);
+    // Plant a prompt with a 6-digit shard suffix. The regex gate
+    // (^\d{1,4}$) rejects this tail, so it never enters shards[].
+    // Note: writePrompt uses defaultDispatchPromptPath which may
+    // refuse or normalise this — write directly to bypass.
+    const path = defaultDispatchPromptPath(runId, "dispatch_specialists", "absurd-shard");
+    const dir = dirname(path);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(`${dir}/dispatch_specialists-prompt-absurd-shard--999999.md`, "<absurd>\n");
+    // Just shard 0 should appear; the 6-digit one is silently dropped.
+    assert.deepEqual(discoverLeafShards(runId, "absurd-shard"), [0]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("discoverLeafShards: throws when BOTH canonical and sharded prompt files coexist on disk", () => {
+  // Defends against the corruption case where cleanupStaleLeafArtifacts's
+  // best-effort rmSync fails silently and leaves stale files of the
+  // other shape behind during a re-stage. If discoverLeafShards
+  // silently preferred the canonical path here, the runner would drop
+  // the shard work; if it silently preferred shards, it would drop
+  // the non-sharded work. Hard-failing forces the corruption to
+  // surface to the caller (orchestrator or aggregator) so the run
+  // can be aborted and re-staged cleanly rather than producing a
+  // partial review.
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "both-shapes");
+    writePrompt(runId, "both-shapes", 0);
+    writePrompt(runId, "both-shapes", 1);
+    assert.throws(
+      () => discoverLeafShards(runId, "both-shapes"),
+      (err) => {
+        return (
+          err instanceof Error &&
+          /both canonical and sharded prompt files exist/.test(err.message) &&
+          /both-shapes/.test(err.message)
+        );
+      },
+      "must throw a clear corruption error when both prompt shapes are present",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("discoverLeafShards: partial staging (shards 0 and 2, gap at 1) reports the FULL contiguous range", () => {
+  // Simulates atomicWriteFile swallowing shard 1's I/O error during
+  // staging. discoverLeafShards must NOT pretend shard 1 doesn't
+  // exist; it returns [0, 1, 2] so the aggregator looks for shard
+  // 1's output (and synthesizes a failed row when missing). Without
+  // this, shard 1's files would silently never be reviewed.
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "partially-staged", 0);
+    // shard 1 prompt deliberately omitted
+    writePrompt(runId, "partially-staged", 2);
+    assert.deepEqual(discoverLeafShards(runId, "partially-staged"), [0, 1, 2]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("discoverLeafShards: contiguous-range expansion fills gaps so the aggregator can flag missing shards", () => {
+  // discoverLeafShards normalises [0, 2] to [0, 1, 2] so the
+  // aggregator emits a failed row for shard 1's missing output.
+  // The orchestrator-side pending-list path must NOT include shard 1
+  // (its prompt doesn't exist, --print-agent-shim-prompt would
+  // hard-fail on dispatch); the pending-list code path's
+  // prompt-file-existence filter is what enforces that, and is
+  // covered by tests/integration/end-to-end-runner.test.js's
+  // "--print-pending-leaf-ids and --print-agent-shim-prompt:
+  // end-to-end CLI contract" smoke test (where the CLI is exercised
+  // via spawnSync). This unit test only locks down the function-level
+  // contract: contiguity expansion happens regardless of which
+  // shards' outputs were actually written.
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "gappy", 0);
+    // shard 1 prompt deliberately missing
+    writePrompt(runId, "gappy", 2);
+    // discoverLeafShards still returns the full range so the
+    // aggregator can synthesize the missing-shard failed row.
+    assert.deepEqual(discoverLeafShards(runId, "gappy"), [0, 1, 2]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("anySpecialistOutputOnDisk: returns true when only outputs (no prompts) exist on disk (cleanup-failure corruption recovery)", async () => {
+  // Closes the "--continue dead end" reported in round 29:
+  // cleanupStaleLeafArtifacts is best-effort (rmSync I/O errors are
+  // swallowed). A pathological re-stage could remove the prompt
+  // files but fail to remove the corresponding output files,
+  // leaving outputs without prompts. Before the round-29 fix,
+  // anySpecialistOutputOnDisk returned false in that case (because
+  // discoverLeafShards returns [] when no prompts exist), the
+  // --continue auto-aggregation fallback didn't run, and the user
+  // saw "default outputs file not found" even though per-leaf
+  // outputs were sitting in workers/ on disk.
+  //
+  // The fix: when shards is [], sweep workers/ for any
+  // canonical-or-shard-suffixed output for the leaf. If any exists,
+  // return true so the aggregator runs and surfaces the
+  // missing-prompt failed rows (the right diagnostic signal).
+  const { anySpecialistOutputOnDisk } = await import("../../scripts/run-review.mjs");
+  const { runId, cleanup } = freshRun();
+  try {
+    // Plant output files for two leaves WITHOUT planting prompts —
+    // simulates the cleanup-partial-failure case where outputs
+    // survived removal but prompts were successfully removed.
+    writeOutput(runId, "stranded-canonical", null, specialistRow("stranded-canonical"));
+    writeOutput(runId, "stranded-sharded", 0, specialistRow("stranded-sharded"));
+    writeOutput(runId, "stranded-sharded", 1, specialistRow("stranded-sharded"));
+    // No prompts written: discoverLeafShards returns [] for both.
+    const result = anySpecialistOutputOnDisk(brief(runId, ["stranded-canonical", "stranded-sharded"]));
+    assert.equal(result, true, "outputs without prompts must still surface as on-disk evidence");
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: stale output without staged prompt is treated as failed (prompt-files-as-truth)", () => {
+  // Closes a subtle masking bug. cleanupStaleLeafArtifacts wipes
+  // both prompt and output files for the leaf at the start of each
+  // staging pass, so in normal operation a missing prompt also means
+  // no output. But the per-entry rmSync inside cleanup is
+  // best-effort: an I/O error on one rm could leave a stale output
+  // behind even though its prompt was successfully removed (or never
+  // re-written, e.g. due to atomicWriteFile failure on the new
+  // prompt). Without the prompt-existence check in
+  // mergeShardedSpecialistOutputs, the aggregator would read the
+  // stale output and treat the shard as completed even though no
+  // specialist ran against the current diff. This test plants
+  // prompts for shards 0 and 2 (gap at 1), AND a stale output for
+  // shard 1. The aggregator must surface shard 1 as failed, not
+  // propagate the stale completed row.
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "stale-out", 0);
+    // shard 1 prompt deliberately MISSING (simulates re-stage failure)
+    writePrompt(runId, "stale-out", 2);
+    writeOutput(runId, "stale-out", 0, specialistRow("stale-out"));
+    // STALE output for shard 1: would be from a previous staging
+    // pass before the threshold changed. Must NOT be propagated.
+    writeOutput(runId, "stale-out", 1, specialistRow("stale-out", {
+      status: "completed",
+      findings: [{ severity: "critical", file: "should-not-appear.ts", title: "stale finding", description: "d", impact: "i", fix: "f" }],
+    }));
+    writeOutput(runId, "stale-out", 2, specialistRow("stale-out"));
+    const out = aggregateSpecialistOutputs(brief(runId, ["stale-out"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.status, "failed", "missing prompt for shard 1 must surface as failed");
+    assert.match(row.skip_reason, /shard 1/, "skip_reason must name the missing shard");
+    assert.match(row.skip_reason, /no dispatch prompt staged/, "skip_reason must explain why");
+    // CRITICAL: the stale shard-1 finding must NOT appear in the merged findings.
+    for (const finding of row.findings) {
+      assert.notMatch(finding.title, /stale finding/, "stale shard-1 finding must NOT be propagated");
+    }
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: partial-staged shards surface the gap as a failed leaf row", () => {
+  // End-to-end: prompts staged for shards 0 and 2 (gap at 1), outputs
+  // written for all three present (so the bug being closed is the
+  // staging-side gap, not the output-side one). The aggregator detects
+  // shard 1 has no output and marks the leaf failed.
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "gappy-leaf", 0);
+    writePrompt(runId, "gappy-leaf", 2);
+    writeOutput(runId, "gappy-leaf", 0, specialistRow("gappy-leaf"));
+    writeOutput(runId, "gappy-leaf", 2, specialistRow("gappy-leaf"));
+    const out = aggregateSpecialistOutputs(brief(runId, ["gappy-leaf"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.status, "failed");
+    // skip_reason mentions shard 1 (the missing one).
+    assert.match(row.skip_reason, /shard 1/);
+  } finally {
+    cleanup();
+  }
+});

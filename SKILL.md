@@ -33,17 +33,25 @@ while true; do
   esac
 
   if [ "$STATE" = "dispatch_specialists" ]; then
-    # Specialist dispatch is a fan-out: K leaves, K parallel Agents.
-    # --print-dispatch-prompt requires --leaf-id in this state.
-    # The runner has already pre-computed the per-leaf filtered diff
-    # and embedded it inline in each per-leaf prompt; see the
-    # "Special case" section below for the full pattern.
-    BRIEF_PATH="$RUN_DIR/workers/$STATE-brief.json"
-    for LEAF_ID in $(jq -r '.inputs.picked_leaves[].id' "$BRIEF_PATH"); do
-      PROMPT=$(node scripts/run-review.mjs --print-dispatch-prompt --run-id "$RUN_ID" --leaf-id "$LEAF_ID")
-      # ... dispatch K Agents in ONE parallel message with $PROMPT verbatim,
-      # aggregate K JSON responses into specialist_outputs[], write to
-      # $(jq -r .outputs_path "$BRIEF_PATH"). See full pattern below.
+    # Specialist dispatch is a BATCHED fan-out: at most 10 Agents in
+    # flight at any moment (thread-pool model). Each specialist writes
+    # its JSON output to its own per-leaf file; the runner aggregates
+    # on --continue. The orchestrator no longer assembles JSON.
+    # See the "Special case" section below for the full pattern.
+    while true; do
+      BATCH=$(node scripts/run-review.mjs --print-pending-leaf-ids --run-id "$RUN_ID")
+      [ -z "$BATCH" ] && break
+      # Dispatch one Agent per id in $BATCH (≤10 ids per call).
+      # All Agents in a single orchestrator message run in parallel.
+      # Each Agent's prompt is the small shim text from
+      # --print-agent-shim-prompt; the Agent reads the full per-leaf
+      # prompt from disk and writes its JSON output to the per-leaf
+      # output path (both stated inside the shim).
+      for ID in $BATCH; do
+        SHIM=$(node scripts/run-review.mjs --print-agent-shim-prompt --run-id "$RUN_ID" --leaf-id "$ID")
+        # ... dispatch Agent with $SHIM as the prompt parameter ...
+      done
+      # After all batch Agents return, loop to fetch the next batch.
     done
   else
     # The runner has pre-staged the agent prompt at
@@ -70,35 +78,54 @@ else
 fi
 ```
 
-**The brief is at `$RUN_DIR/workers/$STATE-brief.json`** if you need to inspect any field directly (`outputs_path`, `worker.response_schema`, `inputs.picked_leaves[]` for `dispatch_specialists`, etc.). The dispatch prompt is at `$RUN_DIR/workers/$STATE-dispatch-prompt.md` — the literal text to feed to the Agent tool. **Both are canonical**; stdout is a redundant convenience.
+**The brief is at `$RUN_DIR/workers/$STATE-brief.json`** if you need to inspect any field directly (`outputs_path`, `worker.response_schema`, etc.). For non-`dispatch_specialists` states, the dispatch prompt is at `$RUN_DIR/workers/$STATE-dispatch-prompt.md` — the literal text to feed to the Agent tool. **For `dispatch_specialists` the prompt path differs** (it's per-leaf and possibly per-shard) and the orchestrator drives a batched loop via `--print-pending-leaf-ids` / `--print-agent-shim-prompt` rather than reading the brief's `picked_leaves[]` directly; see the "Special case" subsection below for the full pattern. **Both brief and prompt are canonical**; stdout is a redundant convenience.
 
-#### Special case: `STATE === "dispatch_specialists"`
+#### Special case: `STATE === "dispatch_specialists"` — batched fan-out
 
-The runner stages K per-leaf prompts at `$RUN_DIR/workers/dispatch_specialists-prompt-<leaf-id>.md` — one per picked specialist. Each per-leaf prompt already contains the leaf body, project profile, changed paths, tool results, **and the pre-computed filtered diff for that leaf's `activation.file_globs[]`** (issue #83). For the rare leaf (~1/476 in the corpus today) that omits `file_globs`, the runner falls back to embedding the full diff so coverage is preserved — the orchestrator does not need to detect or branch on this. Dispatch K Agents in **one parallel message** (K Agent tool calls in a single LLM turn). Each Agent runs blind (no specialist sees another's output).
+Specialist dispatch is a fan-out with three runner-side guarantees that change how you drive the loop versus other worker states:
 
-**No augmentation.** The staged per-leaf prompt is complete and ready to paste:
+1. **Per-leaf staged prompts.** The runner stages one prompt per picked leaf at `$RUN_DIR/workers/dispatch_specialists-prompt-<leaf-id>.md` (or per-shard at `<leaf-id>--<shard-idx>.md` when a leaf's filtered diff exceeds the shard threshold; see "Diff sharding" below). Each per-leaf prompt already contains the leaf body, project profile, changed paths, tool results, and the pre-computed filtered diff for that leaf's `activation.file_globs[]`. For the rare leaf that omits `file_globs`, the runner falls back to the full diff.
+2. **Per-leaf output files.** Each specialist Agent writes its JSON output to `$RUN_DIR/workers/dispatch_specialists-output-<leaf-id>.json` (or `dispatch_specialists-output-<leaf-id>--<shard-idx>.json` for shards). The runner aggregates all per-leaf outputs into `specialist_outputs[]` on `--continue`. **The orchestrator does not assemble JSON.**
+3. **Concurrency cap of 10.** The runner exposes pending work via `--print-pending-leaf-ids` capped at `--batch-size 10`. The orchestrator dispatches up to 10 Agents in one parallel message, waits for the batch, then asks for the next batch. K=20 → 2 batches; K=30 → 3. **You never have more than 10 specialist Agents in flight.**
+
+The orchestrator's loop:
 
 ```bash
-# Get the picked leaf ids from the on-disk brief.
-LEAF_IDS=$(jq -r '.inputs.picked_leaves[].id' "$RUN_DIR/workers/dispatch_specialists-brief.json")
+while true; do
+  BATCH=$(node scripts/run-review.mjs --print-pending-leaf-ids --run-id "$RUN_ID")
+  [ -z "$BATCH" ] && break
+  # For each id in $BATCH (newline-separated, ≤10 ids), dispatch ONE
+  # Agent. All Agents in a single orchestrator message run in parallel.
+  # Each Agent's prompt is the tiny (≤200-token) shim from
+  # --print-agent-shim-prompt; the Agent reads the staged dispatch
+  # prompt from disk and writes its JSON output to the per-leaf
+  # output path. Both paths are stated inside the shim text.
+  for ID in $BATCH; do
+    SHIM=$(node scripts/run-review.mjs --print-agent-shim-prompt --run-id "$RUN_ID" --leaf-id "$ID")
+    # ... pass $SHIM as the Agent tool call's `prompt` parameter ...
+  done
+  # After all dispatched Agents in the batch complete, loop:
+  # --print-pending-leaf-ids returns ids whose output file doesn't
+  # yet exist. When every leaf has produced an output, BATCH is
+  # empty and the while-loop exits.
+done
 
-# For each leaf id:
-#   1. PROMPT=$(node scripts/run-review.mjs --print-dispatch-prompt --run-id "$RUN_ID" --leaf-id "$LEAF_ID")
-#   2. Pass $PROMPT verbatim as the Agent tool call's prompt. No
-#      concatenation, no `git diff`, no shell glue. The runner has
-#      already embedded the filtered diff inline under
-#      `--- FILTERED DIFF ---`.
-
-# Dispatch K Agents in ONE message (K parallel Agent tool calls).
-# Aggregate the K JSON responses into:
-#   { "specialist_outputs": [<k objects>] }
-# Write to: $(jq -r .outputs_path "$RUN_DIR/workers/dispatch_specialists-brief.json")
-# Then --continue.
+# --continue triggers the runner-side aggregation. The runner walks
+# every picked_leaf, reads the per-leaf output (or per-shard outputs
+# for sharded leaves and merges them), and commits the aggregate as
+# specialist_outputs[]. Missing outputs surface as `failed` rows.
+node scripts/run-review.mjs --continue --run-id "$RUN_ID"
 ```
 
-Every piece of context — the leaf body, project profile, changed paths, filtered diff, tool results, response contract — is already in the staged prompt. **Do not concatenate, do not add a fresh `git diff`, do not augment.** If you find yourself running `git diff` during a specialist dispatch, you are on the wrong path.
+**Concurrency cap.** `--print-pending-leaf-ids` returns at most 10 ids per call (override with `--batch-size N`, max 50). The cap is enforced runner-side: the orchestrator cannot dispatch more than 10 specialists in one message because it is given at most 10 ids to dispatch.
 
-**Do NOT** dispatch a single Agent for `dispatch_specialists` — you would be re-introducing the coordinator-layer opacity that the audit in #70 (divergence #3) surfaced. The runner cannot tell from the JSON output alone whether you ran K Agents or simulated K specialists in one mind. Run K real Agents in one parallel-tool-call message.
+**Why specialists write per-leaf instead of returning JSON.** Concurrent K specialists writing into one orchestrator-aggregated heredoc is fragile: a failed Agent loses its slot; JSON-string quoting breaks on multi-line code samples in `description` / `fix`; orchestrator-side aggregation is opaque to audit. Per-leaf files are observable on disk, resilient to orchestrator-side losses, and let the runner aggregate deterministically on `--continue`.
+
+**Diff sharding.** When a leaf's `activation.file_globs[]` matches many changed files (refactor PRs, sweeping API renames), its filtered diff can grow past 32KB and the specialist loses focus. The runner detects this at staging time and splits the diff at file boundaries into shards: `dispatch_specialists-prompt-<leaf-id>--<shard-idx>.md` and matching output files. `--print-pending-leaf-ids` returns `<leaf-id>--<shard-idx>` per shard; each shard's Agent sees only its own subset of files. Per-shard outputs merge into one specialist row in the report. Sharding is automatic — the orchestrator doesn't need to detect or branch on it.
+
+**No augmentation.** The staged per-leaf prompt is complete. **Do not concatenate, do not add a fresh `git diff`, do not aggregate JSON yourself.** If you find yourself running `git diff` or composing `{ specialist_outputs: [...] }` during a specialist dispatch, you are on the wrong path.
+
+**Do NOT** dispatch a single Agent for `dispatch_specialists` to "simulate" K specialists internally — you would be re-introducing the coordinator-layer opacity that the audit in #70 (divergence #3) surfaced. The orchestrator's tool-use trace must show K real Agent dispatches across the batches.
 
 ### On `{"status": "terminal", "run_id": "<id>", "verdict": "...", "run_dir_path": "<path>"}`
 
@@ -137,6 +164,9 @@ These are NOT allowed during a review run:
 - **Inventing your own filename for the worker output** — never. Use `brief.outputs_path` from the on-disk brief, or just call `--continue --run-id <id>` without `--outputs-file` (the runner defaults to it).
 - **Composing the agent prompt by concatenating `prompt_body` with inputs yourself** — never. The runner has already done that and written it to `<run_dir>/workers/<state>-dispatch-prompt.md`. Read that file (or use `--print-dispatch-prompt`).
 - **Capturing `--continue` stdout into `/tmp/*` to "look at later"** — never. The brief is on disk after every pause. `--print-current-state` tells you which one.
+- **Aggregating specialist outputs in the orchestrator** — never. Each specialist Agent writes its JSON to its own per-leaf path stated in the staged dispatch prompt's `--- RESPONSE CONTRACT ---` section. The runner aggregates all per-leaf outputs into `specialist_outputs[]` on `--continue`. If you find yourself building a `{ specialist_outputs: [...] }` heredoc from K Agent return values, you are on the wrong path; remove the aggregation step and let `--continue` do it.
+- **Dispatching more specialist Agents than the runner returned for the current batch** — never. The runner enforces the concurrency cap by returning at most `--batch-size` ids per `--print-pending-leaf-ids` call (default 10; configurable up to 50 if you have a deliberate reason to widen the pool). Dispatch ONE Agent per id in the returned batch, all in one orchestrator message; do not pad the batch with extra Agents you weren't given ids for. The thread-pool model exists to keep observability tight: large simultaneous Agent dispatches overflow the trace window and make failures hard to attribute. The default of 10 is observable, debuggable, and produces identical findings to one big batch.
+- **Running `git diff` during a specialist dispatch** — never. The runner has already pre-computed the per-leaf filtered diff (and sharded it when large). If you spawn `git diff` during specialist dispatch, you are duplicating runner work and the diff text in the prompt becomes inconsistent with what the runner used.
 
 ---
 

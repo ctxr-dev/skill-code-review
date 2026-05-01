@@ -27,9 +27,12 @@ This file is the per-specialist prompt template. The `dispatch_specialists` FSM 
 - Run **blind**. You do not know what other specialists are flagging. Empty findings is a valid result; silence is precision.
 - Stay within your leaf's audit surface. Do not flag things outside the leaf's checklist — those are other specialists' lanes.
 - Do not paraphrase the leaf body's instructions; follow them directly.
-- Return ONLY the JSON object specified below. No commentary, no surrounding markdown fences.
+- **Write your JSON output to the per-leaf output path stated in the dispatch prompt's `--- RESPONSE CONTRACT ---` section.** The runner reads each per-leaf file on `--continue` and aggregates them into `specialist_outputs[]`. Do NOT return JSON inline to the orchestrator — the per-leaf file is the canonical record (resilient to orchestrator-side losses, observable on disk for audit) and the orchestrator does not aggregate.
+- The output file content must be a single raw JSON object and nothing else: no Markdown code fences (` ```json `), no surrounding commentary, and no extra leading or trailing text. The runner parses the file with `JSON.parse` on `--continue`; any extra content makes the per-leaf output unparseable, which surfaces as a failed row in the aggregate.
 
 ## Output (JSON, single object)
+
+The Markdown fence below is for **display purposes only** in this template. The actual file you write at the per-leaf output path must contain just the raw JSON object (the lines between the fences, NOT the fences themselves and not the language tag). Including the fences in the output file would make `JSON.parse` reject it.
 
 ```json
 {

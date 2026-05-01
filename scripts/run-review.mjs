@@ -29,7 +29,7 @@
 // handler emits a `fault` so callers can react uniformly.
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync, mkdtempSync, existsSync, rmSync, renameSync, realpathSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync, mkdtempSync, existsSync, rmSync, renameSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, relative, sep } from "node:path";
 import { tmpdir, platform } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -52,6 +52,11 @@ import {
   splitFrontmatter,
   extractFileGlobs as extractFileGlobsFromYaml,
 } from "./lib/leaf-frontmatter.mjs";
+// ID_PATTERN is the project's canonical leaf-id regex (kebab-case
+// ASCII, no leading/trailing hyphens, no consecutive hyphens). Import
+// rather than re-declare so leaf-id validation stays consistent across
+// the runner, the source-side validators, and the FSM workers.
+import { ID_PATTERN } from "./lib/reviewer-schema.mjs";
 
 // Apply the B8 referential-integrity check to a worker output. Returns
 // `{ ok: true }` for no-op (output isn't a trim shape) or for a clean
@@ -361,6 +366,173 @@ function computeFilteredDiff(baseSha, headSha, fileGlobs) {
   return result.stdout ?? "";
 }
 
+// Diff sharding for huge per-leaf filtered diffs. When one leaf's globs
+// match many changed files in a refactor PR, the specialist's prompt can
+// grow past the point where it's effective (~30-50KB observed
+// degradation). Sharding keeps each prompt focused on a small, coherent
+// set of files.
+//
+// Algorithm: split on `^diff --git a/<path> b/<path>$` boundaries; greedy
+// pack files into shards until adding the next file would exceed the
+// threshold. A single file larger than the threshold goes alone in its
+// own shard (we never split inside a file — the specialist needs intact
+// hunks to reason about pre/post state).
+//
+// Returns:
+//   - For diffText.length <= threshold (or empty/placeholder): one shard
+//     `[{ shardIdx: 0, files: [...], diffText: <unchanged> }]`. This
+//     preserves the existing per-leaf prompt path for the common case.
+//   - Otherwise: N shards, each with shardIdx, the files it covers, and
+//     the diffText slice for those files. Concatenating shard.diffText
+//     across N shards yields the original diffText byte-for-byte.
+//
+// Threshold default 32KB; overridable via SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES.
+const DEFAULT_SHARD_THRESHOLD = 32 * 1024;
+function getShardThreshold() {
+  const raw = process.env.SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES;
+  if (typeof raw === "string" && /^\d+$/.test(raw)) {
+    const n = Number.parseInt(raw, 10);
+    if (n > 0) return n;
+  }
+  return DEFAULT_SHARD_THRESHOLD;
+}
+export function shardFilteredDiff(diffText, opts = {}) {
+  const threshold = Number.isInteger(opts.threshold) && opts.threshold > 0
+    ? opts.threshold
+    : getShardThreshold();
+  // Coerce non-string inputs to "" so shard objects always carry a string
+  // diffText (callers and tests expect a string, not number/object/null).
+  if (typeof diffText !== "string" || diffText.length === 0) {
+    return [{ shardIdx: 0, files: [], diffText: typeof diffText === "string" ? diffText : "" }];
+  }
+  // Threshold is documented in BYTES (env var `SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES`).
+  // JS `string.length` returns UTF-16 code-unit count, which mis-reports
+  // for non-ASCII diffs (e.g. comments with emoji or non-Latin code).
+  // Use Buffer.byteLength(s, "utf8") so the threshold is enforced on
+  // the actual UTF-8 byte count.
+  if (Buffer.byteLength(diffText, "utf8") <= threshold) {
+    return [{ shardIdx: 0, files: extractFilesFromDiff(diffText), diffText }];
+  }
+  // Split on `^diff --git a/<path> b/<path>$` boundaries.
+  const splits = splitOnGitDiffMarkers(diffText);
+  // splits[0] is anything before the first `diff --git` marker (usually
+  // empty for a real `git diff` output, but possibly a header comment).
+  // We attach that header to the first shard.
+  const leadingHeader = splits[0] ?? "";
+  const fileChunks = splits.slice(1); // [{ file, text }]
+  if (fileChunks.length === 0) {
+    // No `diff --git` markers found — single-file diff or unknown shape.
+    // Return one shard with whatever was provided.
+    return [{ shardIdx: 0, files: extractFilesFromDiff(diffText), diffText }];
+  }
+  const shards = [];
+  let currentFiles = [];
+  let currentText = leadingHeader;
+  let currentBytes = Buffer.byteLength(leadingHeader, "utf8");
+  let shardIdx = 0;
+  for (const chunk of fileChunks) {
+    const chunkBytes = Buffer.byteLength(chunk.text, "utf8");
+    // Adding this chunk would exceed threshold AND the current shard is
+    // non-empty? Flush, start a new one.
+    if (currentBytes > 0 && currentBytes + chunkBytes > threshold && currentFiles.length > 0) {
+      shards.push({ shardIdx, files: currentFiles, diffText: currentText });
+      shardIdx += 1;
+      currentFiles = [];
+      currentText = "";
+      currentBytes = 0;
+    }
+    currentFiles.push(chunk.file);
+    currentText += chunk.text;
+    currentBytes += chunkBytes;
+    // A single chunk larger than threshold gets its own shard (we never
+    // split inside a file). The next iteration's flush check will see
+    // currentBytes already over threshold AND currentFiles.length > 0,
+    // so it flushes after this item.
+  }
+  if (currentFiles.length > 0 || currentText.length > 0) {
+    shards.push({ shardIdx, files: currentFiles, diffText: currentText });
+  }
+  return shards;
+}
+
+// Internal: parse a single `diff --git` header line and return the
+// b/<path> file portion. Handles three shapes git emits:
+//   - bare:    `diff --git a/<path> b/<path>`
+//   - quoted:  `diff --git "a/<path>" "b/<path>"` (spaces / non-ASCII / core.quotepath)
+//   - mixed:   either side quoted independently
+// Returns the b-side path (the post-image, the file's "current name"
+// after the change) on match, or null when the line isn't a diff
+// header. We deliberately don't unescape backslashes inside the
+// quoted form — the path is used only as a label in the shard's
+// `files: []` array, and the runner doesn't open these paths; an
+// escaped \\t is fine in a label.
+function parseDiffGitHeader(line) {
+  // Tolerate CRLF input: strip a single trailing `\r` from the header
+  // line before applying the end-anchored regexes below. Without this,
+  // a CRLF-encoded diff (legitimate output from Windows toolchains, or
+  // a fixture authored on Windows) would silently fail every header
+  // match and shardFilteredDiff would emit a single shard with no file
+  // boundaries — defeating sharding for the whole leaf.
+  const headerLine = typeof line === "string" ? line.replace(/\r$/, "") : line;
+  // Common case (no quoting): `diff --git a/<path> b/<path>`.
+  const bare = headerLine.match(/^diff --git a\/(\S+) b\/(\S+)$/);
+  if (bare) return bare[2];
+  // Quoted: `diff --git "a/..." "b/..."` with arbitrary content
+  // (including spaces) inside the quotes. We allow escaped quotes
+  // (`\"`) inside the path the way git emits them under
+  // core.quotepath. Both sides must be present; reject odd shapes.
+  const quoted = headerLine.match(/^diff --git (?:"a\/((?:[^"\\]|\\.)*)"|a\/(\S+)) (?:"b\/((?:[^"\\]|\\.)*)"|b\/(\S+))$/);
+  if (quoted) {
+    return quoted[3] ?? quoted[4] ?? null;
+  }
+  return null;
+}
+
+// Internal: extract file paths from a diff body by scanning `diff --git`
+// markers. Returns the post-image path (`b/<path>`) since that's the
+// canonical "current name" of the file after the change. Robust to
+// quoted paths (spaces / non-ASCII) per parseDiffGitHeader.
+function extractFilesFromDiff(diffText) {
+  if (typeof diffText !== "string") return [];
+  const files = [];
+  // Match each line beginning with `diff --git`, then parse the line
+  // via parseDiffGitHeader so we share quote-handling with the
+  // splitter below.
+  const re = /^diff --git [^\n]+$/gm;
+  let m;
+  while ((m = re.exec(diffText)) !== null) {
+    const file = parseDiffGitHeader(m[0]);
+    if (file) files.push(file);
+  }
+  return files;
+}
+
+// Internal: split a diff body on `^diff --git ...$` markers. Returns
+// an array where index 0 is any leading text before the first marker,
+// and indices 1..N are { file: <b-side path>, text: <chunk including
+// the marker line and everything up to the next marker> }. Robust to
+// quoted paths via parseDiffGitHeader.
+function splitOnGitDiffMarkers(diffText) {
+  const out = [""];
+  const re = /^diff --git [^\n]+$/gm;
+  let m;
+  const matches = [];
+  while ((m = re.exec(diffText)) !== null) {
+    const file = parseDiffGitHeader(m[0]);
+    if (file === null) continue; // not a recognisable header; skip silently
+    matches.push({ file, start: m.index });
+  }
+  if (matches.length === 0) return out;
+  // Anything before the first match is leading-header.
+  out[0] = diffText.slice(0, matches[0].start);
+  for (let i = 0; i < matches.length; i++) {
+    const start = matches[i].start;
+    const end = i + 1 < matches.length ? matches[i + 1].start : diffText.length;
+    out.push({ file: matches[i].file, text: diffText.slice(start, end) });
+  }
+  return out;
+}
+
 // PR for #76: run-dir as the source of truth.
 //
 // Two helpers compute the canonical per-state, per-run-id paths under
@@ -385,6 +557,35 @@ export function defaultBriefPath(runId, state) {
   if (!runId || !state) return null;
   const storageRoot = resolveStorageRoot();
   return join(runDirPath(runId, { storageRoot }), "workers", `${state}-brief.json`);
+}
+
+// Per-leaf specialist output path. Sibling of the per-leaf dispatch prompt
+// path (defaultDispatchPromptPath). Each specialist writes its JSON
+// findings to its own file; the runner aggregates on --continue. This
+// eliminates the orchestrator-side aggregation step that was load-bearing
+// in the previous flow (orchestrator concatenated K Agent return values
+// into a `{ specialist_outputs: [...] }` heredoc).
+//
+// Path shapes:
+//   <run_dir>/workers/dispatch_specialists-output-<leaf-id>.json
+//   <run_dir>/workers/dispatch_specialists-output-<leaf-id>--<shardIdx>.json (sharded)
+//
+// Validation, in order:
+//   - runId must satisfy isValidRunId (lowercase alnum + dashes, 3-64 chars).
+//     defense-in-depth against a tampered manifest with `..` segments.
+//   - leafId must be kebab-case ASCII per the corpus contract.
+//   - shardIdx (when present) must be a non-negative integer.
+// Returns null on invalid input so the caller never composes a bad path.
+export function defaultSpecialistOutputPath(runId, leafId, shardIdx = null) {
+  if (typeof runId !== "string" || !isValidRunId(runId)) return null;
+  if (!isValidLeafId(leafId)) return null;
+  if (shardIdx !== null) {
+    if (!Number.isInteger(shardIdx) || shardIdx < 0) return null;
+  }
+  const storageRoot = resolveStorageRoot();
+  const dir = join(runDirPath(runId, { storageRoot }), "workers");
+  const suffix = shardIdx === null ? "" : `--${shardIdx}`;
+  return join(dir, `dispatch_specialists-output-${leafId}${suffix}.json`);
 }
 
 // Inject brief.outputs_path into every awaiting_worker brief on the way
@@ -446,7 +647,91 @@ function isSafeStateSegment(state) {
   return typeof state === "string" && /^[a-z][a-z0-9_]*$/.test(state);
 }
 
-export function defaultDispatchPromptPath(runId, state, leafId) {
+// Validate a leaf-id (kebab-case ASCII per the corpus contract) AND
+// reject ids that would collide with the shard-suffix scheme. The
+// dispatch_specialists prompt/output paths use `--<shardIdx>` as the
+// shard separator (e.g. `dispatch_specialists-prompt-foo--1.md`); a
+// hypothetical leaf-id `foo--1` would map to the same path as shard 1
+// of leaf `foo`, AND the `--leaf-id foo--1` shorthand the orchestrator
+// uses with --print-pending-leaf-ids would be ambiguous (which
+// interpretation does the runner pick?). The cleanest fix is structural:
+// reject leaf-ids whose tail matches `--\d+`. The corpus's existing
+// 476 leaves all use single-hyphen-separated kebab-case (e.g.
+// `lang-typescript`, `sec-owasp-a01-broken-access-control`); none
+// match the forbidden pattern.
+function isValidLeafId(leafId) {
+  if (typeof leafId !== "string") return false;
+  // Reuse ID_PATTERN from scripts/lib/reviewer-schema.mjs (the
+  // canonical leaf-id regex: strict kebab-case ASCII, no
+  // leading/trailing hyphens, no consecutive hyphens). Importing the
+  // single source of truth guarantees runner-side validation stays in
+  // lockstep with the source-side validators if the schema regex ever
+  // changes.
+  if (!ID_PATTERN.test(leafId)) return false;
+  // Also reject ids whose tail looks like the shard suffix
+  // (`--<digits>`). ID_PATTERN already rejects this (consecutive
+  // hyphens), but the explicit check makes the contract clear and
+  // survives any future loosening of ID_PATTERN.
+  if (/--\d+$/.test(leafId)) return false;
+  return true;
+}
+
+// Shared parser for the two CLI modes that accept a leaf-id with an
+// optional shard suffix (--print-dispatch-prompt and
+// --print-agent-shim-prompt). The leaf-id can encode the shard via
+// `<leaf>--<idx>` (the format --print-pending-leaf-ids emits) OR the
+// caller can pass --shard-idx explicitly. Combining both forms works
+// when the values agree; mismatched values are rejected.
+//
+// Returns { leafId, shardIdx } on success (shardIdx may be null).
+// Calls fail() on any validation error — the calling CLI mode is
+// expected to be the entry point, so a hard exit is the right move.
+//
+// Inputs:
+//   - leafIdArg:    the raw --leaf-id value (or undefined)
+//   - shardIdxArg:  the raw --shard-idx value (or undefined)
+//   - cliName:      e.g. "--print-dispatch-prompt", used in error messages
+function parseLeafIdAndShardIdx({ leafIdArg, shardIdxArg, cliName }) {
+  if (typeof leafIdArg !== "string" || leafIdArg.length === 0) {
+    fail(`${cliName}: --leaf-id is required`);
+  }
+  // Split off the optional `--<digits>` shard suffix without
+  // assuming what the leaf-id itself looks like. isValidLeafId
+  // (called by the downstream CLI handlers) is the single source
+  // of truth for what a base leaf-id may contain. The previous
+  // regex required the base to start with `[a-z]`, which silently
+  // failed to parse digit-leading sharded ids even though
+  // isValidLeafId allows them. Use a generic non-greedy split and
+  // delegate validation. The non-greedy `.+?` favours the SHORTEST
+  // base, so an input like `a--3` splits as base="a", shard=3 (not
+  // base="a--3" with no shard) — the right move because base ids
+  // ending in `--<digits>` are explicitly rejected by isValidLeafId.
+  const leafSuffixMatch = leafIdArg.match(/^(.+?)--(\d+)$/);
+  if (shardIdxArg !== undefined) {
+    if (typeof shardIdxArg !== "string" || !/^\d+$/.test(shardIdxArg)) {
+      fail(
+        `${cliName}: --shard-idx must be a non-negative integer; got: ${JSON.stringify(shardIdxArg)}`,
+      );
+    }
+    const shardIdx = Number.parseInt(shardIdxArg, 10);
+    if (leafSuffixMatch) {
+      const suffixIdx = Number.parseInt(leafSuffixMatch[2], 10);
+      if (suffixIdx !== shardIdx) {
+        fail(
+          `${cliName}: --leaf-id "${leafIdArg}" encodes shard ${suffixIdx} but --shard-idx is ${shardIdx}; pass one form or matching values`,
+        );
+      }
+      return { leafId: leafSuffixMatch[1], shardIdx };
+    }
+    return { leafId: leafIdArg, shardIdx };
+  }
+  if (leafSuffixMatch) {
+    return { leafId: leafSuffixMatch[1], shardIdx: Number.parseInt(leafSuffixMatch[2], 10) };
+  }
+  return { leafId: leafIdArg, shardIdx: null };
+}
+
+export function defaultDispatchPromptPath(runId, state, leafId, shardIdx = null) {
   if (!runId) return null;
   if (!isSafeStateSegment(state)) return null;
   const storageRoot = resolveStorageRoot();
@@ -458,8 +743,12 @@ export function defaultDispatchPromptPath(runId, state, leafId) {
     // contract) so the helper never falls back to the generic
     // "<state>-dispatch-prompt.md" path that writeSpecialistPromptsToDisk
     // does not produce.
-    if (typeof leafId !== "string" || !/^[a-z][a-z0-9-]*$/.test(leafId)) {
+    if (!isValidLeafId(leafId)) {
       return null;
+    }
+    if (shardIdx !== null) {
+      if (!Number.isInteger(shardIdx) || shardIdx < 0) return null;
+      return join(dir, `dispatch_specialists-prompt-${leafId}--${shardIdx}.md`);
     }
     return join(dir, `dispatch_specialists-prompt-${leafId}.md`);
   }
@@ -479,13 +768,14 @@ export function defaultDispatchPromptPath(runId, state, leafId) {
 //     by brief.outputs_path as the location where the worker writes its
 //     JSON response.
 //   - dispatch_specialists per-leaf (when `opts.leaf` is provided):
-//     the per-specialist template plus the leaf's id/path/dimensions and
-//     body, the project_profile, the changed_paths, the
-//     opts.filteredDiff (or a placeholder), and tool_results. In this
-//     shape outputs_path is included only for audit/orchestration
-//     context; the specialist returns JSON to the orchestrator and
-//     does NOT write to disk directly (the orchestrator aggregates the
-//     K responses and writes once).
+//     the per-specialist template plus the leaf's id/path/dimensions/
+//     file_globs and body, the project_profile, the changed_paths, the
+//     opts.filteredDiff (or a placeholder), opts.shard (when sharded),
+//     tool_results, and the per-leaf output path the specialist writes
+//     to. The specialist writes its JSON to opts.outputPath and the
+//     runner aggregates per-leaf outputs into specialist_outputs[] on
+//     --continue (per the per-leaf-output-files refactor); the
+//     specialist does NOT return JSON inline to the orchestrator.
 export function buildDispatchPromptText(brief, opts = {}) {
   const promptBody = brief?.worker?.prompt_body ?? "";
   const declaredInputs = brief?.worker?.inputs ?? [];
@@ -502,14 +792,22 @@ export function buildDispatchPromptText(brief, opts = {}) {
     // PR for #83: the caller (writeSpecialistPromptsToDisk) pre-computes
     // the per-leaf filtered diff using the leaf's
     // `activation.file_globs[]` and passes it in via opts.filteredDiff.
-    // The orchestrator no longer appends anything — the prompt is fully
-    // ready to paste. When the caller didn't ship a diff (e.g., a unit
-    // test that doesn't spawn git), we emit a placeholder so the test
-    // still has a stable section header to assert against.
-    const filteredDiff = typeof opts.filteredDiff === "string"
-      ? opts.filteredDiff
-      : "(diff unavailable: caller did not pre-compute the per-leaf diff)";
-    return [
+    // For shards (PR for the per-leaf-outputs / sharding work),
+    // opts.shard is { shardIdx, files, diffText } and that shard's
+    // diffText replaces the full filtered diff.
+    const shard = opts.shard ?? null;
+    const filteredDiff = shard
+      ? shard.diffText
+      : (typeof opts.filteredDiff === "string"
+          ? opts.filteredDiff
+          : "(diff unavailable: caller did not pre-compute the per-leaf diff)");
+    // Per-leaf output path. opts.outputPath is the path the runner has
+    // already computed (defaultSpecialistOutputPath); fall back to a
+    // placeholder for unit tests that don't supply one.
+    const outputPath = typeof opts.outputPath === "string"
+      ? opts.outputPath
+      : "(output path unavailable: caller did not pre-compute the per-leaf output path)";
+    const lines = [
       promptBody,
       "",
       "--- THIS SPECIALIST ---",
@@ -518,6 +816,20 @@ export function buildDispatchPromptText(brief, opts = {}) {
       `dimensions = ${JSON.stringify(leaf.dimensions ?? [])}`,
       `file_globs = ${JSON.stringify(fileGlobs)}`,
       "",
+    ];
+    if (shard) {
+      lines.push("--- THIS SHARD ---");
+      lines.push(`shard_idx = ${shard.shardIdx}`);
+      lines.push(`files_in_this_shard = ${JSON.stringify(shard.files ?? [])}`);
+      lines.push(
+        "(This leaf's filtered diff was sharded by the runner; you see ONLY this shard's files.",
+      );
+      lines.push(
+        " The other shards run as sibling Agents and merge into the same specialist row in the report.)",
+      );
+      lines.push("");
+    }
+    lines.push(
       "--- LEAF BODY ---",
       String(leaf.body ?? ""),
       "",
@@ -536,19 +848,24 @@ export function buildDispatchPromptText(brief, opts = {}) {
       "--- TOOL RESULTS ---",
       JSON.stringify(toolResults, null, 2),
       "",
-      // Per-specialist contract: return JSON to the orchestrator. The
-      // orchestrator collects K responses and aggregates them into a
-      // single specialist_outputs[] payload at outputs_path. K specialists
-      // writing directly to outputs_path would clobber each other and
-      // contradict fsm/workers/specialist.md.
+      // Per-specialist contract: write JSON to the per-leaf output path.
+      // The runner aggregates all per-leaf outputs into specialist_outputs[]
+      // on --continue. The previous shape (return JSON to orchestrator)
+      // forced the orchestrator to concatenate K responses into a JSON
+      // heredoc — error-prone and unobservable. Per-leaf files are
+      // observable on disk and resilient to orchestrator-side losses.
       "--- RESPONSE CONTRACT ---",
-      "Return ONLY the per-specialist JSON object to the orchestrator.",
-      "Do NOT write to disk or to any outputs path.",
-      "Required shape: { id, status, runtime_ms, tokens_in, tokens_out, findings[], optional skip_reason }",
+      "Write your JSON output to:",
+      outputPath,
+      "Required shape: { id, status, runtime_ms, tokens_in, tokens_out, findings[] } plus `skip_reason: \"<one sentence>\"` REQUIRED when status == \"skipped\" (the FSM schema enforces it), OPTIONAL when status == \"failed\" (encouraged — gives the report an actionable diagnostic), and OMITTED when status == \"completed\".",
+      "The output file content must be a single raw JSON object and nothing else: no Markdown code fences (` ```json `), no surrounding commentary, and no extra leading or trailing text. The runner parses the file with JSON.parse on --continue; any extra content makes the per-leaf output unparseable, which surfaces as a failed row in the aggregate.",
       "",
-      `(For audit context: the orchestrator aggregates the K responses into specialist_outputs[] and writes once to ${outputsPath}.)`,
+      "Do NOT return JSON to the orchestrator inline; the runner reads from the path above on --continue and aggregates all per-leaf outputs into specialist_outputs[]. Concurrent specialists writing to the same path would clobber each other; the per-leaf path is unique.",
       "",
-    ].join("\n");
+      `(For audit context: the runner's aggregate output is written to ${outputsPath}.)`,
+      "",
+    );
+    return lines.join("\n");
   }
 
   // Standard worker prompt.
@@ -638,16 +955,600 @@ export function writeSpecialistPromptsToDisk(brief) {
   }
   for (const leaf of pickedLeaves) {
     if (!leaf || typeof leaf.id !== "string") continue;
-    const promptPath = defaultDispatchPromptPath(brief.run_id, brief.state, leaf.id);
-    if (!promptPath) continue;
     // Pre-compute the per-leaf filtered diff here (the side-effecting
     // call site) and pass it in via opts.filteredDiff so
     // buildDispatchPromptText stays pure.
     const fileGlobs = Array.isArray(leaf.file_globs) ? leaf.file_globs : [];
     const filteredDiff = computeFilteredDiff(baseSha, headSha, fileGlobs);
-    const text = buildDispatchPromptText(brief, { leaf, filteredDiff });
-    atomicWriteFile(promptPath, text);
+    const shards = shardFilteredDiff(filteredDiff);
+    // Before writing, remove any stale prompt AND output files for
+    // this leaf so we never have a mix of old and newly staged
+    // artifacts on disk. cleanupStaleLeafArtifacts clears the
+    // canonical prompt + every shard-indexed prompt + canonical
+    // output + every shard-indexed output for the leaf. This matters
+    // when a run is re-staged with a different shard threshold (e.g.
+    // SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES changed): the same shard
+    // index can map to a different file partition between passes, so
+    // a stale output keyed only on (leaf-id, shard-idx) would
+    // silently be reused for the wrong content and the aggregator
+    // would commit findings that don't match the prompt the new
+    // specialist would see. See the long comment block above
+    // cleanupStaleLeafArtifacts for the audit-trail rationale and
+    // the three failure modes the full sweep closes.
+    cleanupStaleLeafArtifacts(brief.run_id, leaf.id);
+    if (shards.length === 1) {
+      // Common case: one prompt at the existing path shape, preserving
+      // backward compatibility for non-sharded leaves.
+      const promptPath = defaultDispatchPromptPath(brief.run_id, brief.state, leaf.id);
+      if (!promptPath) continue;
+      const outputPath = defaultSpecialistOutputPath(brief.run_id, leaf.id);
+      const text = buildDispatchPromptText(brief, { leaf, filteredDiff, outputPath });
+      atomicWriteFile(promptPath, text);
+    } else {
+      // Sharded: write N prompts, each scoped to a subset of files.
+      // Per-shard output paths share a leaf-id prefix; the aggregator
+      // (runner-side) merges shard findings into one specialist row.
+      for (const shard of shards) {
+        const promptPath = defaultDispatchPromptPath(
+          brief.run_id, brief.state, leaf.id, shard.shardIdx,
+        );
+        if (!promptPath) continue;
+        const outputPath = defaultSpecialistOutputPath(brief.run_id, leaf.id, shard.shardIdx);
+        const text = buildDispatchPromptText(brief, {
+          leaf, filteredDiff, outputPath, shard,
+        });
+        atomicWriteFile(promptPath, text);
+      }
+    }
   }
+  // Invalidate the workers-directory cache so any subsequent
+  // discoverLeafShards call in this process picks up the prompt
+  // files we just staged. (In practice writeSpecialistPromptsToDisk
+  // and discoverLeafShards run in separate process invocations, but
+  // unit tests exercise both in one process and the cache would
+  // otherwise return a stale pre-write listing.)
+  clearLeafShardsCache();
+}
+
+// Clean up ALL existing prompt AND output files for this leaf —
+// canonical and every shard-suffixed variant — before staging the
+// new shape.
+//
+// Why outputs go too: a previous version of this helper preserved
+// output files across re-staging on an "audit-trail principle". That
+// was unsound under threshold change. Same shard index can map to a
+// DIFFERENT file partition between staging passes (e.g. shard 0 of
+// the old staging covered files A,B; shard 0 of the new staging
+// covers files A,B,C because the threshold widened). The output
+// path is keyed only on (leaf-id, shard-idx), so a stale shard-0
+// output written against the old partition would be silently reused
+// for the new partition, and the aggregator would commit findings
+// that don't match the prompt the new specialist would see. That's
+// silent corruption of the review result.
+//
+// Re-staging therefore invalidates all prior outputs for the leaf.
+// The audit trail of "what did the specialist say at this point"
+// lives in the FSM manifest / fsm-trace once the run progresses;
+// not in stale workers/* files that no longer match the prompts
+// they were written against.
+//
+// Why total prompt cleanup (not just the opposite shape): three
+// failure modes the previous "opposite-only" cleanup left open —
+//   1. Threshold change non-sharded → sharded: the canonical
+//      prompt is deleted (good); shard prompts written (good).
+//   2. Threshold change sharded → non-sharded: shard prompts
+//      deleted (good); canonical written (good).
+//   3. Threshold change wide → narrow sharded (e.g. 0..4 → 0..2):
+//      the new staging writes 0, 1, 2 but stale 3 and 4 prompts
+//      remain. discoverLeafShards sees [0, 1, 2, 3, 4] and the
+//      aggregator expects outputs for 3 and 4 that never come.
+//      Total cleanup closes (3) by removing every prompt before
+//      writing.
+//
+// Best-effort: rm failures are swallowed (these are derivative
+// artefacts; the primary write is the source of truth).
+function cleanupStaleLeafArtifacts(runId, leafId) {
+  const samplePromptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leafId);
+  if (!samplePromptPath) return;
+  const dir = dirname(samplePromptPath);
+  let entries;
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return;
+  }
+  const canonicalPromptName = `dispatch_specialists-prompt-${leafId}.md`;
+  const promptPrefix = `dispatch_specialists-prompt-${leafId}--`;
+  const canonicalOutputName = `dispatch_specialists-output-${leafId}.json`;
+  const outputPrefix = `dispatch_specialists-output-${leafId}--`;
+  for (const ent of entries) {
+    const matchCanonicalPrompt = ent === canonicalPromptName;
+    const matchShardPrompt = ent.startsWith(promptPrefix) && ent.endsWith(".md")
+      && /^\d+$/.test(ent.slice(promptPrefix.length, -".md".length));
+    const matchCanonicalOutput = ent === canonicalOutputName;
+    const matchShardOutput = ent.startsWith(outputPrefix) && ent.endsWith(".json")
+      && /^\d+$/.test(ent.slice(outputPrefix.length, -".json".length));
+    if (!matchCanonicalPrompt && !matchShardPrompt
+        && !matchCanonicalOutput && !matchShardOutput) continue;
+    try {
+      rmSync(join(dir, ent), { force: true });
+    } catch {
+      // ignore — best-effort cleanup
+    }
+  }
+}
+
+// Per-process cache of workers/ directory listings keyed by absolute
+// path. discoverLeafShards is called once per picked_leaf during
+// --continue aggregation and again during --print-pending-leaf-ids;
+// without this cache, K calls each readdirSync the workers/ dir
+// (O(K * entries) per aggregation/pending pass). The cache is
+// invalidated by clearLeafShardsCache when the runner stages new
+// prompts (writeSpecialistPromptsToDisk → invalidate at end).
+const _workersDirCache = new Map();
+function listWorkersDir(workersDirPath) {
+  if (_workersDirCache.has(workersDirPath)) {
+    return _workersDirCache.get(workersDirPath);
+  }
+  let entries;
+  try {
+    entries = readdirSync(workersDirPath);
+  } catch {
+    entries = [];
+  }
+  _workersDirCache.set(workersDirPath, entries);
+  return entries;
+}
+function clearLeafShardsCache() {
+  _workersDirCache.clear();
+}
+
+// Discover the shard layout for a single picked leaf by listing the
+// staged dispatch_specialists-prompt-<leaf-id>* files. Returns:
+//   - null                       when the leaf is non-sharded (the bare
+//                                `dispatch_specialists-prompt-<leaf-id>.md`
+//                                exists).
+//   - [0, 1, ..., max]           when at least one sharded prompt is
+//                                staged. The returned array is ALWAYS
+//                                contiguous from 0 to max(observed):
+//                                if on-disk indices are [0, 2] (gap at
+//                                1 — partial staging failure), we return
+//                                [0, 1, 2]. The aggregator then iterates
+//                                this full range, looks for shard 1's
+//                                output, doesn't find it, synthesizes a
+//                                failed row mentioning "shard 1: no
+//                                output written for shard 1", and the
+//                                leaf surfaces as failed — rather than
+//                                silently dropping shard 1's files.
+//   - []                         when neither shape exists (degraded
+//                                path: leaf was never staged).
+//
+// Why the contiguous-range normalisation matters: prompt writes are
+// best-effort (atomicWriteFile swallows I/O errors). Without
+// normalisation, `--0.md` + `--2.md` with `--1.md` missing would let
+// the aggregator merge the two present shards "successfully" and shard
+// 1's files would silently never get reviewed.
+//
+// Filesystem-as-truth: we do NOT mutate the brief to record shard counts.
+// The orchestrator (--print-pending-leaf-ids) and the aggregator both
+// read the same on-disk evidence, so they cannot disagree about which
+// shards exist.
+export function discoverLeafShards(runId, leafId) {
+  const promptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leafId);
+  if (!promptPath) return [];
+  const canonicalPresent = existsSync(promptPath);
+  // Enumerate dispatch_specialists-prompt-<leaf-id>--<n>.md regardless
+  // of canonical presence so we can detect the corruption case where
+  // BOTH shapes exist on disk simultaneously (cleanupStaleLeafArtifacts's
+  // best-effort rmSync silently swallows I/O errors, so it's possible
+  // to end up with a canonical prompt and shard prompts coexisting
+  // after a re-stage). Returning `null` early on canonical presence
+  // would silently drop shard work; throwing forces the corruption to
+  // surface to whatever caller is iterating leaves so it can stop and
+  // demand a clean re-stage rather than aggregating partial results.
+  // Cached one-pass listing of workers/ — the directory is shared by
+  // every leaf in the run, so a single readdirSync covers all K
+  // calls during aggregation/pending-list rather than K separate
+  // syscalls.
+  const dir = dirname(promptPath);
+  const entries = listWorkersDir(dir);
+  const prefix = `dispatch_specialists-prompt-${leafId}--`;
+  const shards = [];
+  for (const ent of entries) {
+    if (!ent.startsWith(prefix) || !ent.endsWith(".md")) continue;
+    const tail = ent.slice(prefix.length, ent.length - ".md".length);
+    // Reject indices longer than the cap's digit count up-front so we
+    // never call Number.parseInt on implausibly long strings.
+    // SHARD_INDEX_MAX is 1024 (4 digits), so any tail of 5+ digits is
+    // ignored. 4-digit values STILL pass into shards[] so the
+    // post-sort `max > SHARD_INDEX_MAX` check can fire and surface
+    // out-of-range shard prompts (e.g. 1025-9999) as a hard error
+    // rather than silently skipping them — workers/ corruption
+    // should be loud, not quiet.
+    if (!/^\d{1,4}$/.test(tail)) continue;
+    shards.push(Number.parseInt(tail, 10));
+  }
+  shards.sort((a, b) => a - b);
+  if (canonicalPresent && shards.length > 0) {
+    throw new Error(
+      `discoverLeafShards: both canonical and sharded prompt files exist for leaf "${leafId}" (canonical: ${promptPath}; shards: ${shards.map((i) => `${prefix}${i}.md`).join(", ")}). This indicates cleanupStaleLeafArtifacts failed to remove the previous shape during re-staging — the run is in a corrupted state. Re-run from --start, or remove the stale files manually before retrying.`,
+    );
+  }
+  if (canonicalPresent) return null;
+  if (shards.length === 0) return [];
+  // Contiguity normalisation: if the on-disk indices are
+  // [0, 2] (gap at 1) we return [0, 1, 2]. The aggregator then tries
+  // to read output for every index in the full range; the missing
+  // shard 1 surfaces as a "shard 1 output unwritten" failed row
+  // rather than silently disappearing. Without this, partial staging
+  // would let the runner believe the leaf produced two complete
+  // shards when shard 1's files were never reviewed.
+  const max = shards[shards.length - 1];
+  // Hard cap on the contiguous range we'll allocate. A legitimate
+  // staging pass with the default 32KB threshold would hit ~100-200
+  // shards on a multi-megabyte filtered diff in the absolute worst
+  // case; 1024 leaves comfortable headroom. Anything beyond
+  // SHARD_INDEX_MAX is treated as workers/ corruption (manual edit,
+  // cosmic ray, or buggy external tooling) rather than a legitimate
+  // run, and we hard-fail instead of allocating an enormous array
+  // that would hang/OOM the runner. The per-entry 4-digit gate above
+  // already rejects indices > 9999 before parseInt, but this max
+  // check is the contract: if any caller plants a shard index > 1024
+  // by direct file write, we surface it.
+  if (max > SHARD_INDEX_MAX) {
+    throw new Error(
+      `discoverLeafShards: shard index ${max} for leaf "${leafId}" exceeds SHARD_INDEX_MAX=${SHARD_INDEX_MAX}. The workers/ directory likely contains corrupted or hand-edited shard files. Inspect ${dir} and remove implausible shard prompts before retrying.`,
+    );
+  }
+  const full = [];
+  for (let i = 0; i <= max; i++) full.push(i);
+  return full;
+}
+
+// Hard cap on shard indices the runner accepts during discovery.
+// Justified at the call site (discoverLeafShards): the default
+// 32KB threshold yields ~100-200 shards on the largest legitimate
+// filtered diffs; 1024 is a comfortable safety margin that surfaces
+// corrupted workers/ state as a hard failure rather than an OOM.
+const SHARD_INDEX_MAX = 1024;
+
+// Aggregate per-leaf (and per-shard) specialist outputs into the canonical
+// `{ specialist_outputs: [...] }` shape the FSM commits as the
+// dispatch_specialists state's outputs. Reads from disk only; pure
+// otherwise (no network, no spawn).
+//
+// Per-leaf semantics:
+//   - Non-sharded leaf with present output → forward as a single
+//     specialist_outputs entry.
+//   - Sharded leaf with all shards present → merge findings, sum
+//     runtime_ms / tokens_*, status = "completed" if every shard
+//     completed (else "failed" if any failed; "skipped" only when
+//     every shard skipped).
+//   - Missing per-leaf output (or any missing shard for a sharded leaf)
+//     → synthesize a `failed` row with skip_reason naming what's
+//     missing. Lets verify_coverage's downstream check surface the gap
+//     cleanly.
+//
+// The order of specialist_outputs matches picked_leaves order so the
+// downstream report is deterministic.
+export function aggregateSpecialistOutputs(brief) {
+  const pickedLeaves = brief?.inputs?.picked_leaves;
+  if (!Array.isArray(pickedLeaves)) {
+    return { specialist_outputs: [] };
+  }
+  const runId = brief?.run_id;
+  const out = [];
+  for (const leaf of pickedLeaves) {
+    if (!leaf || typeof leaf.id !== "string") continue;
+    const shards = discoverLeafShards(runId, leaf.id);
+    if (shards === null) {
+      // Non-sharded leaf. sanitiseSpecialistRow normalises status,
+      // ensures findings is an array, sanitises numeric fields, and
+      // synthesises skip_reason when required — guarantees the row
+      // matches the FSM's specialist_outputs[*] schema.
+      const outputPath = defaultSpecialistOutputPath(runId, leaf.id);
+      const row = readSpecialistOutputOrFail(outputPath, leaf.id, null);
+      out.push(sanitiseSpecialistRow(row, leaf.id));
+      continue;
+    }
+    if (shards.length === 0) {
+      // Neither sharded nor non-sharded prompt staged. Treat as failed —
+      // the orchestrator never had a way to dispatch this leaf.
+      out.push({
+        id: leaf.id,
+        status: "failed",
+        runtime_ms: 0,
+        tokens_in: 0,
+        tokens_out: 0,
+        findings: [],
+        skip_reason: "no dispatch prompt staged for this leaf (runner skipped staging?)",
+      });
+      continue;
+    }
+    // Sharded leaf: read each shard's output, merge.
+    out.push(mergeShardedSpecialistOutputs(runId, leaf.id, shards));
+  }
+  return { specialist_outputs: out };
+}
+
+// Returns true if at least one per-leaf (or per-shard) output file
+// exists on disk for any picked_leaf in the brief. Used as the gate
+// for the runner-side auto-aggregation in --continue: if at least one
+// output exists, aggregate (every leaf gets a row, missing ones are
+// synthesized as failed); if NONE exist, fall through to the existing
+// "default outputs file not found" error so the orchestrator sees the
+// actual "I never dispatched" signal cleanly.
+export function anySpecialistOutputOnDisk(brief) {
+  const pickedLeaves = brief?.inputs?.picked_leaves;
+  if (!Array.isArray(pickedLeaves)) return false;
+  const runId = brief?.run_id;
+  for (const leaf of pickedLeaves) {
+    if (!leaf || typeof leaf.id !== "string") continue;
+    const shards = discoverLeafShards(runId, leaf.id);
+    if (shards === null) {
+      const p = defaultSpecialistOutputPath(runId, leaf.id);
+      if (p && existsSync(p)) return true;
+      continue;
+    }
+    if (shards.length > 0) {
+      for (const idx of shards) {
+        const p = defaultSpecialistOutputPath(runId, leaf.id, idx);
+        if (p && existsSync(p)) return true;
+      }
+      continue;
+    }
+    // shards === []: no prompts staged for this leaf. In normal
+    // operation cleanupStaleLeafArtifacts (run at the start of each
+    // staging pass) would have wiped outputs alongside prompts, so
+    // there should be nothing to find here. But that cleanup is
+    // best-effort (rmSync errors are swallowed), and a partial-staging
+    // failure could leave outputs behind without prompts. Without
+    // this branch, anySpecialistOutputOnDisk would return false in
+    // that corruption case, the --continue auto-aggregation
+    // fallback would not run, and the user would see a confusing
+    // "default outputs file not found" error even though per-leaf
+    // outputs exist on disk. Sweep the workers/ dir for any
+    // canonical or shard-suffixed output for this leaf — if any
+    // exists, return true so the aggregator runs and surfaces the
+    // missing-prompt rows as failed (the right diagnostic signal).
+    const canonicalOutputPath = defaultSpecialistOutputPath(runId, leaf.id);
+    if (canonicalOutputPath && existsSync(canonicalOutputPath)) return true;
+    const samplePromptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leaf.id);
+    if (!samplePromptPath) continue;
+    const dir = dirname(samplePromptPath);
+    const entries = listWorkersDir(dir);
+    const outputPrefix = `dispatch_specialists-output-${leaf.id}--`;
+    for (const ent of entries) {
+      if (ent.startsWith(outputPrefix) && ent.endsWith(".json")
+          && /^\d+$/.test(ent.slice(outputPrefix.length, -".json".length))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function readSpecialistOutputOrFail(outputPath, leafId, shardIdx) {
+  if (!outputPath || !existsSync(outputPath)) {
+    return {
+      id: leafId,
+      status: "failed",
+      runtime_ms: 0,
+      tokens_in: 0,
+      tokens_out: 0,
+      findings: [],
+      skip_reason: shardIdx === null
+        ? "no per-leaf output written"
+        : `no output written for shard ${shardIdx}`,
+    };
+  }
+  let parsed;
+  try {
+    const text = readFileSync(outputPath, "utf8");
+    parsed = JSON.parse(text);
+  } catch (err) {
+    return {
+      id: leafId,
+      status: "failed",
+      runtime_ms: 0,
+      tokens_in: 0,
+      tokens_out: 0,
+      findings: [],
+      skip_reason: shardIdx === null
+        ? `per-leaf output unparseable: ${err.message}`
+        : `shard ${shardIdx} output unparseable: ${err.message}`,
+    };
+  }
+  // Reject non-object payloads (null, arrays, scalars). Object-spread
+  // on null/scalars throws at runtime; arrays would spread as numeric
+  // keys and collapse the schema. Treat malformed shape as a failed
+  // row so aggregation never crashes on bad worker output.
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      id: leafId,
+      status: "failed",
+      runtime_ms: 0,
+      tokens_in: 0,
+      tokens_out: 0,
+      findings: [],
+      skip_reason: shardIdx === null
+        ? `per-leaf output is not a JSON object (got ${parsed === null ? "null" : Array.isArray(parsed) ? "array" : typeof parsed})`
+        : `shard ${shardIdx} output is not a JSON object (got ${parsed === null ? "null" : Array.isArray(parsed) ? "array" : typeof parsed})`,
+    };
+  }
+  // Stamp the leaf id authoritatively — the worker may have written a
+  // different id (e.g. copy-paste mistake). The id in the report MUST
+  // match the picked_leaves[*].id the runner staged.
+  return { ...parsed, id: leafId };
+}
+
+// Status normalisation: the FSM's response_schema only accepts
+// `completed` / `failed` / `skipped`. A worker that wrote anything
+// else (typo, schema drift) must be treated as failed so aggregation
+// can't silently launder malformed shard outputs into a completed
+// leaf row. Returns one of the three legal statuses.
+function normaliseShardStatus(rawStatus) {
+  if (rawStatus === "completed" || rawStatus === "failed" || rawStatus === "skipped") {
+    return rawStatus;
+  }
+  return "failed";
+}
+
+// Sanitise a worker-produced specialist row to match the FSM
+// response_schema for `specialist_outputs[*]`:
+//   - `id`             → stamped to authoritativeId (the picked_leaves
+//                        id; runner-side, not worker-side).
+//   - `status`         → normaliseShardStatus (out-of-vocabulary →
+//                        failed).
+//   - `findings`       → must be an array; non-array → [], status
+//                        downgraded to failed.
+//   - `runtime_ms` /
+//     `tokens_in` /
+//     `tokens_out`     → must be a finite non-negative number; missing
+//                        / non-finite / negative → 0.
+//   - `skip_reason`    → required when final status is skipped; if
+//                        absent in that case, synthesise a default.
+//                        For status=failed, kept as-is (encouraged but
+//                        not required). For status=completed, dropped.
+//
+// Any sanitisation that changed worker intent (status downgrade,
+// findings reset) appends a structured note to skip_reason so the
+// report shows what the worker actually wrote.
+function sanitiseSpecialistRow(row, authoritativeId) {
+  const issues = [];
+  const normalised = normaliseShardStatus(row.status);
+  if (normalised !== row.status) {
+    issues.push(`worker wrote status "${String(row.status)}"; not in {completed, failed, skipped}; treated as failed`);
+  }
+  const findingsOk = Array.isArray(row.findings);
+  if (!findingsOk) {
+    issues.push(`worker wrote findings=${describeForError(row.findings)}; expected array; treated as failed`);
+  }
+  let finalStatus = normalised;
+  if (issues.length > 0) finalStatus = "failed";
+  // FSM response_schema declares runtime_ms / tokens_in / tokens_out as
+  // integer (with minimum: 0 implied; we enforce >= 0 here). A worker
+  // that wrote a finite non-integer (e.g. 1.5) would otherwise pass
+  // sanitisation but fail post-hoc commit-time validation. Floor to an
+  // integer; non-finite / negative / non-numeric → 0.
+  const finite = (v) => {
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) return 0;
+    return Math.floor(v);
+  };
+  let skipReason = typeof row.skip_reason === "string" && row.skip_reason.length > 0
+    ? row.skip_reason
+    : null;
+  if (finalStatus === "skipped" && skipReason === null) {
+    skipReason = "worker wrote status=skipped without skip_reason";
+  }
+  if (issues.length > 0) {
+    const detail = issues.join("; ");
+    skipReason = skipReason ? `${skipReason}; ${detail}` : detail;
+  }
+  const out = {
+    id: authoritativeId,
+    status: finalStatus,
+    runtime_ms: finite(row.runtime_ms),
+    tokens_in: finite(row.tokens_in),
+    tokens_out: finite(row.tokens_out),
+    findings: findingsOk ? row.findings : [],
+  };
+  // Drop skip_reason for status=completed: keeping a stale value
+  // (e.g., a worker that wrote both completed AND a skip_reason
+  // describing a previous attempt) would be misleading in the
+  // report. The schema doesn't require skip_reason for completed,
+  // so dropping is safe.
+  if (skipReason !== null && finalStatus !== "completed") {
+    out.skip_reason = skipReason;
+  }
+  return out;
+}
+
+function describeForError(value) {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (Array.isArray(value)) return "array"; // shouldn't occur in this path
+  return typeof value;
+}
+
+function mergeShardedSpecialistOutputs(runId, leafId, shardIndices) {
+  const shardRows = shardIndices.map((idx) => {
+    // Prompt-files-as-source-of-truth: a shard is only "valid" when
+    // its dispatch prompt was successfully staged. cleanupStaleLeafArtifacts
+    // wipes both prompt and output files for the leaf at the start of
+    // each staging pass, so in normal operation a missing prompt also
+    // means no output. But the per-shard rmSync inside cleanup is
+    // best-effort, so a stale dispatch_specialists-output-<leaf>--<idx>.json
+    // from a previous staging pass could survive an rmSync I/O error
+    // and mask a missing prompt — the shard would aggregate as
+    // completed even though no specialist actually reviewed the
+    // current shard's diff. Treat a missing prompt as a failed row
+    // regardless of whether the (potentially stale) output file is
+    // present.
+    const promptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leafId, idx);
+    if (!promptPath || !existsSync(promptPath)) {
+      return sanitiseSpecialistRow(
+        {
+          id: leafId,
+          status: "failed",
+          runtime_ms: 0,
+          tokens_in: 0,
+          tokens_out: 0,
+          findings: [],
+          skip_reason: `no dispatch prompt staged for shard ${idx} (any output file at this index would be stale from a previous staging pass)`,
+        },
+        leafId,
+      );
+    }
+    const outputPath = defaultSpecialistOutputPath(runId, leafId, idx);
+    const row = readSpecialistOutputOrFail(outputPath, leafId, idx);
+    // Sanitise each shard with the same helper as the non-sharded
+    // path so status / findings / numeric-field validation is
+    // consistent across both code paths. The outer
+    // skip_reason-aggregation loop below adds the "shard <idx>:"
+    // prefix; sanitiseSpecialistRow itself doesn't know about
+    // shards, which avoids double-prefixing in the merged output.
+    return sanitiseSpecialistRow(row, leafId);
+  });
+  // Status precedence: any failed → failed; every skipped → skipped;
+  // otherwise completed. (A mix of completed and skipped is "completed"
+  // — the leaf produced findings from at least one shard, even if other
+  // shards opted out for legitimate reasons.)
+  const anyFailed = shardRows.some((r) => r.status === "failed");
+  const allSkipped = shardRows.every((r) => r.status === "skipped");
+  const status = anyFailed ? "failed" : (allSkipped ? "skipped" : "completed");
+  // sanitiseSpecialistRow has already coerced findings to an array
+  // and runtime_ms / tokens_in / tokens_out to non-negative integers,
+  // so the per-shard values can be summed directly. No defensive
+  // Number.isInteger guard needed at this layer.
+  const findings = shardRows.flatMap((r) => r.findings);
+  const runtime_ms = shardRows.reduce((acc, r) => acc + r.runtime_ms, 0);
+  const tokens_in = shardRows.reduce((acc, r) => acc + r.tokens_in, 0);
+  const tokens_out = shardRows.reduce((acc, r) => acc + r.tokens_out, 0);
+  const merged = {
+    id: leafId,
+    status,
+    runtime_ms,
+    tokens_in,
+    tokens_out,
+    findings,
+  };
+  // Surface skip_reason when status is skipped or failed, so the report
+  // shows WHY this leaf produced no findings.
+  if (status !== "completed") {
+    const reasons = shardRows
+      .map((r, i) => r.skip_reason ? `shard ${shardIndices[i]}: ${r.skip_reason}` : null)
+      .filter((s) => s !== null);
+    if (reasons.length > 0) merged.skip_reason = reasons.join("; ");
+  }
+  // FSM schema requires skip_reason when status === "skipped". If the
+  // merged status is "skipped" but no shard supplied a reason (e.g.
+  // every shard returned status=skipped without a reason), synthesize
+  // a default so the aggregate commits cleanly.
+  if (status === "skipped" && typeof merged.skip_reason !== "string") {
+    merged.skip_reason = "every shard reported status=skipped without skip_reason";
+  }
+  return merged;
 }
 
 // Shared atomic-write primitive used by writeBriefToDisk and the new
@@ -1410,6 +2311,53 @@ async function main() {
         );
       }
       outputsFile = defaultOutputsPath(runId, currentState);
+      // dispatch_specialists special case: if no aggregate file exists yet,
+      // try to aggregate from per-leaf output files. The new flow has
+      // each specialist writing to <run_dir>/workers/dispatch_specialists-output-<leaf-id>.json
+      // (or per-shard variants); the runner aggregates on --continue.
+      // If neither the aggregate file NOR any per-leaf outputs exist, we
+      // fall through to the existing not-found error so the orchestrator
+      // sees the same "missing output" signal.
+      if (currentState === "dispatch_specialists" && !existsSync(outputsFile)) {
+        const briefPath = defaultBriefPath(runId, currentState);
+        if (existsSync(briefPath)) {
+          let brief;
+          try {
+            brief = JSON.parse(readFileSync(briefPath, "utf8"));
+          } catch {
+            brief = null;
+          }
+          if (brief) {
+            // Decide whether to aggregate based on ON-DISK EVIDENCE:
+            // does at least one per-leaf (or per-shard) output FILE
+            // exist? Don't gate on payload status field — a worker
+            // that legitimately wrote `status: "failed"` should still
+            // contribute its row to the aggregate. The previous
+            // status-based gate caused legitimate failed rows to be
+            // dropped and `--continue` to fail with "default outputs
+            // file not found" even when output files existed.
+            //
+            // Both anySpecialistOutputOnDisk and aggregateSpecialistOutputs
+            // call discoverLeafShards, which throws on the corruption
+            // case where BOTH canonical AND sharded prompt files exist
+            // for the same leaf. Catch and route through fail(err.message,
+            // {run_id}) so the CLI emits a clean structured error rather
+            // than the generic "unhandled error: <stack>" wrapper.
+            try {
+              const haveSomeOnDiskOutput = anySpecialistOutputOnDisk(brief);
+              if (haveSomeOnDiskOutput) {
+                const aggregate = aggregateSpecialistOutputs(brief);
+                atomicWriteFile(outputsFile, JSON.stringify(aggregate, null, 2));
+              }
+            } catch (err) {
+              fail(
+                `--continue: ${err?.message ?? String(err)}`,
+                { run_id: runId, current_state: currentState },
+              );
+            }
+          }
+        }
+      }
       if (!existsSync(outputsFile)) {
         fail(
           `--continue: default outputs file not found at "${outputsFile}". Either write your worker output to that path (the brief shipped it as outputs_path) or pass --outputs-file <path> explicitly.`,
@@ -1728,32 +2676,61 @@ async function main() {
     }
     if (currentState === "dispatch_specialists" && (!leafId || typeof leafId !== "string")) {
       fail(
-        `--print-dispatch-prompt for state "dispatch_specialists" requires --leaf-id <id>; one prompt per picked specialist sits at <run_dir>/workers/dispatch_specialists-prompt-<leaf-id>.md.`,
+        `--print-dispatch-prompt for state "dispatch_specialists" requires --leaf-id <id>; one prompt per picked specialist sits at <run_dir>/workers/dispatch_specialists-prompt-<leaf-id>.md (or --<shardIdx>.md when sharded).`,
         { run_id: runId, current_state: currentState },
       );
+    }
+    // For dispatch_specialists, accept either --shard-idx <N> or a
+    // <leaf-id>--<N> suffix on the --leaf-id value (so the
+    // orchestrator can pass --print-pending-leaf-ids output verbatim).
+    // The shared parseLeafIdAndShardIdx helper handles both forms,
+    // including the combined "<leaf>--<idx> + --shard-idx <idx>"
+    // case (rejected when the values mismatch).
+    let resolvedLeafId = leafId;
+    let resolvedShardIdx = null;
+    if (currentState === "dispatch_specialists") {
+      const parsed = parseLeafIdAndShardIdx({
+        leafIdArg: leafId,
+        shardIdxArg: args["shard-idx"],
+        cliName: "--print-dispatch-prompt",
+      });
+      resolvedLeafId = parsed.leafId;
+      resolvedShardIdx = parsed.shardIdx;
     }
     const promptPath = defaultDispatchPromptPath(
       runId,
       currentState,
-      currentState === "dispatch_specialists" ? leafId : undefined,
+      currentState === "dispatch_specialists" ? resolvedLeafId : undefined,
+      currentState === "dispatch_specialists" ? resolvedShardIdx : null,
     );
     // currentState is now guaranteed safe (isSafeStateSegment passed
     // above). The only way promptPath can be null at this point is the
     // dispatch_specialists branch rejecting a malformed leaf-id.
-    //   1. promptPath === null → invalid --leaf-id (must match
-    //      `^[a-z][a-z0-9-]*$`).
-    //   2. promptPath set but file missing → run pre-dates dispatch-prompt
-    //      staging, or the file was removed.
+    // isValidLeafId enforces TWO rules (against ID_PATTERN imported
+    // from scripts/lib/reviewer-schema.mjs, the canonical leaf-id
+    // regex):
+    //   - must match `^[a-z0-9]+(-[a-z0-9]+)*$` (strict kebab-case
+    //     ASCII: lowercase letters and digits, single hyphens between
+    //     segments only; no leading/trailing hyphens and no
+    //     consecutive hyphens).
+    //   - must NOT end in `--<digits>` (reserved as shard suffix on
+    //     disk; pass shard ids via --shard-idx, or via the
+    //     --print-pending-leaf-ids `<leaf>--<idx>` shorthand which
+    //     parseLeafIdAndShardIdx splits before this validation).
+    //   - shardIdx (when present) must be a non-negative integer.
+    // promptPath set but file missing → run pre-dates dispatch-prompt
+    // staging, the leaf is sharded but you didn't pass --shard-idx,
+    // or the file was removed.
     if (promptPath === null) {
       fail(
-        `--print-dispatch-prompt: invalid --leaf-id "${leafId}" for state "dispatch_specialists" (must match ^[a-z][a-z0-9-]*$).`,
-        { run_id: runId, current_state: currentState, leaf_id: leafId },
+        `--print-dispatch-prompt: invalid --leaf-id "${resolvedLeafId}" / --shard-idx ${resolvedShardIdx} for state "dispatch_specialists" (leaf-id must be kebab-case ASCII matching ^[a-z0-9]+(-[a-z0-9]+)*$ — lowercase letters and digits, single hyphens between segments, no leading/trailing hyphens, no consecutive hyphens — AND must not end in --<digits> [reserved for shard ids; pass shard via --shard-idx]; shard-idx when present must be a non-negative integer).`,
+        { run_id: runId, current_state: currentState, leaf_id: resolvedLeafId, shard_idx: resolvedShardIdx },
       );
     }
     if (!existsSync(promptPath)) {
       fail(
-        `--print-dispatch-prompt: no prompt file at "${promptPath}". Either this run pre-dates dispatch-prompt staging or the file was removed.`,
-        { run_id: runId, current_state: currentState, leaf_id: leafId, expected_path: promptPath },
+        `--print-dispatch-prompt: no prompt file at "${promptPath}". Either this run pre-dates dispatch-prompt staging, the leaf is sharded but you didn't pass --shard-idx, or the file was removed.`,
+        { run_id: runId, current_state: currentState, leaf_id: resolvedLeafId, shard_idx: resolvedShardIdx, expected_path: promptPath },
       );
     }
     let body;
@@ -1769,6 +2746,196 @@ async function main() {
     return;
   }
 
+  // --print-pending-leaf-ids: emit the next batch of leaf-ids (or shard-
+  // suffixed ids) that need dispatch. The orchestrator drives a
+  // batched-fan-out loop with this — query the next batch, dispatch
+  // up to N Agents in parallel, wait, repeat. The 10-agent thread-pool
+  // cap (default --batch-size 10) is enforced here: the runner never
+  // returns more than batch-size ids per call.
+  //
+  // ID format:
+  //   <leaf-id>            — non-sharded leaf
+  //   <leaf-id>--<shardIdx>  — one shard of a sharded leaf
+  //
+  // A leaf is "pending" when its corresponding output file does not
+  // yet exist on disk. Output paths:
+  //   <run_dir>/workers/dispatch_specialists-output-<leaf-id>.json
+  //   <run_dir>/workers/dispatch_specialists-output-<leaf-id>--<shardIdx>.json
+  if (args["print-pending-leaf-ids"]) {
+    const runId = args["run-id"];
+    if (!runId || typeof runId !== "string" || !isValidRunId(runId)) {
+      fail("--print-pending-leaf-ids requires --run-id <id>");
+    }
+    const batchSizeRaw = args["batch-size"];
+    let batchSize = 10;
+    if (batchSizeRaw !== undefined) {
+      if (typeof batchSizeRaw !== "string" || !/^\d+$/.test(batchSizeRaw)) {
+        fail("--batch-size requires a positive integer");
+      }
+      batchSize = Number.parseInt(batchSizeRaw, 10);
+      if (batchSize < 1 || batchSize > 50) {
+        fail("--batch-size must be between 1 and 50 (default 10)");
+      }
+    }
+    // Validate the run is ACTUALLY paused on dispatch_specialists,
+    // not just that a stale brief file exists. Brief files are
+    // retained on disk after the FSM advances; without the manifest
+    // check, this mode could silently operate on a stale brief from
+    // a finished/advanced run and mislead the orchestrator into
+    // re-dispatching against an obsolete picked_leaves set.
+    const storageRoot = resolveStorageRoot();
+    const manifest = readManifest(runId, { storageRoot });
+    if (!manifest) {
+      fail(
+        `--print-pending-leaf-ids: no manifest found for run-id "${runId}".`,
+        { run_id: runId },
+      );
+    }
+    if (manifest.current_state !== "dispatch_specialists") {
+      fail(
+        `--print-pending-leaf-ids: run "${runId}" is in state "${manifest.current_state ?? "unknown"}" (status: ${manifest.status ?? "unknown"}); the run must be paused on dispatch_specialists.`,
+        { run_id: runId, current_state: manifest.current_state ?? null, status: manifest.status ?? null },
+      );
+    }
+    const briefPath = defaultBriefPath(runId, "dispatch_specialists");
+    if (!briefPath || !existsSync(briefPath)) {
+      fail(
+        `--print-pending-leaf-ids: no dispatch_specialists brief at "${briefPath}". The run is in state dispatch_specialists per the manifest, but the brief file is missing.`,
+        { run_id: runId, expected_path: briefPath },
+      );
+    }
+    let brief;
+    try {
+      brief = JSON.parse(readFileSync(briefPath, "utf8"));
+    } catch (err) {
+      fail(
+        `--print-pending-leaf-ids: brief at "${briefPath}" is unparseable: ${err?.message ?? String(err)}`,
+        { run_id: runId, brief_path: briefPath },
+      );
+    }
+    const pickedLeaves = brief?.inputs?.picked_leaves;
+    if (!Array.isArray(pickedLeaves)) {
+      fail(
+        `--print-pending-leaf-ids: brief has no picked_leaves[] field (state may have advanced past dispatch_specialists).`,
+        { run_id: runId },
+      );
+    }
+    // Empty picked_leaves is NOT an error — it means there's nothing
+    // to dispatch (which is a legal state for the FSM to reach when
+    // earlier states determined no specialists apply). The orchestrator
+    // loop's exit condition is "BATCH is empty"; emit nothing and
+    // exit 0 so the loop progresses cleanly. Hard-failing here would
+    // wedge an orchestrator that's correctly observing "no work left".
+    if (pickedLeaves.length === 0) {
+      return;
+    }
+    const pending = [];
+    for (const leaf of pickedLeaves) {
+      if (!leaf || typeof leaf.id !== "string") continue;
+      // discoverLeafShards throws on the corruption case where BOTH
+      // canonical AND sharded prompt files exist for the leaf. Catch
+      // here and route through fail(err.message, {run_id, leaf_id})
+      // so the CLI emits a clean structured error rather than the
+      // generic "unhandled error: <stack>" wrapper. The orchestrator
+      // can inspect the structured payload and abort the batch loop
+      // cleanly rather than trying to parse a stack trace.
+      let shards;
+      try {
+        shards = discoverLeafShards(runId, leaf.id);
+      } catch (err) {
+        fail(
+          `--print-pending-leaf-ids: ${err?.message ?? String(err)}`,
+          { run_id: runId, leaf_id: leaf.id },
+        );
+      }
+      if (shards === null) {
+        // Non-sharded leaf.
+        const outPath = defaultSpecialistOutputPath(runId, leaf.id);
+        if (outPath && !existsSync(outPath)) pending.push(leaf.id);
+      } else if (shards.length > 0) {
+        for (const shardIdx of shards) {
+          // Only emit a shard as pending when BOTH its prompt is
+          // staged AND its output is missing. discoverLeafShards
+          // normalises observed indices to a contiguous [0..max]
+          // range to surface partial-staging gaps as failed rows in
+          // the aggregator. Without this prompt-exists check,
+          // --print-pending-leaf-ids would emit shard ids for
+          // gaps (e.g. shard 1 when prompts exist only for 0 and 2),
+          // and the orchestrator's --print-agent-shim-prompt call
+          // for that id would hard-fail (no prompt file), wedging
+          // the batch loop. The aggregator already surfaces the
+          // missing-prompt case as a "failed" row on --continue,
+          // so dropping un-staged shards here is the right move.
+          const promptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leaf.id, shardIdx);
+          if (!promptPath || !existsSync(promptPath)) continue;
+          const outPath = defaultSpecialistOutputPath(runId, leaf.id, shardIdx);
+          if (outPath && !existsSync(outPath)) pending.push(`${leaf.id}--${shardIdx}`);
+        }
+      }
+      // shards === [] (no prompts staged) is treated as silent skip —
+      // aggregateSpecialistOutputs will emit a "failed" row for the
+      // leaf on --continue. The orchestrator can't dispatch what was
+      // never staged.
+    }
+    const batch = pending.slice(0, batchSize);
+    if (batch.length > 0) {
+      process.stdout.write(batch.join("\n") + "\n");
+    }
+    return;
+  }
+
+  // --print-agent-shim-prompt: emit a small (≤200-token) prompt the
+  // orchestrator can pass verbatim as the Agent tool's `prompt`
+  // parameter. The shim instructs the Agent to read the staged
+  // dispatch prompt from disk and write its JSON output to the
+  // per-leaf output path. Dispatch_specialists per-leaf prompts can
+  // run 30-100KB; passing them inline burns orchestrator-side input
+  // tokens uselessly, since the runner has already staged the
+  // content on disk and the Agent has filesystem access.
+  if (args["print-agent-shim-prompt"]) {
+    const runId = args["run-id"];
+    if (!runId || typeof runId !== "string" || !isValidRunId(runId)) {
+      fail("--print-agent-shim-prompt requires --run-id <id>");
+    }
+    const leafId = args["leaf-id"];
+    if (typeof leafId !== "string" || leafId.length === 0) {
+      fail("--print-agent-shim-prompt requires --leaf-id <id>");
+    }
+    // Validate the run is ACTUALLY paused on dispatch_specialists,
+    // not just that workers/ files happen to exist. Workers files
+    // are retained on disk after the FSM advances; without the
+    // manifest check, this mode could silently emit a shim pointing
+    // at stale prompts/outputs from an earlier review pass and
+    // mislead the orchestrator into re-dispatching specialists for
+    // a finished run. Mirrors the same gate used by
+    // --print-pending-leaf-ids.
+    const storageRoot = resolveStorageRoot();
+    const manifest = readManifest(runId, { storageRoot });
+    if (!manifest) {
+      fail(
+        `--print-agent-shim-prompt: no manifest found for run-id "${runId}".`,
+        { run_id: runId },
+      );
+    }
+    if (manifest.current_state !== "dispatch_specialists") {
+      fail(
+        `--print-agent-shim-prompt: run "${runId}" is in state "${manifest.current_state ?? "unknown"}" (status: ${manifest.status ?? "unknown"}); the run must be paused on dispatch_specialists.`,
+        { run_id: runId, current_state: manifest.current_state ?? null, status: manifest.status ?? null },
+      );
+    }
+    // The leaf-id may encode the shard via `<leaf>--<idx>` (the
+    // format --print-pending-leaf-ids emits — orchestrator pipes it
+    // through verbatim) OR the caller can pass --shard-idx
+    // explicitly. The shared parseLeafIdAndShardIdx helper handles
+    // both forms, including the combined case.
+    const parsed = parseLeafIdAndShardIdx({
+      leafIdArg: leafId,
+      shardIdxArg: args["shard-idx"],
+      cliName: "--print-agent-shim-prompt",
+    });
+    return printShimForParsedId(runId, parsed.leafId, parsed.shardIdx);
+  }
+
   fail(
     "Usage:\n" +
       "  run-review.mjs --start --base <sha> --head <sha> [--args-file <path>] [--replay-mode <live|record|replay>]\n" +
@@ -1776,8 +2943,44 @@ async function main() {
       "  run-review.mjs --resume --run-id <id>\n" +
       "  run-review.mjs --print-run-dir --run-id <id>\n" +
       "  run-review.mjs --print-current-state --run-id <id>\n" +
-      "  run-review.mjs --print-dispatch-prompt --run-id <id> [--leaf-id <id>]",
+      "  run-review.mjs --print-dispatch-prompt --run-id <id> [--leaf-id <id>] [--shard-idx <N>]\n" +
+      "  run-review.mjs --print-pending-leaf-ids --run-id <id> [--batch-size <N>]\n" +
+      "  run-review.mjs --print-agent-shim-prompt --run-id <id> --leaf-id <id> [--shard-idx <N>]",
   );
+}
+
+// Shared body for --print-agent-shim-prompt. Validates inputs, locates
+// the per-leaf prompt + output paths, and emits the canonical shim text.
+function printShimForParsedId(runId, leafId, shardIdx) {
+  if (!isValidLeafId(leafId)) {
+    fail(`--print-agent-shim-prompt: invalid --leaf-id "${leafId}" (must be kebab-case ASCII matching ^[a-z0-9]+(-[a-z0-9]+)*$ — lowercase letters and digits, single hyphens between segments, no leading/trailing hyphens, no consecutive hyphens — AND must not end in --<digits>; that suffix is reserved for shard ids).`);
+  }
+  if (shardIdx !== null && (!Number.isInteger(shardIdx) || shardIdx < 0)) {
+    fail(`--print-agent-shim-prompt: invalid --shard-idx "${shardIdx}" (must be a non-negative integer).`);
+  }
+  const promptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leafId, shardIdx);
+  const outputPath = defaultSpecialistOutputPath(runId, leafId, shardIdx);
+  if (!promptPath || !existsSync(promptPath)) {
+    fail(
+      `--print-agent-shim-prompt: no prompt file at "${promptPath}". The leaf or shard may not be staged.`,
+      { run_id: runId, leaf_id: leafId, shard_idx: shardIdx, expected_path: promptPath },
+    );
+  }
+  const lines = [
+    "You are a specialist reviewer for the FSM-driven code-review pipeline.",
+    "",
+    `Read your full per-leaf dispatch prompt at: ${promptPath}`,
+    "Execute it verbatim — the prompt contains your leaf body, project profile, changed paths, the pre-computed filtered diff, tool results, and the response contract.",
+    "",
+    `Write your JSON output to: ${outputPath}`,
+    "Required shape: { id, status, runtime_ms, tokens_in, tokens_out, findings[] }.",
+    "Include `skip_reason: \"<one sentence>\"` when status == \"skipped\" (FSM schema requires it then) OR when status == \"failed\" (encouraged for actionable diagnostics).",
+    "",
+    "Do NOT return JSON inline; the runner aggregates from this file path on --continue.",
+    `Repository root: ${REPO_ROOT}`,
+    "",
+  ];
+  process.stdout.write(lines.join("\n"));
 }
 
 // Gate the auto-run on "this is the entrypoint" so unit tests can import

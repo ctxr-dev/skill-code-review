@@ -6,11 +6,12 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 import {
   defaultDispatchPromptPath,
+  defaultSpecialistOutputPath,
   buildDispatchPromptText,
   writeDispatchPromptToDisk,
   writeSpecialistPromptsToDisk,
@@ -53,6 +54,28 @@ test("defaultDispatchPromptPath: rejects malformed leaf-ids (path traversal guar
   assert.equal(
     defaultDispatchPromptPath("20260429-200856-cece84b", "dispatch_specialists", "Has-Uppercase"),
     null,
+  );
+});
+
+test("defaultDispatchPromptPath: rejects leaf-ids ending in --<digits> (shard-suffix collision guard)", () => {
+  // A leaf id ending in `--<digits>` would collide on disk with the
+  // shard-suffix scheme: `dispatch_specialists-prompt-foo--1.md`
+  // could be either leaf "foo--1" (non-sharded) OR shard 1 of leaf
+  // "foo". The dispatch prompt-path helper must reject the
+  // ambiguous shape so the corpus authoring rule is enforced
+  // structurally, not just by convention.
+  assert.equal(
+    defaultDispatchPromptPath("20260429-200856-cece84b", "dispatch_specialists", "foo--1"),
+    null,
+  );
+  assert.equal(
+    defaultDispatchPromptPath("20260429-200856-cece84b", "dispatch_specialists", "lang-typescript--12"),
+    null,
+  );
+  // Single-hyphen ids are still fine.
+  assert.ok(
+    defaultDispatchPromptPath("20260429-200856-cece84b", "dispatch_specialists", "lang-typescript"),
+    "single-hyphen leaf-id should be accepted",
   );
 });
 
@@ -203,13 +226,18 @@ test("buildDispatchPromptText: per-specialist (no opts.filteredDiff) — emits F
   assert.match(text, /--- FILTERED DIFF ---/);
   assert.doesNotMatch(text, /orchestrator appends below/);
   assert.match(text, /\(diff unavailable: caller did not pre-compute the per-leaf diff\)/);
-  // Per-specialist response contract: return JSON to the orchestrator,
-  // do NOT write to outputs_path (the orchestrator aggregates K
-  // responses and writes once). Outputs_path is mentioned in the
-  // audit-context line but the instruction is "do not write to disk".
+  // Per-specialist response contract (post-per-leaf-output-files refactor):
+  // specialist writes JSON to the per-leaf output path; the runner
+  // aggregates on --continue. Without opts.outputPath the builder emits
+  // a stable placeholder.
   assert.match(text, /--- RESPONSE CONTRACT ---/);
-  assert.match(text, /Do NOT write to disk/);
-  assert.match(text, /the orchestrator aggregates the K responses/);
+  assert.match(text, /Write your JSON output to:/);
+  assert.match(
+    text,
+    /\(output path unavailable: caller did not pre-compute the per-leaf output path\)/,
+  );
+  assert.match(text, /Do NOT return JSON to the orchestrator inline/);
+  assert.match(text, /aggregates all per-leaf outputs into specialist_outputs/);
 });
 
 test("defaultDispatchPromptPath: rejects unsafe state segments (path traversal guard on state)", () => {
@@ -305,4 +333,187 @@ test("writeSpecialistPromptsToDisk: passes through silently on empty picked_leav
     run_id: "20991231-235959-ccccccc",
     inputs: { picked_leaves: [] },
   });
+});
+
+test("buildDispatchPromptText: per-specialist with opts.shard emits --- THIS SHARD --- section", () => {
+  // When opts.shard is provided, the prompt text gains a shard-scoped
+  // section that names this shard's index and files. The leaf body and
+  // project profile remain identical across a leaf's shards.
+  const brief = {
+    has_worker: true,
+    state: "dispatch_specialists",
+    worker: { role: "specialist", inputs: [], prompt_body: "TEMPLATE" },
+    inputs: { project_profile: {}, changed_paths: [], tool_results: [], picked_leaves: [] },
+    outputs_path: "/run/dir/workers/dispatch_specialists-output.json",
+  };
+  const leaf = {
+    id: "lang-javascript",
+    path: "tasks-task/lang-javascript.md",
+    dimensions: ["correctness"],
+    file_globs: ["**/*.js"],
+    body: "Lang JavaScript body",
+  };
+  const text = buildDispatchPromptText(brief, {
+    leaf,
+    shard: { shardIdx: 1, files: ["src/api/auth.js", "src/util/jwt.js"], diffText: "<this shard's diff>" },
+    outputPath: "/run/dir/workers/dispatch_specialists-output-lang-javascript--1.json",
+  });
+  assert.match(text, /--- THIS SHARD ---/);
+  assert.match(text, /shard_idx = 1/);
+  assert.match(text, /files_in_this_shard = \["src\/api\/auth\.js","src\/util\/jwt\.js"\]/);
+  // Shard's diffText replaces the per-leaf filtered diff.
+  assert.match(text, /--- FILTERED DIFF ---\n<this shard's diff>/);
+  // Output path is the shard-suffixed one.
+  assert.match(text, /dispatch_specialists-output-lang-javascript--1\.json/);
+});
+
+test("writeSpecialistPromptsToDisk: re-staging from wide to narrow shard set removes stale higher-index shard prompts (#93 round-15)", async () => {
+  // Threshold change wide → narrow case: a previous staging produced
+  // shards 0..4; a later staging produces fewer shards (or non-sharded).
+  // Without cleaning up ALL existing prompts (not just the opposite
+  // shape), stale --3.md and --4.md prompts would survive and
+  // discoverLeafShards would route them as live shards.
+  //
+  // Simulate by planting shards 0..4, then re-staging via the
+  // single-shard path (placeholder diff) and asserting all 5 stale
+  // shard prompts are gone.
+  const { randomBytes } = await import("node:crypto");
+  const runId = `20991231-235959-${randomBytes(4).toString("hex").slice(0, 7)}`;
+  const state = "dispatch_specialists";
+  const leafId = "wide-to-narrow-leaf";
+  const canonicalPath = defaultDispatchPromptPath(runId, state, leafId);
+  const dir = dirname(canonicalPath);
+  const runDir = dirname(dir);
+  mkdirSync(dir, { recursive: true });
+  try {
+    for (let i = 0; i < 5; i++) {
+      const p = defaultDispatchPromptPath(runId, state, leafId, i);
+      writeFileSync(p, `stale shard ${i}\n`);
+    }
+    writeSpecialistPromptsToDisk({
+      has_worker: true,
+      run_id: runId,
+      state,
+      worker: { role: "specialist", inputs: [], prompt_body: "T" },
+      inputs: { picked_leaves: [{ id: leafId, path: "x/y.md", body: "body", file_globs: ["**/*"] }] },
+    });
+    assert.ok(existsSync(canonicalPath), "canonical prompt should be staged after re-stage");
+    for (let i = 0; i < 5; i++) {
+      const p = defaultDispatchPromptPath(runId, state, leafId, i);
+      assert.ok(!existsSync(p), `stale shard ${i} prompt must be removed`);
+    }
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
+test("writeSpecialistPromptsToDisk: re-staging after threshold change removes stale prompts AND stale outputs (#93 round-28)", async () => {
+  // Repro the threshold-change silent-corruption case: the same shard
+  // index can map to a different file partition between staging
+  // passes (e.g. shard 0 of the old staging covered files A,B; shard
+  // 0 of the new staging covers files A,B,C because the threshold
+  // widened). Output paths are keyed only on (leaf-id, shard-idx),
+  // so a stale shard-0 output from the old partition would be
+  // silently reused for the new partition's prompt — and the
+  // aggregator would commit findings that don't match the prompt the
+  // new specialist would see.
+  //
+  // Re-staging therefore invalidates ALL prior artifacts (prompts
+  // AND outputs) for the leaf. The audit trail of "what did the
+  // specialist say at this point" lives in the FSM manifest /
+  // fsm-trace once the run progresses; not in stale workers/* files
+  // that no longer match the prompts they were written against.
+  const { randomBytes } = await import("node:crypto");
+  const runId = `20991231-235959-${randomBytes(4).toString("hex").slice(0, 7)}`;
+  const state = "dispatch_specialists";
+  const leafId = "restage-leaf";
+  const canonicalPath = defaultDispatchPromptPath(runId, state, leafId);
+  const shardPath0 = defaultDispatchPromptPath(runId, state, leafId, 0);
+  const shardPath1 = defaultDispatchPromptPath(runId, state, leafId, 1);
+  // Use the runner's exported defaultSpecialistOutputPath helper
+  // rather than hand-rolling the filename: keeps the test in
+  // lockstep with the production path contract so any future rename
+  // or layout change (e.g. dispatch_specialists-output- prefix
+  // evolution) propagates automatically.
+  const dir = dirname(canonicalPath);
+  const shardOutputPath0 = defaultSpecialistOutputPath(runId, leafId, 0);
+  const shardOutputPath1 = defaultSpecialistOutputPath(runId, leafId, 1);
+  const canonicalOutputPath = defaultSpecialistOutputPath(runId, leafId);
+  const runDir = dirname(dir);
+  mkdirSync(dir, { recursive: true });
+  try {
+    // Plant a stale sharded layout (prompts AND outputs, simulating
+    // a previous staging pass that ran to completion with a low
+    // threshold).
+    writeFileSync(shardPath0, "stale shard 0 prompt\n");
+    writeFileSync(shardPath1, "stale shard 1 prompt\n");
+    writeFileSync(shardOutputPath0, '{"id":"restage-leaf","status":"completed","findings":[]}');
+    writeFileSync(shardOutputPath1, '{"id":"restage-leaf","status":"completed","findings":[]}');
+    // Re-stage. Single-shard now (placeholder diff under threshold)
+    // → cleanup must remove BOTH stale shard prompts AND stale shard
+    // outputs (no audit-trail preservation; outputs keyed on
+    // shard-idx alone are unsafe under threshold change).
+    writeSpecialistPromptsToDisk({
+      has_worker: true,
+      run_id: runId,
+      state,
+      worker: { role: "specialist", inputs: [], prompt_body: "T" },
+      inputs: { picked_leaves: [{ id: leafId, path: "x/y.md", body: "body", file_globs: ["**/*"] }] },
+    });
+    // Canonical prompt present; stale shard prompts gone; stale
+    // shard outputs gone; canonical output not yet written (the new
+    // specialist hasn't run yet).
+    assert.ok(existsSync(canonicalPath), "canonical prompt should be staged");
+    assert.ok(!existsSync(shardPath0), "stale shard 0 prompt should be removed");
+    assert.ok(!existsSync(shardPath1), "stale shard 1 prompt should be removed");
+    assert.ok(!existsSync(shardOutputPath0), "stale shard 0 output must be removed (silent-corruption defense)");
+    assert.ok(!existsSync(shardOutputPath1), "stale shard 1 output must be removed (silent-corruption defense)");
+    assert.ok(!existsSync(canonicalOutputPath), "canonical output should not exist until the new specialist writes it");
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
+test("writeSpecialistPromptsToDisk: single-shard output keeps the canonical non-sharded prompt path", async () => {
+  // When shardFilteredDiff returns a single shard (the small-diff /
+  // placeholder case), writeSpecialistPromptsToDisk emits the
+  // non-sharded prompt at the canonical
+  // dispatch_specialists-prompt-<leaf-id>.md path, NOT
+  // dispatch_specialists-prompt-<leaf-id>--0.md. This preserves
+  // backward compatibility with --print-dispatch-prompt --leaf-id <id>
+  // (no shard suffix needed) and matches the >99% real-world case
+  // where the per-leaf filtered diff fits in one shard.
+  //
+  // We don't exercise multi-shard staging here because the unit-test
+  // invocation has no git refs so computeFilteredDiff returns a
+  // placeholder string that's always well under threshold. The
+  // integration tests downstream cover the real-spawn-git case.
+  // Use a unique random run-id so this test doesn't collide with stale
+  // state from other tests (or other local runs) that might have
+  // staged prompts under the same path. node --test runs files in
+  // parallel; sharing a fixed runId across tests is unsafe.
+  const { randomBytes } = await import("node:crypto");
+  const runId = `20991231-235959-${randomBytes(4).toString("hex").slice(0, 7)}`;
+  const state = "dispatch_specialists";
+  const leafId = "single-shard-leaf";
+  const promptPath = defaultDispatchPromptPath(runId, state, leafId);
+  const shardedPath = defaultDispatchPromptPath(runId, state, leafId, 0);
+  // The whole run-dir is unique per test invocation; cleanup removes it
+  // entirely so neither the canonical nor any shard-suffixed prompts
+  // can leak across runs.
+  const runDir = dirname(dirname(promptPath));
+  mkdirSync(dirname(promptPath), { recursive: true });
+  try {
+    writeSpecialistPromptsToDisk({
+      has_worker: true,
+      run_id: runId,
+      state,
+      worker: { role: "specialist", inputs: [], prompt_body: "T" },
+      inputs: { picked_leaves: [{ id: leafId, path: "x/y.md", body: "body", file_globs: ["**/*"] }] },
+    });
+    assert.ok(existsSync(promptPath), `expected ${promptPath} for single-shard (non-sharded) leaf`);
+    assert.ok(!existsSync(shardedPath), "single-shard leaf must not produce shard-suffixed prompts");
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
+  }
 });

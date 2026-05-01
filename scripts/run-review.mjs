@@ -780,7 +780,8 @@ export function buildDispatchPromptText(brief, opts = {}) {
       "--- RESPONSE CONTRACT ---",
       "Write your JSON output to:",
       outputPath,
-      "Required shape: { id, status, runtime_ms, tokens_in, tokens_out, findings[], optional skip_reason }",
+      "Required shape: { id, status, runtime_ms, tokens_in, tokens_out, findings[] }",
+      "Include `skip_reason: \"<one sentence>\"` ONLY when status == \"skipped\" (the FSM schema requires it then; omitting it for status=completed or failed is fine).",
       "",
       "Do NOT return JSON to the orchestrator inline; the runner reads from the path above on --continue and aggregates all per-leaf outputs into specialist_outputs[]. Concurrent specialists writing to the same path would clobber each other; the per-leaf path is unique.",
       "",
@@ -1023,7 +1024,19 @@ export function aggregateSpecialistOutputs(brief) {
           skip_reason: row.skip_reason ? `${row.skip_reason}; ${detail}` : detail,
         });
       } else {
-        out.push(row);
+        // FSM schema requires skip_reason when status === "skipped".
+        // A worker that wrote status="skipped" without skip_reason
+        // would otherwise fail post-hoc schema validation. Synthesize
+        // a default reason naming the omission so the aggregate
+        // commits cleanly and the report shows what happened.
+        if (row.status === "skipped" && (typeof row.skip_reason !== "string" || row.skip_reason.length === 0)) {
+          out.push({
+            ...row,
+            skip_reason: "worker wrote status=skipped without skip_reason",
+          });
+        } else {
+          out.push(row);
+        }
       }
       continue;
     }
@@ -1185,6 +1198,13 @@ function mergeShardedSpecialistOutputs(runId, leafId, shardIndices) {
       .map((r, i) => r.skip_reason ? `shard ${shardIndices[i]}: ${r.skip_reason}` : null)
       .filter((s) => s !== null);
     if (reasons.length > 0) merged.skip_reason = reasons.join("; ");
+  }
+  // FSM schema requires skip_reason when status === "skipped". If the
+  // merged status is "skipped" but no shard supplied a reason (e.g.
+  // every shard returned status=skipped without a reason), synthesize
+  // a default so the aggregate commits cleanly.
+  if (status === "skipped" && typeof merged.skip_reason !== "string") {
+    merged.skip_reason = "every shard reported status=skipped without skip_reason";
   }
   return merged;
 }
@@ -2551,7 +2571,8 @@ function printShimForParsedId(runId, leafId, shardIdx) {
     "Execute it verbatim — the prompt contains your leaf body, project profile, changed paths, the pre-computed filtered diff, tool results, and the response contract.",
     "",
     `Write your JSON output to: ${outputPath}`,
-    "Required shape: { id, status, runtime_ms, tokens_in, tokens_out, findings[], optional skip_reason }",
+    "Required shape: { id, status, runtime_ms, tokens_in, tokens_out, findings[] }.",
+    "Include `skip_reason: \"<one sentence>\"` ONLY when status == \"skipped\" (FSM schema requires it then).",
     "",
     "Do NOT return JSON inline; the runner aggregates from this file path on --continue.",
     `Repository root: ${REPO_ROOT}`,

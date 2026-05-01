@@ -264,6 +264,65 @@ test("aggregateSpecialistOutputs: non-object JSON payload (null, array, scalar) 
   }
 });
 
+test("aggregateSpecialistOutputs: non-sharded leaf with status=skipped but no skip_reason gets a default reason (#93 round-7)", () => {
+  // FSM response_schema requires skip_reason iff status == skipped.
+  // A worker that wrote status=skipped without skip_reason would
+  // otherwise fail the post-hoc commit-time schema check. The
+  // aggregator synthesizes a default reason naming the omission so
+  // the aggregate commits cleanly.
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "skipped-no-reason");
+    writeOutput(runId, "skipped-no-reason", null, {
+      id: "skipped-no-reason",
+      status: "skipped",
+      runtime_ms: 100,
+      tokens_in: 100,
+      tokens_out: 0,
+      findings: [],
+      // skip_reason intentionally omitted
+    });
+    const out = aggregateSpecialistOutputs(brief(runId, ["skipped-no-reason"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.status, "skipped");
+    assert.equal(typeof row.skip_reason, "string");
+    assert.match(row.skip_reason, /skip_reason/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: sharded leaf where every shard skipped without reason gets a default reason (#93 round-7)", () => {
+  // Sharded equivalent: every shard returned status=skipped but no
+  // shard provided skip_reason. The merged leaf's status is
+  // "skipped"; without the synthesized reason the FSM schema would
+  // reject the aggregate at commit time.
+  const { runId, cleanup } = freshRun();
+  try {
+    for (const idx of [0, 1]) {
+      writePrompt(runId, "all-skipped-no-reason", idx);
+      writeOutput(runId, "all-skipped-no-reason", idx, {
+        id: "all-skipped-no-reason",
+        status: "skipped",
+        runtime_ms: 50,
+        tokens_in: 100,
+        tokens_out: 0,
+        findings: [],
+        // no skip_reason from any shard
+      });
+    }
+    const out = aggregateSpecialistOutputs(brief(runId, ["all-skipped-no-reason"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.status, "skipped");
+    assert.equal(typeof row.skip_reason, "string");
+    assert.match(row.skip_reason, /every shard reported status=skipped/);
+  } finally {
+    cleanup();
+  }
+});
+
 test("aggregateSpecialistOutputs: non-sharded leaf with invalid status is normalised to failed (#93 round-6)", () => {
   // Symmetric to the sharded "typo status" test above. A non-sharded
   // worker that writes status="weird-status" must NOT propagate the

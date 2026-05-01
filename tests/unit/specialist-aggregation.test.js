@@ -291,3 +291,42 @@ test("discoverLeafShards: returns empty array when neither shape is staged", () 
     cleanup();
   }
 });
+
+test("discoverLeafShards: partial staging (shards 0 and 2, gap at 1) reports the FULL contiguous range", () => {
+  // Simulates atomicWriteFile swallowing shard 1's I/O error during
+  // staging. discoverLeafShards must NOT pretend shard 1 doesn't
+  // exist; it returns [0, 1, 2] so the aggregator looks for shard
+  // 1's output (and synthesizes a failed row when missing). Without
+  // this, shard 1's files would silently never be reviewed.
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "partially-staged", 0);
+    // shard 1 prompt deliberately omitted
+    writePrompt(runId, "partially-staged", 2);
+    assert.deepEqual(discoverLeafShards(runId, "partially-staged"), [0, 1, 2]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: partial-staged shards surface the gap as a failed leaf row", () => {
+  // End-to-end: prompts staged for shards 0 and 2 (gap at 1), outputs
+  // written for all three present (so the bug being closed is the
+  // staging-side gap, not the output-side one). The aggregator detects
+  // shard 1 has no output and marks the leaf failed.
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "gappy-leaf", 0);
+    writePrompt(runId, "gappy-leaf", 2);
+    writeOutput(runId, "gappy-leaf", 0, specialistRow("gappy-leaf"));
+    writeOutput(runId, "gappy-leaf", 2, specialistRow("gappy-leaf"));
+    const out = aggregateSpecialistOutputs(brief(runId, ["gappy-leaf"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.status, "failed");
+    // skip_reason mentions shard 1 (the missing one).
+    assert.match(row.skip_reason, /shard 1/);
+  } finally {
+    cleanup();
+  }
+});

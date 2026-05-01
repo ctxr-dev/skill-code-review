@@ -114,6 +114,31 @@ test("shardFilteredDiff: env var SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES overrides
   }
 });
 
+test("shardFilteredDiff: handles paths with spaces (git's quoted form)", () => {
+  // git diff emits `diff --git "a/path with space" "b/path with space"`
+  // when paths contain spaces (or when core.quotepath surfaces non-
+  // ASCII via backslash escapes). The shard partitioner must extract
+  // the b-side path from the quoted shape, not silently skip the
+  // header (which would leave the whole diff in shard 0's leading
+  // header chunk and defeat sharding).
+  const quoted = `diff --git "a/dir with space/file.txt" "b/dir with space/file.txt"\n--- "a/dir with space/file.txt"\n+++ "b/dir with space/file.txt"\n@@ -1 +1 @@\n-old\n+new\n`;
+  const out = shardFilteredDiff(quoted, { threshold: 1024 * 1024 });
+  assert.equal(out.length, 1);
+  assert.deepEqual(out[0].files, ["dir with space/file.txt"]);
+});
+
+test("shardFilteredDiff: mixed bare + quoted headers extract files correctly", () => {
+  // Real-world diff: one file with spaces (quoted), one without
+  // (bare). The partitioner must recognise both shapes.
+  const bare = `diff --git a/normal.txt b/normal.txt\nindex 0000..1111 100644\n--- a/normal.txt\n+++ b/normal.txt\n@@ -1 +1 @@\n-x\n+y\n`;
+  const quoted = `diff --git "a/path with space.md" "b/path with space.md"\nindex 0000..1111 100644\n--- "a/path with space.md"\n+++ "b/path with space.md"\n@@ -1 +1 @@\n-x\n+y\n`;
+  const out = shardFilteredDiff(bare + quoted, { threshold: 50 });
+  // Both files are seen; concat round-trips.
+  const allFiles = out.flatMap((s) => s.files).sort();
+  assert.deepEqual(allFiles, ["normal.txt", "path with space.md"].sort());
+  assert.equal(out.map((s) => s.diffText).join(""), bare + quoted);
+});
+
 test("shardFilteredDiff: invalid threshold falls back to default", () => {
   // Negative or non-integer threshold options are ignored; the helper
   // uses the default rather than crashing or producing zero shards.

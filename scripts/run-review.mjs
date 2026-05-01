@@ -450,31 +450,65 @@ export function shardFilteredDiff(diffText, opts = {}) {
   return shards;
 }
 
+// Internal: parse a single `diff --git` header line and return the
+// b/<path> file portion. Handles three shapes git emits:
+//   - bare:    `diff --git a/<path> b/<path>`
+//   - quoted:  `diff --git "a/<path>" "b/<path>"` (spaces / non-ASCII / core.quotepath)
+//   - mixed:   either side quoted independently
+// Returns the b-side path (the post-image, the file's "current name"
+// after the change) on match, or null when the line isn't a diff
+// header. We deliberately don't unescape backslashes inside the
+// quoted form — the path is used only as a label in the shard's
+// `files: []` array, and the runner doesn't open these paths; an
+// escaped \\t is fine in a label.
+function parseDiffGitHeader(line) {
+  // Common case (no quoting): `diff --git a/<path> b/<path>`.
+  const bare = line.match(/^diff --git a\/(\S+) b\/(\S+)$/);
+  if (bare) return bare[2];
+  // Quoted: `diff --git "a/..." "b/..."` with arbitrary content
+  // (including spaces) inside the quotes. We allow escaped quotes
+  // (`\"`) inside the path the way git emits them under
+  // core.quotepath. Both sides must be present; reject odd shapes.
+  const quoted = line.match(/^diff --git (?:"a\/((?:[^"\\]|\\.)*)"|a\/(\S+)) (?:"b\/((?:[^"\\]|\\.)*)"|b\/(\S+))$/);
+  if (quoted) {
+    return quoted[3] ?? quoted[4] ?? null;
+  }
+  return null;
+}
+
 // Internal: extract file paths from a diff body by scanning `diff --git`
 // markers. Returns the post-image path (`b/<path>`) since that's the
-// canonical "current name" of the file after the change.
+// canonical "current name" of the file after the change. Robust to
+// quoted paths (spaces / non-ASCII) per parseDiffGitHeader.
 function extractFilesFromDiff(diffText) {
   if (typeof diffText !== "string") return [];
   const files = [];
-  const re = /^diff --git a\/\S+ b\/(\S+)$/gm;
+  // Match each line beginning with `diff --git`, then parse the line
+  // via parseDiffGitHeader so we share quote-handling with the
+  // splitter below.
+  const re = /^diff --git [^\n]+$/gm;
   let m;
   while ((m = re.exec(diffText)) !== null) {
-    files.push(m[1]);
+    const file = parseDiffGitHeader(m[0]);
+    if (file) files.push(file);
   }
   return files;
 }
 
-// Internal: split a diff body on `^diff --git a/X b/Y$` markers. Returns
+// Internal: split a diff body on `^diff --git ...$` markers. Returns
 // an array where index 0 is any leading text before the first marker,
-// and indices 1..N are { file: <Y>, text: <chunk including the marker
-// line and everything up to the next marker> }.
+// and indices 1..N are { file: <b-side path>, text: <chunk including
+// the marker line and everything up to the next marker> }. Robust to
+// quoted paths via parseDiffGitHeader.
 function splitOnGitDiffMarkers(diffText) {
   const out = [""];
-  const re = /^diff --git a\/\S+ b\/(\S+)$/gm;
+  const re = /^diff --git [^\n]+$/gm;
   let m;
   const matches = [];
   while ((m = re.exec(diffText)) !== null) {
-    matches.push({ file: m[1], start: m.index });
+    const file = parseDiffGitHeader(m[0]);
+    if (file === null) continue; // not a recognisable header; skip silently
+    matches.push({ file, start: m.index });
   }
   if (matches.length === 0) return out;
   // Anything before the first match is leading-header.
@@ -857,11 +891,25 @@ export function writeSpecialistPromptsToDisk(brief) {
 }
 
 // Discover the shard layout for a single picked leaf by listing the
-// staged dispatch_specialists-prompt-<leaf-id>* files. Returns an array
-// of shardIdx values in ascending order, OR null when the leaf is
-// non-sharded (the bare `dispatch_specialists-prompt-<leaf-id>.md`
-// exists). Returns [] when neither shape exists (the leaf was never
-// staged — degraded path).
+// staged dispatch_specialists-prompt-<leaf-id>* files. Returns:
+//   - null              when the leaf is non-sharded (the bare
+//                       `dispatch_specialists-prompt-<leaf-id>.md` exists).
+//   - sortedShardIdx[]  when sharded prompts exist. Only returned when
+//                       the indices are CONTIGUOUS starting at 0
+//                       (`[0, 1, ..., N-1]`). Non-contiguous indices
+//                       indicate a partial-staging failure (e.g.
+//                       atomicWriteFile swallowed shard 1's I/O error)
+//                       and the caller treats that as "leaf failed"
+//                       (every output gets synthesized as failed
+//                       downstream).
+//   - []                when neither shape exists (degraded path).
+//
+// Why contiguity matters: prompt writes are best-effort
+// (atomicWriteFile swallows I/O errors). Without contiguity validation,
+// `--0.md` + `--2.md` with `--1.md` missing would have the orchestrator
+// dispatch only the present shards, the aggregator merge "successfully",
+// and shard 1's files silently never reviewed. Reporting the full set
+// as "missing" surfaces the staging failure rather than masking it.
 //
 // Filesystem-as-truth: we do NOT mutate the brief to record shard counts.
 // The orchestrator (--print-pending-leaf-ids) and the aggregator both
@@ -889,7 +937,18 @@ export function discoverLeafShards(runId, leafId) {
     shards.push(Number.parseInt(tail, 10));
   }
   shards.sort((a, b) => a - b);
-  return shards;
+  if (shards.length === 0) return [];
+  // Contiguity normalisation: if the on-disk indices are
+  // [0, 2] (gap at 1) we return [0, 1, 2]. The aggregator then tries
+  // to read output for every index in the full range; the missing
+  // shard 1 surfaces as a "shard 1 output unwritten" failed row
+  // rather than silently disappearing. Without this, partial staging
+  // would let the runner believe the leaf produced two complete
+  // shards when shard 1's files were never reviewed.
+  const max = shards[shards.length - 1];
+  const full = [];
+  for (let i = 0; i <= max; i++) full.push(i);
+  return full;
 }
 
 // Aggregate per-leaf (and per-shard) specialist outputs into the canonical

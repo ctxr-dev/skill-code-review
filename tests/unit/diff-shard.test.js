@@ -1,0 +1,125 @@
+// diff-shard.test.js — unit tests for the shardFilteredDiff helper.
+//
+// Sharding kicks in when one leaf's pre-computed filtered diff exceeds
+// SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES (default 32KB). The runner stages
+// one prompt per shard so the dispatched specialist sees a focused
+// per-file slice rather than a multi-hundred-KB blob. These tests lock
+// down the partitioning contract: split on `^diff --git a/<path>` markers,
+// never split inside a file, byte-equal concatenation across shards,
+// trivial passthrough below threshold.
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+
+import { shardFilteredDiff } from "../../scripts/run-review.mjs";
+
+// Minimal `git diff` body for one file. Real diffs include
+// `index <hash>..<hash>` and `---`/`+++` lines, but for partitioning the
+// only required marker is `diff --git a/<path> b/<path>`.
+function makeFileDiff(path, body = "@@ -1 +1 @@\n-old\n+new") {
+  return `diff --git a/${path} b/${path}\nindex 0000..1111 100644\n--- a/${path}\n+++ b/${path}\n${body}\n`;
+}
+
+test("shardFilteredDiff: empty input returns one empty shard", () => {
+  const out = shardFilteredDiff("");
+  assert.equal(out.length, 1);
+  assert.equal(out[0].shardIdx, 0);
+  assert.deepEqual(out[0].files, []);
+  assert.equal(out[0].diffText, "");
+});
+
+test("shardFilteredDiff: diff under threshold returns one shard with all files", () => {
+  const text = makeFileDiff("a.js") + makeFileDiff("b.ts");
+  const out = shardFilteredDiff(text, { threshold: 1024 * 1024 });
+  assert.equal(out.length, 1);
+  assert.deepEqual(out[0].files, ["a.js", "b.ts"]);
+  assert.equal(out[0].diffText, text);
+});
+
+test("shardFilteredDiff: diff over threshold splits on file boundaries", () => {
+  // Three files, each ~150 bytes. Threshold = 200 → first file fits in
+  // shard 0; adding second pushes us over → flush, file 2 starts shard 1
+  // alone (also still under threshold so file 3 packs with it).
+  // Actually shard packing is greedy: the test asserts each file appears
+  // in exactly one shard and concatenation round-trips.
+  const fileA = makeFileDiff("a.js", "@@ -1 +1 @@\n-aaa\n+aaa-changed");
+  const fileB = makeFileDiff("b.ts", "@@ -1 +1 @@\n-bbb\n+bbb-changed");
+  const fileC = makeFileDiff("c.go", "@@ -1 +1 @@\n-ccc\n+ccc-changed");
+  const text = fileA + fileB + fileC;
+  const out = shardFilteredDiff(text, { threshold: 250 });
+  assert.ok(out.length >= 2, `expected ≥2 shards, got ${out.length}`);
+  // Every file appears in exactly one shard.
+  const seen = new Set();
+  for (const shard of out) {
+    for (const f of shard.files) {
+      assert.ok(!seen.has(f), `file ${f} appears in two shards`);
+      seen.add(f);
+    }
+  }
+  assert.deepEqual([...seen].sort(), ["a.js", "b.ts", "c.go"]);
+  // Concatenation across shards in order yields the original.
+  const recombined = out.map((s) => s.diffText).join("");
+  assert.equal(recombined, text);
+  // Shard indices are 0..N-1 ascending.
+  assert.deepEqual(out.map((s) => s.shardIdx), out.map((_, i) => i));
+});
+
+test("shardFilteredDiff: a single file larger than threshold goes alone in its own shard", () => {
+  // We never split inside a file — a 100KB single-file diff with a 32KB
+  // threshold should still produce one shard (containing just that file)
+  // rather than mid-file fragmentation.
+  const huge = makeFileDiff("huge.json", "@@ -1 +1 @@\n" + "x".repeat(100_000));
+  const out = shardFilteredDiff(huge, { threshold: 32 * 1024 });
+  assert.equal(out.length, 1);
+  assert.deepEqual(out[0].files, ["huge.json"]);
+  assert.equal(out[0].diffText, huge);
+});
+
+test("shardFilteredDiff: input without git markers returns a single shard", () => {
+  // A "(diff unavailable: ...)" placeholder or any non-git-formatted
+  // text shouldn't crash — emit one shard and let the dispatched
+  // specialist see the placeholder verbatim.
+  const out = shardFilteredDiff("(diff unavailable: base/head shas unavailable)");
+  assert.equal(out.length, 1);
+  assert.deepEqual(out[0].files, []);
+  assert.match(out[0].diffText, /diff unavailable/);
+});
+
+test("shardFilteredDiff: leading text before first diff --git marker attaches to first shard", () => {
+  // git diff sometimes emits a header / commit-summary line before the
+  // first `diff --git` (e.g. when invoked via `git format-patch`). The
+  // partitioner must preserve that header and not lose it on shard split.
+  const header = "From abc123\nSubject: example\n\n";
+  const a = makeFileDiff("a.js");
+  const b = makeFileDiff("b.ts", "@@ -1 +1 @@\n" + "x".repeat(500));
+  const text = header + a + b;
+  const out = shardFilteredDiff(text, { threshold: 600 });
+  assert.ok(out.length >= 1);
+  // The header sits in shard 0's diffText.
+  assert.ok(out[0].diffText.startsWith(header), `expected header at shard 0 start, got: ${out[0].diffText.slice(0, 50)}`);
+  // Re-concatenation still round-trips.
+  assert.equal(out.map((s) => s.diffText).join(""), text);
+});
+
+test("shardFilteredDiff: env var SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES overrides default", () => {
+  const original = process.env.SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES;
+  process.env.SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES = "100";
+  try {
+    const text = makeFileDiff("a.js") + makeFileDiff("b.ts") + makeFileDiff("c.go");
+    const out = shardFilteredDiff(text); // no opts.threshold → use env
+    assert.ok(out.length >= 2, `expected env var to lower threshold; got ${out.length} shard(s)`);
+  } finally {
+    if (original === undefined) delete process.env.SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES;
+    else process.env.SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES = original;
+  }
+});
+
+test("shardFilteredDiff: invalid threshold falls back to default", () => {
+  // Negative or non-integer threshold options are ignored; the helper
+  // uses the default rather than crashing or producing zero shards.
+  const text = makeFileDiff("a.js");
+  const negative = shardFilteredDiff(text, { threshold: -1 });
+  assert.equal(negative.length, 1);
+  const fractional = shardFilteredDiff(text, { threshold: 1.5 });
+  assert.equal(fractional.length, 1);
+});

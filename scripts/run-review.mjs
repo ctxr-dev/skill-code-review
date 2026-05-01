@@ -1381,6 +1381,31 @@ function describeForError(value) {
 
 function mergeShardedSpecialistOutputs(runId, leafId, shardIndices) {
   const shardRows = shardIndices.map((idx) => {
+    // Prompt-files-as-source-of-truth: a shard is only "valid" when
+    // its dispatch prompt was successfully staged. Output files are
+    // intentionally preserved across re-staging (audit-trail
+    // principle); without this prompt-existence check, a stale
+    // dispatch_specialists-output-<leaf>--<idx>.json from a previous
+    // staging pass could mask a missing prompt (re-stage I/O failure)
+    // and the shard would aggregate as completed even though no
+    // specialist actually reviewed the current shard's diff. Treat a
+    // missing prompt as a failed row regardless of whether the
+    // (potentially stale) output file is present.
+    const promptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leafId, idx);
+    if (!promptPath || !existsSync(promptPath)) {
+      return sanitiseSpecialistRow(
+        {
+          id: leafId,
+          status: "failed",
+          runtime_ms: 0,
+          tokens_in: 0,
+          tokens_out: 0,
+          findings: [],
+          skip_reason: `no dispatch prompt staged for shard ${idx} (any output file at this index would be stale from a previous staging pass)`,
+        },
+        leafId,
+      );
+    }
     const outputPath = defaultSpecialistOutputPath(runId, leafId, idx);
     const row = readSpecialistOutputOrFail(outputPath, leafId, idx);
     // Sanitise each shard with the same helper as the non-sharded

@@ -616,6 +616,47 @@ test("discoverLeafShards: contiguous-range expansion is purely informational; pe
   }
 });
 
+test("aggregateSpecialistOutputs: stale output without staged prompt is treated as failed (prompt-files-as-truth)", () => {
+  // Closes a subtle masking bug: re-staging intentionally preserves
+  // OUTPUT files (audit-trail principle) but not PROMPT files. If the
+  // re-stage fails for one shard mid-flight (atomicWriteFile swallows
+  // I/O errors), that shard would lack a current prompt — but a stale
+  // dispatch_specialists-output-<leaf>--<idx>.json from a previous
+  // staging pass might still exist. Without the prompt-existence check
+  // in mergeShardedSpecialistOutputs, the aggregator would read the
+  // stale output and treat the shard as completed even though no
+  // specialist ran against the current diff. This test plants prompts
+  // for shards 0 and 2 (gap at 1), AND a stale output for shard 1.
+  // The aggregator must surface shard 1 as failed, not propagate the
+  // stale completed row.
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "stale-out", 0);
+    // shard 1 prompt deliberately MISSING (simulates re-stage failure)
+    writePrompt(runId, "stale-out", 2);
+    writeOutput(runId, "stale-out", 0, specialistRow("stale-out"));
+    // STALE output for shard 1: would be from a previous staging
+    // pass before the threshold changed. Must NOT be propagated.
+    writeOutput(runId, "stale-out", 1, specialistRow("stale-out", {
+      status: "completed",
+      findings: [{ severity: "critical", file: "should-not-appear.ts", title: "stale finding", description: "d", impact: "i", fix: "f" }],
+    }));
+    writeOutput(runId, "stale-out", 2, specialistRow("stale-out"));
+    const out = aggregateSpecialistOutputs(brief(runId, ["stale-out"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.status, "failed", "missing prompt for shard 1 must surface as failed");
+    assert.match(row.skip_reason, /shard 1/, "skip_reason must name the missing shard");
+    assert.match(row.skip_reason, /no dispatch prompt staged/, "skip_reason must explain why");
+    // CRITICAL: the stale shard-1 finding must NOT appear in the merged findings.
+    for (const finding of row.findings) {
+      assert.notMatch(finding.title, /stale finding/, "stale shard-1 finding must NOT be propagated");
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("aggregateSpecialistOutputs: partial-staged shards surface the gap as a failed leaf row", () => {
   // End-to-end: prompts staged for shards 0 and 2 (gap at 1), outputs
   // written for all three present (so the bug being closed is the

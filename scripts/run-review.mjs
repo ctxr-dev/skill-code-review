@@ -892,24 +892,29 @@ export function writeSpecialistPromptsToDisk(brief) {
 
 // Discover the shard layout for a single picked leaf by listing the
 // staged dispatch_specialists-prompt-<leaf-id>* files. Returns:
-//   - null              when the leaf is non-sharded (the bare
-//                       `dispatch_specialists-prompt-<leaf-id>.md` exists).
-//   - sortedShardIdx[]  when sharded prompts exist. Only returned when
-//                       the indices are CONTIGUOUS starting at 0
-//                       (`[0, 1, ..., N-1]`). Non-contiguous indices
-//                       indicate a partial-staging failure (e.g.
-//                       atomicWriteFile swallowed shard 1's I/O error)
-//                       and the caller treats that as "leaf failed"
-//                       (every output gets synthesized as failed
-//                       downstream).
-//   - []                when neither shape exists (degraded path).
+//   - null                       when the leaf is non-sharded (the bare
+//                                `dispatch_specialists-prompt-<leaf-id>.md`
+//                                exists).
+//   - [0, 1, ..., max]           when at least one sharded prompt is
+//                                staged. The returned array is ALWAYS
+//                                contiguous from 0 to max(observed):
+//                                if on-disk indices are [0, 2] (gap at
+//                                1 — partial staging failure), we return
+//                                [0, 1, 2]. The aggregator then iterates
+//                                this full range, looks for shard 1's
+//                                output, doesn't find it, synthesizes a
+//                                failed row mentioning "shard 1: no
+//                                output written for shard 1", and the
+//                                leaf surfaces as failed — rather than
+//                                silently dropping shard 1's files.
+//   - []                         when neither shape exists (degraded
+//                                path: leaf was never staged).
 //
-// Why contiguity matters: prompt writes are best-effort
-// (atomicWriteFile swallows I/O errors). Without contiguity validation,
-// `--0.md` + `--2.md` with `--1.md` missing would have the orchestrator
-// dispatch only the present shards, the aggregator merge "successfully",
-// and shard 1's files silently never reviewed. Reporting the full set
-// as "missing" surfaces the staging failure rather than masking it.
+// Why the contiguous-range normalisation matters: prompt writes are
+// best-effort (atomicWriteFile swallows I/O errors). Without
+// normalisation, `--0.md` + `--2.md` with `--1.md` missing would let
+// the aggregator merge the two present shards "successfully" and shard
+// 1's files would silently never get reviewed.
 //
 // Filesystem-as-truth: we do NOT mutate the brief to record shard counts.
 // The orchestrator (--print-pending-leaf-ids) and the aggregator both
@@ -2224,9 +2229,14 @@ async function main() {
     // For dispatch_specialists, accept either --shard-idx <N> or a
     // <leaf-id>--<N> suffix on the --leaf-id value (so the
     // orchestrator can pass --print-pending-leaf-ids output verbatim).
+    // Combining the two — --leaf-id "foo--3" --shard-idx 3 — works
+    // when the values agree; a mismatch is rejected.
     let resolvedLeafId = leafId;
     let resolvedShardIdx = null;
     if (currentState === "dispatch_specialists") {
+      const leafSuffixMatch = typeof leafId === "string"
+        ? leafId.match(/^([a-z][a-z0-9-]*?)--(\d+)$/)
+        : null;
       if (args["shard-idx"] !== undefined) {
         if (typeof args["shard-idx"] !== "string" || !/^\d+$/.test(args["shard-idx"])) {
           fail(
@@ -2234,12 +2244,19 @@ async function main() {
           );
         }
         resolvedShardIdx = Number.parseInt(args["shard-idx"], 10);
-      } else if (typeof leafId === "string") {
-        const m = leafId.match(/^([a-z][a-z0-9-]*?)--(\d+)$/);
-        if (m) {
-          resolvedLeafId = m[1];
-          resolvedShardIdx = Number.parseInt(m[2], 10);
+        if (leafSuffixMatch) {
+          const suffixIdx = Number.parseInt(leafSuffixMatch[2], 10);
+          if (suffixIdx !== resolvedShardIdx) {
+            fail(
+              `--print-dispatch-prompt: --leaf-id "${leafId}" encodes shard ${suffixIdx} but --shard-idx is ${resolvedShardIdx}; pass one form or matching values`,
+              { run_id: runId, leaf_id: leafId, shard_idx: resolvedShardIdx },
+            );
+          }
+          resolvedLeafId = leafSuffixMatch[1];
         }
+      } else if (leafSuffixMatch) {
+        resolvedLeafId = leafSuffixMatch[1];
+        resolvedShardIdx = Number.parseInt(leafSuffixMatch[2], 10);
       }
     }
     const promptPath = defaultDispatchPromptPath(
@@ -2377,22 +2394,37 @@ async function main() {
     if (typeof leafId !== "string" || leafId.length === 0) {
       fail("--print-agent-shim-prompt requires --leaf-id <id>");
     }
-    let shardIdx = null;
+    // Two ways to express a shard:
+    //   (a) --leaf-id <leaf>--<idx>   (the format --print-pending-leaf-ids
+    //                                  emits — orchestrator can pipe it
+    //                                  through verbatim).
+    //   (b) --leaf-id <leaf> --shard-idx <idx>  (explicit form).
+    // Both forms produce the same result. Combining them — passing
+    // --leaf-id "foo--3" AND --shard-idx 3 — works as long as the
+    // shard idx matches; mismatches are rejected. Combining --leaf-id
+    // "foo--3" with --shard-idx 5 is a contradiction.
+    const leafSuffixMatch = leafId.match(/^([a-z][a-z0-9-]*?)--(\d+)$/);
+    let resolvedLeafId = leafId;
+    let resolvedShardIdx = null;
     if (args["shard-idx"] !== undefined) {
       if (typeof args["shard-idx"] !== "string" || !/^\d+$/.test(args["shard-idx"])) {
         fail("--shard-idx requires a non-negative integer");
       }
-      shardIdx = Number.parseInt(args["shard-idx"], 10);
-    } else {
-      // Allow the leaf-id itself to encode the shard via `--<idx>` suffix.
-      // This lets the orchestrator iterate `--print-pending-leaf-ids`
-      // output directly without parsing.
-      const m = leafId.match(/^([a-z][a-z0-9-]*?)--(\d+)$/);
-      if (m) {
-        return printShimForParsedId(runId, m[1], Number.parseInt(m[2], 10));
+      resolvedShardIdx = Number.parseInt(args["shard-idx"], 10);
+      if (leafSuffixMatch) {
+        const suffixIdx = Number.parseInt(leafSuffixMatch[2], 10);
+        if (suffixIdx !== resolvedShardIdx) {
+          fail(
+            `--print-agent-shim-prompt: --leaf-id "${leafId}" encodes shard ${suffixIdx} but --shard-idx is ${resolvedShardIdx}; pass one form or matching values`,
+          );
+        }
+        resolvedLeafId = leafSuffixMatch[1];
       }
+    } else if (leafSuffixMatch) {
+      resolvedLeafId = leafSuffixMatch[1];
+      resolvedShardIdx = Number.parseInt(leafSuffixMatch[2], 10);
     }
-    return printShimForParsedId(runId, leafId, shardIdx);
+    return printShimForParsedId(runId, resolvedLeafId, resolvedShardIdx);
   }
 
   fail(

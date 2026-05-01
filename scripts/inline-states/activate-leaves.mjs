@@ -46,6 +46,79 @@ function isInside(parent, child) {
   return rel !== "" && !rel.startsWith("..") && !rel.startsWith(sep) && !rel.includes(":");
 }
 
+// V2 frontmatter fields the trim worker would otherwise have to Read
+// per candidate leaf. PR for #87: pre-extract these alongside
+// `activation` and ship them in activated_leaves[*]. The list is
+// scoped to the fields the downstream FSM and the trim prompt
+// actually consume; consumer-specific authored fields beyond this set
+// are NOT forwarded here (kept inside the leaf body / dispatch
+// specialist prompt) to keep the activate_leaves brief small.
+const V2_FIELDS = ["focus", "dimensions", "audit_surface", "languages", "tools", "tags", "covers", "type"];
+
+// Per-field type contracts (mirrors the wiki-leaf shape declared in
+// fsm/code-reviewer.fsm.yaml's stage_a_candidates response_schema and
+// scripts/lib/reviewer-schema.mjs's reviewer-source validators).
+// Malformed values are dropped silently rather than propagated — the
+// trim worker would otherwise see weird shapes and the FSM's
+// response_schema would fault post-hoc on a corpus typo. Empty arrays
+// generally pass (author intent: `tools: []` means "this leaf opts
+// out of tool discovery") — the exception is `languages`, where an
+// empty array is meaningless (the documented values are "all" OR a
+// non-empty list) and is dropped to match the wiki-leaf contract.
+function isStringArray(v) {
+  return Array.isArray(v) && v.every((x) => typeof x === "string");
+}
+// Tool entries (per docs/SCHEMA.md) carry at least `name` (string) and
+// `purpose` (string); `command` is optional. When `command` is present
+// it must be a string. The validator drops any tool entry missing the
+// two required string fields OR carrying a non-string command.
+function isToolArray(v) {
+  if (!Array.isArray(v)) return false;
+  return v.every(
+    (t) => t !== null && typeof t === "object" && !Array.isArray(t) &&
+      typeof t.name === "string" && t.name.length > 0 &&
+      typeof t.purpose === "string" && t.purpose.length > 0 &&
+      (t.command === undefined || typeof t.command === "string"),
+  );
+}
+function validateV2Field(field, value) {
+  switch (field) {
+    case "focus":
+    case "type":
+      return typeof value === "string" ? value : undefined;
+    case "dimensions":
+    case "audit_surface":
+    case "tags":
+    case "covers":
+      return isStringArray(value) ? value : undefined;
+    case "tools":
+      return isToolArray(value) ? value : undefined;
+    case "languages":
+      // Per docs/SCHEMA.md: either the literal string "all" or a
+      // non-empty array of language identifiers. Empty arrays are
+      // dropped (they don't model any author intent: they're either
+      // a typo or the result of a half-finished migration).
+      if (value === "all") return value;
+      if (isStringArray(value) && value.length > 0) return value;
+      return undefined;
+    default:
+      return undefined;
+  }
+}
+
+function projectV2Fields(data) {
+  if (!data || typeof data !== "object") return {};
+  const out = {};
+  for (const field of V2_FIELDS) {
+    const value = data[field];
+    if (value === undefined || value === null) continue;
+    const validated = validateV2Field(field, value);
+    if (validated === undefined) continue;
+    out[field] = validated;
+  }
+  return out;
+}
+
 // Walk reviewers.wiki/ and parse every leaf's frontmatter. Returns an
 // array of { id, path, activation } objects (path is wiki-relative;
 // activation may be undefined if the leaf has no block).
@@ -103,10 +176,29 @@ function enumerateWikiLeavesWithActivation(repoRoot, { useCache = true } = {}) {
       const id = parsed?.data?.id;
       if (typeof id !== "string" || id.length === 0) continue;
       const wikiRel = relative(realRoot, realFull).split(sep).join("/");
+      // PR for #87: pre-extract the v2 frontmatter fields the trim
+      // worker would otherwise re-read with one Agent Read tool call
+      // per candidate leaf. Only the activation gate uses `activation`;
+      // the other fields flow through into activated_leaves[*] so the
+      // trim worker reads them straight from its brief env.
+      //
+      // Missing fields are dropped (not emitted as null) so leaves
+      // without v2 frontmatter don't bloat the brief. Once
+      // skill-llm-wiki#27 merges and a wiki rebuild lands, every leaf
+      // will carry the full v2 set.
       leaves.push({
         id,
         path: wikiRel,
         activation: parsed.data.activation ?? undefined,
+        // Pre-extract the file_globs[] subset of activation so the
+        // trim worker can check per-changed-file coverage without
+        // opening leaf files (the bare `activation_match` signal only
+        // tells trim that file_globs hit "some" path, not which).
+        // Drops malformed values silently (must be string[]).
+        ...(isStringArray(parsed.data?.activation?.file_globs)
+          ? { file_globs: parsed.data.activation.file_globs }
+          : {}),
+        ...projectV2Fields(parsed.data),
       });
     }
   }
@@ -158,14 +250,28 @@ export default async function activateLeaves({ env }) {
     diff_text: diffText,
   });
 
-  const activatedLeaves = activated.map((leaf) => ({
-    id: leaf.id,
-    path: leaf.path,
-    activation_match: descent_signals[leaf.id] ?? [],
-  }));
+  const activatedLeaves = activated.map((leaf) => {
+    // Forward the v2 fields harvested by enumerateWikiLeavesWithActivation
+    // alongside the activation_match so the trim worker (and any
+    // downstream consumer) reads them straight from the brief.
+    const v2 = {};
+    for (const field of V2_FIELDS) {
+      if (leaf[field] !== undefined) v2[field] = leaf[field];
+    }
+    return {
+      id: leaf.id,
+      path: leaf.path,
+      activation_match: descent_signals[leaf.id] ?? [],
+      // file_globs are forwarded when present so the trim worker can
+      // do per-changed-file coverage checks (activation_match alone
+      // doesn't say WHICH path matched).
+      ...(Array.isArray(leaf.file_globs) ? { file_globs: leaf.file_globs } : {}),
+      ...v2,
+    };
+  });
 
   return { activated_leaves: activatedLeaves };
 }
 
 // Exported helpers for direct testing without spawning the full FSM driver.
-export { enumerateWikiLeavesWithActivation, fetchDiffText };
+export { enumerateWikiLeavesWithActivation, fetchDiffText, projectV2Fields };

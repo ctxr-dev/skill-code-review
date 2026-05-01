@@ -353,7 +353,10 @@ function computeFilteredDiff(baseSha, headSha, fileGlobs) {
     return `(diff unavailable: git diff killed by signal ${result.signal})`;
   }
   if (result.status !== 0) {
-    return `(diff unavailable: git diff exited ${result.status}: ${result.stderr?.trim() ?? ""})`;
+    const stderr = result.stderr?.trim() ?? "";
+    return stderr
+      ? `(diff unavailable: git diff exited ${result.status}: ${stderr})`
+      : `(diff unavailable: git diff exited ${result.status})`;
   }
   return result.stdout ?? "";
 }

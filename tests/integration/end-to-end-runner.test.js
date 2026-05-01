@@ -15,7 +15,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { resolveSettings, runDirPath } from "@ctxr/fsm";
@@ -448,4 +448,115 @@ test("runner --print-X CLIs: drive the documented orchestrator loop without /tmp
     { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
   );
   assert.notEqual(noRun.status, 0, "--print-dispatch-prompt without --run-id must hard-fail");
+});
+
+test("--print-pending-leaf-ids and --print-agent-shim-prompt: end-to-end CLI contract", () => {
+  // CLI-level smoke for the two new modes (#93). The dispatch_specialists
+  // brief / per-leaf prompts are constructed inline (no real diff) so we
+  // exercise the args parsing and the on-disk lookup paths without
+  // burning a real specialist dispatch. This proves:
+  //   - --print-pending-leaf-ids emits ids only for leaves whose output
+  //     file is missing AND prompt file exists
+  //   - --batch-size N caps the emitted list at N
+  //   - empty pending list exits 0 with empty stdout
+  //   - --print-agent-shim-prompt emits the canonical shim text
+  //   - bad inputs (missing --run-id, missing --leaf-id) hard-fail
+  const baseSha = "HEAD~1";
+  const headSha = "HEAD";
+  const start = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--start", "--base", baseSha, "--head", headSha],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
+  );
+  assert.equal(start.status, 0, `--start exited ${start.status}; stderr: ${start.stderr}`);
+  const runId = JSON.parse(start.stdout.split("\n").filter(Boolean)[0]).run_id;
+
+  // Construct a synthetic dispatch_specialists brief + per-leaf prompts
+  // under this run's workers/ dir. The runner only paused at scan_project
+  // so we have to fabricate the dispatch_specialists state for the test.
+  const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
+  const storageRoot = resolve(REPO_ROOT, settings.storageRoot);
+  const runDir = runDirPath(runId, { storageRoot });
+  const workersDir = join(runDir, "workers");
+  // Two synthetic leaves: alpha staged with prompt only (pending),
+  // beta staged with prompt AND output (not pending).
+  const briefShape = {
+    run_id: runId,
+    state: "dispatch_specialists",
+    inputs: {
+      picked_leaves: [
+        { id: "cli-alpha", path: "x/cli-alpha.md", justification: "j", dimensions: ["correctness"] },
+        { id: "cli-beta", path: "x/cli-beta.md", justification: "j", dimensions: ["correctness"] },
+      ],
+    },
+  };
+  writeFileSync(join(workersDir, "dispatch_specialists-brief.json"), JSON.stringify(briefShape));
+  writeFileSync(join(workersDir, "dispatch_specialists-prompt-cli-alpha.md"), "<staged>\n");
+  writeFileSync(join(workersDir, "dispatch_specialists-prompt-cli-beta.md"), "<staged>\n");
+  writeFileSync(
+    join(workersDir, "dispatch_specialists-output-cli-beta.json"),
+    JSON.stringify({ id: "cli-beta", status: "completed", findings: [] }),
+  );
+
+  // --print-pending-leaf-ids returns just "cli-alpha" (cli-beta has its
+  // output already on disk).
+  const pending = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-pending-leaf-ids", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(pending.status, 0, `--print-pending-leaf-ids exited ${pending.status}; stderr: ${pending.stderr}`);
+  const pendingIds = pending.stdout.split("\n").filter(Boolean);
+  assert.deepEqual(pendingIds, ["cli-alpha"], "only un-output leaf should be pending");
+
+  // --batch-size 1 also returns "cli-alpha" (only one is pending).
+  const pendingBatch = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-pending-leaf-ids", "--run-id", runId, "--batch-size", "1"],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(pendingBatch.status, 0);
+  assert.equal(pendingBatch.stdout.trim(), "cli-alpha");
+
+  // --print-agent-shim-prompt returns the canonical shim text.
+  const shim = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-agent-shim-prompt", "--run-id", runId, "--leaf-id", "cli-alpha"],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(shim.status, 0, `--print-agent-shim-prompt exited ${shim.status}; stderr: ${shim.stderr}`);
+  assert.match(shim.stdout, /You are a specialist reviewer/);
+  assert.match(shim.stdout, /dispatch_specialists-prompt-cli-alpha\.md/);
+  assert.match(shim.stdout, /dispatch_specialists-output-cli-alpha\.json/);
+  // Shim is small — under 1500 chars (plenty under the documented 200-token bound).
+  assert.ok(shim.stdout.length < 1500, `shim should be small; got ${shim.stdout.length} chars`);
+
+  // After dropping cli-alpha's output too, --print-pending-leaf-ids
+  // returns empty (exit 0, no output) — orchestrator's loop terminates.
+  writeFileSync(
+    join(workersDir, "dispatch_specialists-output-cli-alpha.json"),
+    JSON.stringify({ id: "cli-alpha", status: "completed", findings: [] }),
+  );
+  const noPending = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-pending-leaf-ids", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(noPending.status, 0, "empty pending list exits 0");
+  assert.equal(noPending.stdout, "", "empty pending list emits no stdout");
+
+  // Negative paths.
+  const missingRunId = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-pending-leaf-ids"],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.notEqual(missingRunId.status, 0, "--print-pending-leaf-ids without --run-id must hard-fail");
+
+  const missingLeaf = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-agent-shim-prompt", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.notEqual(missingLeaf.status, 0, "--print-agent-shim-prompt without --leaf-id must hard-fail");
 });

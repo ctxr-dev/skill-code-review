@@ -2456,13 +2456,19 @@ async function main() {
     // currentState is now guaranteed safe (isSafeStateSegment passed
     // above). The only way promptPath can be null at this point is the
     // dispatch_specialists branch rejecting a malformed leaf-id.
-    //   1. promptPath === null → invalid --leaf-id (must match
-    //      `^[a-z][a-z0-9-]*$`).
-    //   2. promptPath set but file missing → run pre-dates dispatch-prompt
-    //      staging, or the file was removed.
+    // isValidLeafId enforces TWO rules:
+    //   - must match `^[a-z][a-z0-9-]*$` (kebab-case ASCII).
+    //   - must NOT end in `--<digits>` (reserved as shard suffix on
+    //     disk; pass shard ids via --shard-idx, or via the
+    //     --print-pending-leaf-ids `<leaf>--<idx>` shorthand which
+    //     parseLeafIdAndShardIdx splits before this validation).
+    //   - shardIdx (when present) must be a non-negative integer.
+    // promptPath set but file missing → run pre-dates dispatch-prompt
+    // staging, the leaf is sharded but you didn't pass --shard-idx,
+    // or the file was removed.
     if (promptPath === null) {
       fail(
-        `--print-dispatch-prompt: invalid --leaf-id "${resolvedLeafId}" / --shard-idx ${resolvedShardIdx} for state "dispatch_specialists" (leaf-id must match ^[a-z][a-z0-9-]*$; shard-idx must be a non-negative integer).`,
+        `--print-dispatch-prompt: invalid --leaf-id "${resolvedLeafId}" / --shard-idx ${resolvedShardIdx} for state "dispatch_specialists" (leaf-id must match ^[a-z][a-z0-9-]*$ AND must not end in --<digits> [reserved for shard ids; pass shard via --shard-idx]; shard-idx when present must be a non-negative integer).`,
         { run_id: runId, current_state: currentState, leaf_id: resolvedLeafId, shard_idx: resolvedShardIdx },
       );
     }

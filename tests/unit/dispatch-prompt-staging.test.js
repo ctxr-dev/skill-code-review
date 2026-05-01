@@ -344,21 +344,20 @@ test("buildDispatchPromptText: per-specialist with opts.shard emits --- THIS SHA
   assert.match(text, /dispatch_specialists-output-lang-javascript--1\.json/);
 });
 
-test("writeSpecialistPromptsToDisk: env-driven low threshold produces sharded prompt files", async () => {
-  // Force a tiny threshold so a multi-file diff partitions. We don't
-  // actually spawn git here (no base/head shas), so the filteredDiff
-  // is the placeholder string — but the placeholder is short and
-  // therefore stays as one shard. To exercise the sharding path we
-  // need to thread a real diff; the simplest route is to construct a
-  // synthetic diff via env override + a stub for computeFilteredDiff.
+test("writeSpecialistPromptsToDisk: single-shard output keeps the canonical non-sharded prompt path", () => {
+  // When shardFilteredDiff returns a single shard (the small-diff /
+  // placeholder case), writeSpecialistPromptsToDisk emits the
+  // non-sharded prompt at the canonical
+  // dispatch_specialists-prompt-<leaf-id>.md path, NOT
+  // dispatch_specialists-prompt-<leaf-id>--0.md. This preserves
+  // backward compatibility with --print-dispatch-prompt --leaf-id <id>
+  // (no shard suffix needed) and matches the >99% real-world case
+  // where the per-leaf filtered diff fits in one shard.
   //
-  // Practical path: use the env override to produce a 0-byte threshold
-  // (which is invalid per the helper, falling back to default), AND
-  // manually verify the non-sharded path stays at the canonical name.
-  // The integration test downstream covers the real-spawn-git case;
-  // here we just lock in that the non-sharded path is unchanged when
-  // shardFilteredDiff returns a single shard (the unit-test invocation
-  // produces a placeholder string that's well below threshold).
+  // We don't exercise multi-shard staging here because the unit-test
+  // invocation has no git refs so computeFilteredDiff returns a
+  // placeholder string that's always well under threshold. The
+  // integration tests downstream cover the real-spawn-git case.
   const runId = "20991231-235959-ddddddd";
   const state = "dispatch_specialists";
   const leafId = "single-shard-leaf";
@@ -372,10 +371,9 @@ test("writeSpecialistPromptsToDisk: env-driven low threshold produces sharded pr
       worker: { role: "specialist", inputs: [], prompt_body: "T" },
       inputs: { picked_leaves: [{ id: leafId, path: "x/y.md", body: "body", file_globs: ["**/*"] }] },
     });
-    // The non-sharded prompt path exists; the sharded path does not.
-    assert.ok(existsSync(promptPath), `expected ${promptPath} for non-sharded leaf`);
+    assert.ok(existsSync(promptPath), `expected ${promptPath} for single-shard (non-sharded) leaf`);
     const shardedPath = defaultDispatchPromptPath(runId, state, leafId, 0);
-    assert.ok(!existsSync(shardedPath), "non-sharded leaf must not produce shard-suffixed prompts");
+    assert.ok(!existsSync(shardedPath), "single-shard leaf must not produce shard-suffixed prompts");
   } finally {
     rmSync(promptPath, { force: true });
   }

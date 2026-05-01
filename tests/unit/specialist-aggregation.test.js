@@ -11,15 +11,18 @@
 //   - missing per-leaf output → synthesized "failed" row
 //   - missing one shard for a sharded leaf → status reflects gap
 //
-// Hermetic: each test builds a fake run-dir under a per-test tempdir
-// with .fsmrc.json pointing storage_root at it. No assumption about
-// the real corpus.
+// Hermeticity: `resolveStorageRoot` reads `.fsmrc.json` relative to the
+// runner's REPO_ROOT (the skill-code-review repo), not process.cwd().
+// We can't redirect storage_root via chdir in-process. Instead, each
+// test generates its OWN unique run-id (random 7-hex date-time) so its
+// run-dir under the real `.skill-code-review/` tree never collides
+// with another test's. Cleanup deletes only that test's run-dir.
 
-import { test, before, after, beforeEach } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { dirname } from "node:path";
 
 import {
   aggregateSpecialistOutputs,
@@ -28,50 +31,46 @@ import {
   defaultDispatchPromptPath,
 } from "../../scripts/run-review.mjs";
 
-// We use a fixed run-id and a synthetic storage root. The runner reads
-// storage_root from .fsmrc.json (resolveStorageRoot) which is relative
-// to process.cwd(); we mkdtemp + chdir for the duration of the test
-// suite to avoid touching the real .skill-code-review/ tree.
-let TMP_PROJECT_ROOT;
-let ORIGINAL_CWD;
-const RUN_ID = "20991231-235959-aaaaaaa";
+// Generate a unique run-id matching the parseRunId regex
+// `^\d{8}-\d{6}-[0-9a-f]{7}$`. We use a fixed far-future date so test
+// run-dirs sort to the bottom of `.skill-code-review/` and are easy to
+// identify / sweep, plus a random 7-hex tail per test invocation.
+function uniqueRunId() {
+  const hex = randomBytes(4).toString("hex").slice(0, 7);
+  return `20991231-235959-${hex}`;
+}
 
-before(() => {
-  ORIGINAL_CWD = process.cwd();
-  TMP_PROJECT_ROOT = mkdtempSync(join(tmpdir(), "specialist-agg-"));
-  // .fsmrc.json points storage_root to a sibling subdir.
-  writeFileSync(
-    join(TMP_PROJECT_ROOT, ".fsmrc.json"),
-    JSON.stringify({ fsms: [{ name: "code-reviewer", path: "fsm/code-reviewer.fsm.yaml", storage_root: ".skill-code-review" }] }),
-  );
-  // The fsm-validate-static workflow expects the fsm file to exist; for
-  // these tests we don't actually run fsm-validate, but resolveSettings
-  // does sanity-read .fsmrc.json. A fsm subdir keeps the read happy.
-  mkdirSync(join(TMP_PROJECT_ROOT, "fsm"), { recursive: true });
-  writeFileSync(join(TMP_PROJECT_ROOT, "fsm", "code-reviewer.fsm.yaml"), "fsm:\n  id: code-reviewer\n  version: 1\n  entry: a\n  states:\n    - id: a\n      purpose: \".\"\n      preconditions: []\n      outputs: []\n      transitions: []\n");
-  process.chdir(TMP_PROJECT_ROOT);
-});
+// Schedule cleanup of a run-dir's workers directory. Each test calls
+// this with its own runId so cleanup is scoped (no rmSync of another
+// test's dir even if `node --test` runs in parallel).
+function scheduleCleanup(runId) {
+  // Workers dir lives under `<storage_root>/yyyy/mm/dd/<2-hex>/<5-hex>/workers`.
+  // defaultSpecialistOutputPath gives us a path inside it; dirname
+  // takes us to the workers/ dir; dirname again to the run-dir itself.
+  const samplePath = defaultSpecialistOutputPath(runId, "x");
+  if (!samplePath) return;
+  const runDir = dirname(dirname(samplePath));
+  return () => rmSync(runDir, { recursive: true, force: true });
+}
 
-after(() => {
-  if (ORIGINAL_CWD) process.chdir(ORIGINAL_CWD);
-  if (TMP_PROJECT_ROOT) rmSync(TMP_PROJECT_ROOT, { recursive: true, force: true });
-});
-
-// Each test starts with a clean workers dir.
-beforeEach(() => {
-  const workersDir = dirname(defaultSpecialistOutputPath(RUN_ID, "any-leaf"));
-  rmSync(workersDir, { recursive: true, force: true });
+// Helper: set up a clean workers dir for the run. Returns the runId
+// and a cleanup callback the test must invoke in its finally block.
+function freshRun() {
+  const runId = uniqueRunId();
+  const samplePath = defaultSpecialistOutputPath(runId, "x");
+  const workersDir = dirname(samplePath);
   mkdirSync(workersDir, { recursive: true });
-});
+  return { runId, cleanup: scheduleCleanup(runId) };
+}
 
-function writePrompt(leafId, shardIdx = null) {
-  const path = defaultDispatchPromptPath(RUN_ID, "dispatch_specialists", leafId, shardIdx);
+function writePrompt(runId, leafId, shardIdx = null) {
+  const path = defaultDispatchPromptPath(runId, "dispatch_specialists", leafId, shardIdx);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, "<staged prompt>\n");
 }
 
-function writeOutput(leafId, shardIdx, payload) {
-  const path = defaultSpecialistOutputPath(RUN_ID, leafId, shardIdx);
+function writeOutput(runId, leafId, shardIdx, payload) {
+  const path = defaultSpecialistOutputPath(runId, leafId, shardIdx);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(payload));
 }
@@ -88,9 +87,9 @@ function specialistRow(id, overrides = {}) {
   };
 }
 
-function brief(pickedLeafIds) {
+function brief(runId, pickedLeafIds) {
   return {
-    run_id: RUN_ID,
+    run_id: runId,
     state: "dispatch_specialists",
     inputs: {
       picked_leaves: pickedLeafIds.map((id) => ({ id, path: `cluster/${id}.md`, justification: "j", dimensions: ["correctness"] })),
@@ -99,146 +98,190 @@ function brief(pickedLeafIds) {
 }
 
 test("aggregateSpecialistOutputs: 3 non-sharded leaves with outputs → ordered specialist_outputs[]", () => {
-  for (const id of ["leaf-alpha", "leaf-beta", "leaf-gamma"]) {
-    writePrompt(id);
-    writeOutput(id, null, specialistRow(id, {
-      findings: [{ severity: "minor", file: "a.ts", title: `from ${id}`, description: "d", impact: "i", fix: "f" }],
-    }));
-  }
-  const out = aggregateSpecialistOutputs(brief(["leaf-alpha", "leaf-beta", "leaf-gamma"]));
-  assert.equal(out.specialist_outputs.length, 3);
-  // Order matches picked_leaves order (alpha, beta, gamma).
-  assert.deepEqual(out.specialist_outputs.map((r) => r.id), ["leaf-alpha", "leaf-beta", "leaf-gamma"]);
-  // Findings round-tripped.
-  for (const row of out.specialist_outputs) {
-    assert.equal(row.findings.length, 1);
-    assert.match(row.findings[0].title, /from /);
+  const { runId, cleanup } = freshRun();
+  try {
+    for (const id of ["leaf-alpha", "leaf-beta", "leaf-gamma"]) {
+      writePrompt(runId, id);
+      writeOutput(runId, id, null, specialistRow(id, {
+        findings: [{ severity: "minor", file: "a.ts", title: `from ${id}`, description: "d", impact: "i", fix: "f" }],
+      }));
+    }
+    const out = aggregateSpecialistOutputs(brief(runId, ["leaf-alpha", "leaf-beta", "leaf-gamma"]));
+    assert.equal(out.specialist_outputs.length, 3);
+    assert.deepEqual(out.specialist_outputs.map((r) => r.id), ["leaf-alpha", "leaf-beta", "leaf-gamma"]);
+    for (const row of out.specialist_outputs) {
+      assert.equal(row.findings.length, 1);
+      assert.match(row.findings[0].title, /from /);
+    }
+  } finally {
+    cleanup();
   }
 });
 
 test("aggregateSpecialistOutputs: sharded leaf merges shard findings into ONE row", () => {
-  // Three shards for "split-leaf"; each contributes 1 finding.
-  for (const idx of [0, 1, 2]) {
-    writePrompt("split-leaf", idx);
-    writeOutput("split-leaf", idx, specialistRow("split-leaf", {
-      runtime_ms: 100 + idx,
-      tokens_in: 1000 + idx,
-      tokens_out: 50 + idx,
-      findings: [{ severity: "minor", file: `f${idx}.ts`, title: `shard-${idx}-finding`, description: "d", impact: "i", fix: "f" }],
-    }));
+  const { runId, cleanup } = freshRun();
+  try {
+    for (const idx of [0, 1, 2]) {
+      writePrompt(runId, "split-leaf", idx);
+      writeOutput(runId, "split-leaf", idx, specialistRow("split-leaf", {
+        runtime_ms: 100 + idx,
+        tokens_in: 1000 + idx,
+        tokens_out: 50 + idx,
+        findings: [{ severity: "minor", file: `f${idx}.ts`, title: `shard-${idx}-finding`, description: "d", impact: "i", fix: "f" }],
+      }));
+    }
+    const out = aggregateSpecialistOutputs(brief(runId, ["split-leaf"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.id, "split-leaf");
+    assert.equal(row.status, "completed");
+    assert.equal(row.findings.length, 3);
+    assert.deepEqual(row.findings.map((f) => f.title).sort(), ["shard-0-finding", "shard-1-finding", "shard-2-finding"]);
+    assert.equal(row.runtime_ms, 100 + 101 + 102);
+    assert.equal(row.tokens_in, 1000 + 1001 + 1002);
+    assert.equal(row.tokens_out, 50 + 51 + 52);
+  } finally {
+    cleanup();
   }
-  const out = aggregateSpecialistOutputs(brief(["split-leaf"]));
-  assert.equal(out.specialist_outputs.length, 1);
-  const row = out.specialist_outputs[0];
-  assert.equal(row.id, "split-leaf");
-  assert.equal(row.status, "completed");
-  // Findings concatenated across shards.
-  assert.equal(row.findings.length, 3);
-  assert.deepEqual(row.findings.map((f) => f.title).sort(), ["shard-0-finding", "shard-1-finding", "shard-2-finding"]);
-  // Timings + token counts summed across shards.
-  assert.equal(row.runtime_ms, 100 + 101 + 102);
-  assert.equal(row.tokens_in, 1000 + 1001 + 1002);
-  assert.equal(row.tokens_out, 50 + 51 + 52);
 });
 
 test("aggregateSpecialistOutputs: missing per-leaf output → synthesized failed row with skip_reason", () => {
-  // Stage a prompt but no output: simulates orchestrator never dispatching
-  // (or the dispatched Agent failing silently before writing).
-  writePrompt("ghost-leaf");
-  const out = aggregateSpecialistOutputs(brief(["ghost-leaf"]));
-  assert.equal(out.specialist_outputs.length, 1);
-  const row = out.specialist_outputs[0];
-  assert.equal(row.id, "ghost-leaf");
-  assert.equal(row.status, "failed");
-  assert.equal(row.findings.length, 0);
-  assert.match(row.skip_reason, /no per-leaf output/);
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "ghost-leaf");
+    const out = aggregateSpecialistOutputs(brief(runId, ["ghost-leaf"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.id, "ghost-leaf");
+    assert.equal(row.status, "failed");
+    assert.equal(row.findings.length, 0);
+    assert.match(row.skip_reason, /no per-leaf output/);
+  } finally {
+    cleanup();
+  }
 });
 
 test("aggregateSpecialistOutputs: missing ONE shard out of N → leaf marked failed with reason naming the shard", () => {
-  // Stage 3 shard prompts; write outputs for shards 0 and 2 only.
-  for (const idx of [0, 1, 2]) writePrompt("partial-leaf", idx);
-  writeOutput("partial-leaf", 0, specialistRow("partial-leaf"));
-  writeOutput("partial-leaf", 2, specialistRow("partial-leaf"));
-  const out = aggregateSpecialistOutputs(brief(["partial-leaf"]));
-  assert.equal(out.specialist_outputs.length, 1);
-  const row = out.specialist_outputs[0];
-  assert.equal(row.status, "failed");
-  // skip_reason names shard 1 specifically.
-  assert.match(row.skip_reason, /shard 1/);
+  const { runId, cleanup } = freshRun();
+  try {
+    for (const idx of [0, 1, 2]) writePrompt(runId, "partial-leaf", idx);
+    writeOutput(runId, "partial-leaf", 0, specialistRow("partial-leaf"));
+    writeOutput(runId, "partial-leaf", 2, specialistRow("partial-leaf"));
+    const out = aggregateSpecialistOutputs(brief(runId, ["partial-leaf"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.status, "failed");
+    assert.match(row.skip_reason, /shard 1/);
+  } finally {
+    cleanup();
+  }
 });
 
 test("aggregateSpecialistOutputs: leaf with no staged prompt at all → failed with 'no dispatch prompt'", () => {
-  // No prompt, no output. The aggregator must still emit a row (the
-  // FSM expects one entry per picked_leaf) but mark it failed.
-  const out = aggregateSpecialistOutputs(brief(["unstaged-leaf"]));
-  assert.equal(out.specialist_outputs.length, 1);
-  const row = out.specialist_outputs[0];
-  assert.equal(row.status, "failed");
-  assert.match(row.skip_reason, /no dispatch prompt staged/);
+  const { runId, cleanup } = freshRun();
+  try {
+    const out = aggregateSpecialistOutputs(brief(runId, ["unstaged-leaf"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.status, "failed");
+    assert.match(row.skip_reason, /no dispatch prompt staged/);
+  } finally {
+    cleanup();
+  }
 });
 
 test("aggregateSpecialistOutputs: mixed sharded + non-sharded leaves both end up in specialist_outputs[]", () => {
-  // Non-sharded "narrow-leaf" + sharded "wide-leaf" with 2 shards.
-  writePrompt("narrow-leaf");
-  writeOutput("narrow-leaf", null, specialistRow("narrow-leaf", {
-    findings: [{ severity: "minor", file: "narrow.ts", title: "narrow", description: "d", impact: "i", fix: "f" }],
-  }));
-  writePrompt("wide-leaf", 0);
-  writePrompt("wide-leaf", 1);
-  writeOutput("wide-leaf", 0, specialistRow("wide-leaf", {
-    findings: [{ severity: "minor", file: "w0.ts", title: "wide-shard-0", description: "d", impact: "i", fix: "f" }],
-  }));
-  writeOutput("wide-leaf", 1, specialistRow("wide-leaf", {
-    findings: [{ severity: "minor", file: "w1.ts", title: "wide-shard-1", description: "d", impact: "i", fix: "f" }],
-  }));
-  const out = aggregateSpecialistOutputs(brief(["narrow-leaf", "wide-leaf"]));
-  assert.equal(out.specialist_outputs.length, 2);
-  assert.deepEqual(out.specialist_outputs.map((r) => r.id), ["narrow-leaf", "wide-leaf"]);
-  // wide-leaf's findings are merged across its two shards.
-  const wide = out.specialist_outputs.find((r) => r.id === "wide-leaf");
-  assert.equal(wide.findings.length, 2);
-  assert.deepEqual(wide.findings.map((f) => f.title).sort(), ["wide-shard-0", "wide-shard-1"]);
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "narrow-leaf");
+    writeOutput(runId, "narrow-leaf", null, specialistRow("narrow-leaf", {
+      findings: [{ severity: "minor", file: "narrow.ts", title: "narrow", description: "d", impact: "i", fix: "f" }],
+    }));
+    writePrompt(runId, "wide-leaf", 0);
+    writePrompt(runId, "wide-leaf", 1);
+    writeOutput(runId, "wide-leaf", 0, specialistRow("wide-leaf", {
+      findings: [{ severity: "minor", file: "w0.ts", title: "wide-shard-0", description: "d", impact: "i", fix: "f" }],
+    }));
+    writeOutput(runId, "wide-leaf", 1, specialistRow("wide-leaf", {
+      findings: [{ severity: "minor", file: "w1.ts", title: "wide-shard-1", description: "d", impact: "i", fix: "f" }],
+    }));
+    const out = aggregateSpecialistOutputs(brief(runId, ["narrow-leaf", "wide-leaf"]));
+    assert.equal(out.specialist_outputs.length, 2);
+    assert.deepEqual(out.specialist_outputs.map((r) => r.id), ["narrow-leaf", "wide-leaf"]);
+    const wide = out.specialist_outputs.find((r) => r.id === "wide-leaf");
+    assert.equal(wide.findings.length, 2);
+    assert.deepEqual(wide.findings.map((f) => f.title).sort(), ["wide-shard-0", "wide-shard-1"]);
+  } finally {
+    cleanup();
+  }
 });
 
 test("aggregateSpecialistOutputs: stamps id authoritatively even if worker wrote a different id", () => {
-  // A worker that copy-pastes a wrong id MUST NOT slip through. The
-  // aggregator overwrites with the picked_leaves id so the report row
-  // matches what the FSM committed as picked.
-  writePrompt("good-id");
-  writeOutput("good-id", null, specialistRow("WRONG-ID-FROM-WORKER", { findings: [] }));
-  const out = aggregateSpecialistOutputs(brief(["good-id"]));
-  assert.equal(out.specialist_outputs.length, 1);
-  assert.equal(out.specialist_outputs[0].id, "good-id");
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "good-id");
+    writeOutput(runId, "good-id", null, specialistRow("WRONG-ID-FROM-WORKER", { findings: [] }));
+    const out = aggregateSpecialistOutputs(brief(runId, ["good-id"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    assert.equal(out.specialist_outputs[0].id, "good-id");
+  } finally {
+    cleanup();
+  }
 });
 
 test("aggregateSpecialistOutputs: unparseable per-leaf JSON surfaces in skip_reason", () => {
-  writePrompt("broken-json-leaf");
-  const path = defaultSpecialistOutputPath(RUN_ID, "broken-json-leaf");
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, "{ not valid json");
-  const out = aggregateSpecialistOutputs(brief(["broken-json-leaf"]));
-  assert.equal(out.specialist_outputs.length, 1);
-  assert.equal(out.specialist_outputs[0].status, "failed");
-  assert.match(out.specialist_outputs[0].skip_reason, /unparseable/);
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "broken-json-leaf");
+    const path = defaultSpecialistOutputPath(runId, "broken-json-leaf");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "{ not valid json");
+    const out = aggregateSpecialistOutputs(brief(runId, ["broken-json-leaf"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    assert.equal(out.specialist_outputs[0].status, "failed");
+    assert.match(out.specialist_outputs[0].skip_reason, /unparseable/);
+  } finally {
+    cleanup();
+  }
 });
 
 test("aggregateSpecialistOutputs: empty picked_leaves[] returns empty specialist_outputs[]", () => {
-  const out = aggregateSpecialistOutputs(brief([]));
+  // No filesystem writes needed; just exercise the empty-pickedLeaves branch.
+  const out = aggregateSpecialistOutputs({
+    run_id: uniqueRunId(),
+    state: "dispatch_specialists",
+    inputs: { picked_leaves: [] },
+  });
   assert.deepEqual(out, { specialist_outputs: [] });
 });
 
 test("discoverLeafShards: returns null for non-sharded leaf (single prompt at canonical path)", () => {
-  writePrompt("single-leaf");
-  assert.equal(discoverLeafShards(RUN_ID, "single-leaf"), null);
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "single-leaf");
+    assert.equal(discoverLeafShards(runId, "single-leaf"), null);
+  } finally {
+    cleanup();
+  }
 });
 
 test("discoverLeafShards: returns sorted shard indices when only sharded prompts exist", () => {
-  writePrompt("sharded-leaf", 2);
-  writePrompt("sharded-leaf", 0);
-  writePrompt("sharded-leaf", 1);
-  assert.deepEqual(discoverLeafShards(RUN_ID, "sharded-leaf"), [0, 1, 2]);
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "sharded-leaf", 2);
+    writePrompt(runId, "sharded-leaf", 0);
+    writePrompt(runId, "sharded-leaf", 1);
+    assert.deepEqual(discoverLeafShards(runId, "sharded-leaf"), [0, 1, 2]);
+  } finally {
+    cleanup();
+  }
 });
 
 test("discoverLeafShards: returns empty array when neither shape is staged", () => {
-  assert.deepEqual(discoverLeafShards(RUN_ID, "never-staged"), []);
+  const { runId, cleanup } = freshRun();
+  try {
+    assert.deepEqual(discoverLeafShards(runId, "never-staged"), []);
+  } finally {
+    cleanup();
+  }
 });

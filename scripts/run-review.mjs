@@ -395,11 +395,17 @@ export function shardFilteredDiff(diffText, opts = {}) {
   const threshold = Number.isInteger(opts.threshold) && opts.threshold > 0
     ? opts.threshold
     : getShardThreshold();
-  // Trivial cases: empty, placeholder, or under threshold → one shard.
+  // Coerce non-string inputs to "" so shard objects always carry a string
+  // diffText (callers and tests expect a string, not number/object/null).
   if (typeof diffText !== "string" || diffText.length === 0) {
-    return [{ shardIdx: 0, files: [], diffText: diffText ?? "" }];
+    return [{ shardIdx: 0, files: [], diffText: typeof diffText === "string" ? diffText : "" }];
   }
-  if (diffText.length <= threshold) {
+  // Threshold is documented in BYTES (env var `SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES`).
+  // JS `string.length` returns UTF-16 code-unit count, which mis-reports
+  // for non-ASCII diffs (e.g. comments with emoji or non-Latin code).
+  // Use Buffer.byteLength(s, "utf8") so the threshold is enforced on
+  // the actual UTF-8 byte count.
+  if (Buffer.byteLength(diffText, "utf8") <= threshold) {
     return [{ shardIdx: 0, files: extractFilesFromDiff(diffText), diffText }];
   }
   // Split on `^diff --git a/<path> b/<path>$` boundaries.
@@ -417,21 +423,25 @@ export function shardFilteredDiff(diffText, opts = {}) {
   const shards = [];
   let currentFiles = [];
   let currentText = leadingHeader;
+  let currentBytes = Buffer.byteLength(leadingHeader, "utf8");
   let shardIdx = 0;
   for (const chunk of fileChunks) {
+    const chunkBytes = Buffer.byteLength(chunk.text, "utf8");
     // Adding this chunk would exceed threshold AND the current shard is
     // non-empty? Flush, start a new one.
-    if (currentText.length > 0 && currentText.length + chunk.text.length > threshold && currentFiles.length > 0) {
+    if (currentBytes > 0 && currentBytes + chunkBytes > threshold && currentFiles.length > 0) {
       shards.push({ shardIdx, files: currentFiles, diffText: currentText });
       shardIdx += 1;
       currentFiles = [];
       currentText = "";
+      currentBytes = 0;
     }
     currentFiles.push(chunk.file);
     currentText += chunk.text;
+    currentBytes += chunkBytes;
     // A single chunk larger than threshold gets its own shard (we never
     // split inside a file). The next iteration's flush check will see
-    // currentText already over threshold AND currentFiles.length > 0,
+    // currentBytes already over threshold AND currentFiles.length > 0,
     // so it flushes after this item.
   }
   if (currentFiles.length > 0 || currentText.length > 0) {
@@ -461,7 +471,6 @@ function extractFilesFromDiff(diffText) {
 function splitOnGitDiffMarkers(diffText) {
   const out = [""];
   const re = /^diff --git a\/\S+ b\/(\S+)$/gm;
-  let last = 0;
   let m;
   const matches = [];
   while ((m = re.exec(diffText)) !== null) {
@@ -515,12 +524,14 @@ export function defaultBriefPath(runId, state) {
 //   <run_dir>/workers/dispatch_specialists-output-<leaf-id>.json
 //   <run_dir>/workers/dispatch_specialists-output-<leaf-id>--<shardIdx>.json (sharded)
 //
-// Both arguments are validated for path-traversal: runId must be the
-// run-id alphabet, leafId must be kebab-case ASCII per the corpus
-// contract, shardIdx (when present) must be a non-negative integer.
+// Validation, in order:
+//   - runId must satisfy isValidRunId (lowercase alnum + dashes, 3-64 chars).
+//     defense-in-depth against a tampered manifest with `..` segments.
+//   - leafId must be kebab-case ASCII per the corpus contract.
+//   - shardIdx (when present) must be a non-negative integer.
 // Returns null on invalid input so the caller never composes a bad path.
 export function defaultSpecialistOutputPath(runId, leafId, shardIdx = null) {
-  if (!runId) return null;
+  if (typeof runId !== "string" || !isValidRunId(runId)) return null;
   if (typeof leafId !== "string" || !/^[a-z][a-z0-9-]*$/.test(leafId)) return null;
   if (shardIdx !== null) {
     if (!Number.isInteger(shardIdx) || shardIdx < 0) return null;
@@ -935,6 +946,33 @@ export function aggregateSpecialistOutputs(brief) {
     out.push(mergeShardedSpecialistOutputs(runId, leaf.id, shards));
   }
   return { specialist_outputs: out };
+}
+
+// Returns true if at least one per-leaf (or per-shard) output file
+// exists on disk for any picked_leaf in the brief. Used as the gate
+// for the runner-side auto-aggregation in --continue: if at least one
+// output exists, aggregate (every leaf gets a row, missing ones are
+// synthesized as failed); if NONE exist, fall through to the existing
+// "default outputs file not found" error so the orchestrator sees the
+// actual "I never dispatched" signal cleanly.
+export function anySpecialistOutputOnDisk(brief) {
+  const pickedLeaves = brief?.inputs?.picked_leaves;
+  if (!Array.isArray(pickedLeaves)) return false;
+  const runId = brief?.run_id;
+  for (const leaf of pickedLeaves) {
+    if (!leaf || typeof leaf.id !== "string") continue;
+    const shards = discoverLeafShards(runId, leaf.id);
+    if (shards === null) {
+      const p = defaultSpecialistOutputPath(runId, leaf.id);
+      if (p && existsSync(p)) return true;
+    } else {
+      for (const idx of shards) {
+        const p = defaultSpecialistOutputPath(runId, leaf.id, idx);
+        if (p && existsSync(p)) return true;
+      }
+    }
+  }
+  return false;
 }
 
 function readSpecialistOutputOrFail(outputPath, leafId, shardIdx) {
@@ -1786,18 +1824,17 @@ async function main() {
             brief = null;
           }
           if (brief) {
-            const aggregate = aggregateSpecialistOutputs(brief);
-            // Only write the aggregate when at least one per-leaf
-            // output (or one staged shard) was found — otherwise
-            // every entry is a synthesized "failed" row, which is
-            // not useful and would mask the orchestrator's actual
-            // "I forgot to dispatch" error. The aggregator pushes
-            // a row for every picked_leaf, so we check for at least
-            // one row whose status is NOT failed-due-to-missing.
-            const haveSomeRealOutput = aggregate.specialist_outputs.some(
-              (r) => r.status === "completed" || r.status === "skipped",
-            );
-            if (haveSomeRealOutput) {
+            // Decide whether to aggregate based on ON-DISK EVIDENCE:
+            // does at least one per-leaf (or per-shard) output FILE
+            // exist? Don't gate on payload status field — a worker
+            // that legitimately wrote `status: "failed"` should still
+            // contribute its row to the aggregate. The previous
+            // status-based gate caused legitimate failed rows to be
+            // dropped and `--continue` to fail with "default outputs
+            // file not found" even when output files existed.
+            const haveSomeOnDiskOutput = anySpecialistOutputOnDisk(brief);
+            if (haveSomeOnDiskOutput) {
+              const aggregate = aggregateSpecialistOutputs(brief);
               atomicWriteFile(outputsFile, JSON.stringify(aggregate, null, 2));
             }
           }

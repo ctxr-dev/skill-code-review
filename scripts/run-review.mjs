@@ -48,6 +48,10 @@ import {
 } from "./lib/worker-replay.mjs";
 
 import { validateTrimOutput } from "./lib/trim-output-validator.mjs";
+import {
+  splitFrontmatter,
+  extractFileGlobs as extractFileGlobsFromYaml,
+} from "./lib/leaf-frontmatter.mjs";
 
 // Apply the B8 referential-integrity check to a worker output. Returns
 // `{ ok: true }` for no-op (output isn't a trim shape) or for a clean
@@ -217,16 +221,29 @@ export function enrichBriefWithSpecialistBodies(brief) {
     const candidates = [resolve(wikiRoot, leaf.path), resolve(REPO_ROOT, leaf.path)];
     for (const candidate of candidates) {
       try {
-        const body = readFileSync(candidate, "utf8");
-        return { ...leaf, body };
+        const text = readFileSync(candidate, "utf8");
+        // PR for #83: parse the frontmatter so we can also surface
+        // activation.file_globs as a structured field. The runner
+        // (writeSpecialistPromptsToDisk → buildDispatchPromptText)
+        // uses file_globs to pre-compute a per-leaf filtered diff,
+        // eliminating SKILL.md's "orchestrator appends git diff per
+        // leaf" pattern that bloated specialist token spend by
+        // pasting the full diff K times when leaves had no globs.
+        // `body` keeps the full file (frontmatter + body) for
+        // backward compatibility with the specialist prompt template
+        // and the existing leaf.body.includes(...) tests.
+        const parsed = splitFrontmatter(text);
+        const fileGlobs = extractFileGlobsFromYaml(parsed?.frontmatter);
+        return { ...leaf, body: text, file_globs: fileGlobs };
       } catch {
         continue;
       }
     }
-    // Leaf body unreadable: pass through without `body`. The orchestrator
-    // can still Read the file from leaf.path as a fallback. We do not
-    // surface this as a fault — that would block a run for one missing
-    // body when 19 of 20 specialists could still dispatch fine.
+    // Leaf body unreadable: pass through without `body` / `file_globs`.
+    // The orchestrator can still use its Read tool against leaf.path
+    // as a fallback. We do not surface this as a fault — that would
+    // block a run for one missing body when 19 of 20 specialists could
+    // still dispatch fine.
     return leaf;
   });
   return {
@@ -236,6 +253,61 @@ export function enrichBriefWithSpecialistBodies(brief) {
       picked_leaves: enrichedLeaves,
     },
   };
+}
+
+// Pre-compute the filtered diff for one specialist at brief-stage time.
+// PR for #83: the orchestrator used to append `git diff` per leaf at
+// dispatch time, branching on globs-vs-no-globs and pasting the full
+// diff K times when leaves had no globs. The runner now spawns git
+// once per leaf and embeds the result inline so the staged prompt is
+// ready to paste.
+//
+// Failure modes (all return a labeled placeholder, never throw):
+//   - missing baseSha/headSha (e.g., unit test): placeholder string.
+//   - git spawn failure (binary missing / killed): stderr-or-error label.
+//   - non-zero exit (bad refs, etc.): exit-code label with stderr.
+//
+// Empty fileGlobs is NOT a failure mode: we deliberately fall back to
+// the full diff so the rare leaves (~1/476) without globs still get
+// coverage. SKILL.md mentions this fallback explicitly.
+function computeFilteredDiff(baseSha, headSha, fileGlobs) {
+  if (!baseSha || !headSha) {
+    // Either the caller didn't ship shas (unit test path) OR the
+    // runner failed to read them from the manifest. Both end up here
+    // with null shas, so the message is generic — the writeSpecialist
+    // prompt path is best-effort and never throws.
+    return "(diff unavailable: base/head shas unavailable)";
+  }
+  // `--no-color` strips ANSI escapes a user's local `color.ui=always`
+  // would otherwise inject (token bloat + harder-to-parse prompt).
+  // `--no-ext-diff` ignores any `diff.external` filter the user has
+  // configured — we want the canonical unified diff, not the user's
+  // pretty-printer (e.g. `delta`).
+  const args = ["diff", "--no-color", "--no-ext-diff", `${baseSha}..${headSha}`];
+  if (Array.isArray(fileGlobs) && fileGlobs.length > 0) {
+    args.push("--");
+    args.push(...fileGlobs);
+  }
+  // No leaf-globs: fall back to the full diff. This keeps coverage for
+  // the rare leaves (~1/476 today) that omit file_globs.
+  const result = spawnSync("git", args, {
+    encoding: "utf8",
+    cwd: REPO_ROOT,
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  if (result.error) {
+    return `(diff unavailable: git spawn failed: ${result.error.message ?? "unknown"})`;
+  }
+  // spawnSync sets `signal` (and leaves `status` null) when the child
+  // is killed by a signal — surface that case explicitly so the prompt
+  // doesn't read "git diff exited null".
+  if (result.signal) {
+    return `(diff unavailable: git diff killed by signal ${result.signal})`;
+  }
+  if (result.status !== 0) {
+    return `(diff unavailable: git diff exited ${result.status}: ${result.stderr?.trim() ?? ""})`;
+  }
+  return result.stdout ?? "";
 }
 
 // PR for #76: run-dir as the source of truth.
@@ -344,6 +416,11 @@ export function defaultDispatchPromptPath(runId, state, leafId) {
 }
 
 // Pure function: build the literal agent-ready prompt text from a brief.
+// No I/O, no side effects — every dynamic value comes from `brief` or
+// `opts`. The caller is responsible for any side-effecting work (e.g.,
+// writeSpecialistPromptsToDisk pre-computes the per-leaf git diff with
+// computeFilteredDiff and passes it in via opts.filteredDiff).
+//
 // Two shapes:
 //   - Standard worker (project-scanner, tree-descender, etc.): one prompt
 //     containing the worker's prompt_body verbatim plus a structured
@@ -352,12 +429,12 @@ export function defaultDispatchPromptPath(runId, state, leafId) {
 //     JSON response.
 //   - dispatch_specialists per-leaf (when `opts.leaf` is provided):
 //     the per-specialist template plus the leaf's id/path/dimensions and
-//     body, the project_profile, the changed_paths, an orchestrator-fill
-//     filtered-diff placeholder, and tool_results. In this shape
-//     outputs_path is included only for audit/orchestration context;
-//     the specialist returns JSON to the orchestrator and does NOT
-//     write to disk directly (the orchestrator aggregates the K
-//     responses and writes once).
+//     body, the project_profile, the changed_paths, the
+//     opts.filteredDiff (or a placeholder), and tool_results. In this
+//     shape outputs_path is included only for audit/orchestration
+//     context; the specialist returns JSON to the orchestrator and
+//     does NOT write to disk directly (the orchestrator aggregates the
+//     K responses and writes once).
 export function buildDispatchPromptText(brief, opts = {}) {
   const promptBody = brief?.worker?.prompt_body ?? "";
   const declaredInputs = brief?.worker?.inputs ?? [];
@@ -370,6 +447,17 @@ export function buildDispatchPromptText(brief, opts = {}) {
     const projectProfile = inputs.project_profile ?? {};
     const changedPaths = Array.isArray(inputs.changed_paths) ? inputs.changed_paths : [];
     const toolResults = Array.isArray(inputs.tool_results) ? inputs.tool_results : [];
+    const fileGlobs = Array.isArray(leaf.file_globs) ? leaf.file_globs : [];
+    // PR for #83: the caller (writeSpecialistPromptsToDisk) pre-computes
+    // the per-leaf filtered diff using the leaf's
+    // `activation.file_globs[]` and passes it in via opts.filteredDiff.
+    // The orchestrator no longer appends anything — the prompt is fully
+    // ready to paste. When the caller didn't ship a diff (e.g., a unit
+    // test that doesn't spawn git), we emit a placeholder so the test
+    // still has a stable section header to assert against.
+    const filteredDiff = typeof opts.filteredDiff === "string"
+      ? opts.filteredDiff
+      : "(diff unavailable: caller did not pre-compute the per-leaf diff)";
     return [
       promptBody,
       "",
@@ -377,6 +465,7 @@ export function buildDispatchPromptText(brief, opts = {}) {
       `id = ${leaf.id ?? ""}`,
       `path = ${leaf.path ?? ""}`,
       `dimensions = ${JSON.stringify(leaf.dimensions ?? [])}`,
+      `file_globs = ${JSON.stringify(fileGlobs)}`,
       "",
       "--- LEAF BODY ---",
       String(leaf.body ?? ""),
@@ -387,15 +476,8 @@ export function buildDispatchPromptText(brief, opts = {}) {
       "--- CHANGED PATHS ---",
       JSON.stringify(changedPaths, null, 2),
       "",
-      // The runner does NOT pre-compute a per-leaf filtered diff —
-      // that would require reading each leaf's `activation.file_globs`
-      // from frontmatter at brief-build time (a follow-up; tracked
-      // separately). The orchestrator MUST append the filtered diff
-      // below this header before dispatching the Agent. SKILL.md's
-      // dispatch_specialists section names this as the one allowed
-      // form of prompt augmentation.
-      "--- FILTERED DIFF (orchestrator appends below) ---",
-      `(Append: git diff <base>..<head> -- <leaf's activation.file_globs from leaf.body frontmatter, or the full diff if no globs>)`,
+      "--- FILTERED DIFF ---",
+      filteredDiff,
       "",
       // Header reflects what the runner actually emits: ALL tool_results
       // unfiltered. The dispatched specialist can filter itself using
@@ -464,11 +546,34 @@ export function writeSpecialistPromptsToDisk(brief) {
   if (brief.state !== "dispatch_specialists") return;
   const pickedLeaves = brief?.inputs?.picked_leaves;
   if (!Array.isArray(pickedLeaves) || pickedLeaves.length === 0) return;
+  // PR for #83: read base_sha / head_sha from the manifest once so the
+  // per-leaf prompt builder can spawn `git diff` with the leaf's globs
+  // and embed the filtered diff inline. Best-effort: if the manifest
+  // is unreadable for any reason, fall through with null shas — the
+  // prompt then carries a "(diff unavailable)" placeholder rather
+  // than blocking the run.
+  let baseSha = null;
+  let headSha = null;
+  try {
+    const storageRoot = resolveStorageRoot();
+    const manifest = readManifest(brief.run_id, { storageRoot });
+    if (manifest) {
+      baseSha = manifest.base_sha ?? null;
+      headSha = manifest.head_sha ?? null;
+    }
+  } catch {
+    // Best-effort; staged prompt still ships, just with a placeholder.
+  }
   for (const leaf of pickedLeaves) {
     if (!leaf || typeof leaf.id !== "string") continue;
     const promptPath = defaultDispatchPromptPath(brief.run_id, brief.state, leaf.id);
     if (!promptPath) continue;
-    const text = buildDispatchPromptText(brief, { leaf });
+    // Pre-compute the per-leaf filtered diff here (the side-effecting
+    // call site) and pass it in via opts.filteredDiff so
+    // buildDispatchPromptText stays pure.
+    const fileGlobs = Array.isArray(leaf.file_globs) ? leaf.file_globs : [];
+    const filteredDiff = computeFilteredDiff(baseSha, headSha, fileGlobs);
+    const text = buildDispatchPromptText(brief, { leaf, filteredDiff });
     atomicWriteFile(promptPath, text);
   }
 }

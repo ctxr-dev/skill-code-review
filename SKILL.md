@@ -34,15 +34,16 @@ while true; do
 
   if [ "$STATE" = "dispatch_specialists" ]; then
     # Specialist dispatch is a fan-out: K leaves, K parallel Agents.
-    # --print-dispatch-prompt requires --leaf-id in this state. The
-    # orchestrator must also append the filtered diff per leaf — see
-    # the "Special case" section below for the full pattern.
+    # --print-dispatch-prompt requires --leaf-id in this state.
+    # The runner has already pre-computed the per-leaf filtered diff
+    # and embedded it inline in each per-leaf prompt; see the
+    # "Special case" section below for the full pattern.
     BRIEF_PATH="$RUN_DIR/workers/$STATE-brief.json"
     for LEAF_ID in $(jq -r '.inputs.picked_leaves[].id' "$BRIEF_PATH"); do
       PROMPT=$(node scripts/run-review.mjs --print-dispatch-prompt --run-id "$RUN_ID" --leaf-id "$LEAF_ID")
-      # ... append filtered diff for this leaf, dispatch K Agents in ONE
-      # parallel message, aggregate K JSON responses into specialist_outputs[],
-      # write to $(jq -r .outputs_path "$BRIEF_PATH"). See full pattern below.
+      # ... dispatch K Agents in ONE parallel message with $PROMPT verbatim,
+      # aggregate K JSON responses into specialist_outputs[], write to
+      # $(jq -r .outputs_path "$BRIEF_PATH"). See full pattern below.
     done
   else
     # The runner has pre-staged the agent prompt at
@@ -73,25 +74,20 @@ fi
 
 #### Special case: `STATE === "dispatch_specialists"`
 
-The runner stages K per-leaf prompts at `$RUN_DIR/workers/dispatch_specialists-prompt-<leaf-id>.md` — one per picked specialist. Each per-leaf prompt already contains the leaf body, project profile, changed paths, and tool results. Dispatch K Agents in **one parallel message** (K Agent tool calls in a single LLM turn). Each Agent runs blind (no specialist sees another's output).
+The runner stages K per-leaf prompts at `$RUN_DIR/workers/dispatch_specialists-prompt-<leaf-id>.md` — one per picked specialist. Each per-leaf prompt already contains the leaf body, project profile, changed paths, tool results, **and the pre-computed filtered diff for that leaf's `activation.file_globs[]`** (issue #83). For the rare leaf (~1/476 in the corpus today) that omits `file_globs`, the runner falls back to embedding the full diff so coverage is preserved — the orchestrator does not need to detect or branch on this. Dispatch K Agents in **one parallel message** (K Agent tool calls in a single LLM turn). Each Agent runs blind (no specialist sees another's output).
 
-**One required augmentation:** the staged per-leaf prompt has a `--- FILTERED DIFF (orchestrator appends below) ---` section. The runner does not pre-compute per-leaf diffs (that would require parsing each leaf's `activation.file_globs` from frontmatter at brief-build time; tracked separately). Before dispatching, append the filtered diff body for each specialist:
+**No augmentation.** The staged per-leaf prompt is complete and ready to paste:
 
 ```bash
 # Get the picked leaf ids from the on-disk brief.
 LEAF_IDS=$(jq -r '.inputs.picked_leaves[].id' "$RUN_DIR/workers/dispatch_specialists-brief.json")
-BASE_SHA=$(jq -r .base_sha "$RUN_DIR/manifest.json")
-HEAD_SHA=$(jq -r .head_sha "$RUN_DIR/manifest.json")
 
 # For each leaf id:
 #   1. PROMPT=$(node scripts/run-review.mjs --print-dispatch-prompt --run-id "$RUN_ID" --leaf-id "$LEAF_ID")
-#   2. Determine the leaf's activation.file_globs from leaf.body (which is
-#      already in the prompt). If the leaf has globs, run:
-#        DIFF=$(git diff "$BASE_SHA".."$HEAD_SHA" -- <globs...>)
-#      Otherwise (no globs), use the full diff:
-#        DIFF=$(git diff "$BASE_SHA".."$HEAD_SHA")
-#   3. Concatenate: FULL_PROMPT="$PROMPT"$'\n'"$DIFF"
-#   4. Pass FULL_PROMPT as the Agent tool call's prompt.
+#   2. Pass $PROMPT verbatim as the Agent tool call's prompt. No
+#      concatenation, no `git diff`, no shell glue. The runner has
+#      already embedded the filtered diff inline under
+#      `--- FILTERED DIFF ---`.
 
 # Dispatch K Agents in ONE message (K parallel Agent tool calls).
 # Aggregate the K JSON responses into:
@@ -100,7 +96,7 @@ HEAD_SHA=$(jq -r .head_sha "$RUN_DIR/manifest.json")
 # Then --continue.
 ```
 
-The filtered-diff append is **the only allowed form of prompt augmentation.** Every other piece of context — the leaf body, project profile, tool results, response contract — is already in the staged prompt. Do not add anything else.
+Every piece of context — the leaf body, project profile, changed paths, filtered diff, tool results, response contract — is already in the staged prompt. **Do not concatenate, do not add a fresh `git diff`, do not augment.** If you find yourself running `git diff` during a specialist dispatch, you are on the wrong path.
 
 **Do NOT** dispatch a single Agent for `dispatch_specialists` — you would be re-introducing the coordinator-layer opacity that the audit in #70 (divergence #3) surfaced. The runner cannot tell from the JSON output alone whether you ran K Agents or simulated K specialists in one mind. Run K real Agents in one parallel-tool-call message.
 

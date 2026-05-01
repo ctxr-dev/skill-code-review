@@ -570,8 +570,12 @@ test("--print-pending-leaf-ids and --print-agent-shim-prompt: end-to-end CLI con
   assert.notEqual(missingLeaf.status, 0, "--print-agent-shim-prompt without --leaf-id must hard-fail");
 
   // Restore manifest to a non-dispatch_specialists state, then assert
-  // --print-pending-leaf-ids hard-fails with a state-mismatch error
-  // (defense against stale-brief reads on advanced runs).
+  // BOTH --print-pending-leaf-ids AND --print-agent-shim-prompt
+  // hard-fail with a state-mismatch error. Defense against
+  // stale-workers/-files reads on advanced runs: workers/* is retained
+  // after the FSM advances, so a CLI that didn't validate the manifest
+  // could silently emit pending ids or shim text from a finished run
+  // and mislead an orchestrator into re-dispatching out of phase.
   const restored = { ...realManifest, current_state: "scan_project" };
   writeFileSync(manifestPath, JSON.stringify(restored));
   const wrongState = spawnSync(
@@ -585,4 +589,17 @@ test("--print-pending-leaf-ids and --print-agent-shim-prompt: end-to-end CLI con
   const wrongStatePayload = JSON.parse(wrongState.stdout);
   assert.match(wrongStatePayload.message, /dispatch_specialists/);
   assert.match(wrongStatePayload.message, /scan_project/);
+
+  // --print-agent-shim-prompt observes the same gate: even with a
+  // valid leaf-id and a staged prompt file on disk, it must hard-fail
+  // when manifest.current_state != dispatch_specialists.
+  const wrongStateShim = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-agent-shim-prompt", "--run-id", runId, "--leaf-id", "cli-alpha"],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.notEqual(wrongStateShim.status, 0, "--print-agent-shim-prompt on a non-dispatch_specialists state must hard-fail");
+  const wrongStateShimPayload = JSON.parse(wrongStateShim.stdout);
+  assert.match(wrongStateShimPayload.message, /dispatch_specialists/);
+  assert.match(wrongStateShimPayload.message, /scan_project/);
 });

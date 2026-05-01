@@ -683,7 +683,18 @@ function parseLeafIdAndShardIdx({ leafIdArg, shardIdxArg, cliName }) {
   if (typeof leafIdArg !== "string" || leafIdArg.length === 0) {
     fail(`${cliName}: --leaf-id is required`);
   }
-  const leafSuffixMatch = leafIdArg.match(/^([a-z][a-z0-9-]*?)--(\d+)$/);
+  // Split off the optional `--<digits>` shard suffix without
+  // assuming what the leaf-id itself looks like. isValidLeafId
+  // (called by the downstream CLI handlers) is the single source
+  // of truth for what a base leaf-id may contain. The previous
+  // regex required the base to start with `[a-z]`, which silently
+  // failed to parse digit-leading sharded ids even though
+  // isValidLeafId allows them. Use a generic non-greedy split and
+  // delegate validation. The non-greedy `.+?` favours the SHORTEST
+  // base, so an input like `a--3` splits as base="a", shard=3 (not
+  // base="a--3" with no shard) — the right move because base ids
+  // ending in `--<digits>` are explicitly rejected by isValidLeafId.
+  const leafSuffixMatch = leafIdArg.match(/^(.+?)--(\d+)$/);
   if (shardIdxArg !== undefined) {
     if (typeof shardIdxArg !== "string" || !/^\d+$/.test(shardIdxArg)) {
       fail(
@@ -2556,7 +2567,7 @@ async function main() {
     // or the file was removed.
     if (promptPath === null) {
       fail(
-        `--print-dispatch-prompt: invalid --leaf-id "${resolvedLeafId}" / --shard-idx ${resolvedShardIdx} for state "dispatch_specialists" (leaf-id must match ^[a-z][a-z0-9-]*$ AND must not end in --<digits> [reserved for shard ids; pass shard via --shard-idx]; shard-idx when present must be a non-negative integer).`,
+        `--print-dispatch-prompt: invalid --leaf-id "${resolvedLeafId}" / --shard-idx ${resolvedShardIdx} for state "dispatch_specialists" (leaf-id must be kebab-case ASCII matching ^[a-z0-9]+(-[a-z0-9]+)*$ — lowercase letters and digits, single hyphens between segments, no leading/trailing hyphens, no consecutive hyphens — AND must not end in --<digits> [reserved for shard ids; pass shard via --shard-idx]; shard-idx when present must be a non-negative integer).`,
         { run_id: runId, current_state: currentState, leaf_id: resolvedLeafId, shard_idx: resolvedShardIdx },
       );
     }
@@ -2719,6 +2730,28 @@ async function main() {
     if (typeof leafId !== "string" || leafId.length === 0) {
       fail("--print-agent-shim-prompt requires --leaf-id <id>");
     }
+    // Validate the run is ACTUALLY paused on dispatch_specialists,
+    // not just that workers/ files happen to exist. Workers files
+    // are retained on disk after the FSM advances; without the
+    // manifest check, this mode could silently emit a shim pointing
+    // at stale prompts/outputs from an earlier review pass and
+    // mislead the orchestrator into re-dispatching specialists for
+    // a finished run. Mirrors the same gate used by
+    // --print-pending-leaf-ids.
+    const storageRoot = resolveStorageRoot();
+    const manifest = readManifest(runId, { storageRoot });
+    if (!manifest) {
+      fail(
+        `--print-agent-shim-prompt: no manifest found for run-id "${runId}".`,
+        { run_id: runId },
+      );
+    }
+    if (manifest.current_state !== "dispatch_specialists") {
+      fail(
+        `--print-agent-shim-prompt: run "${runId}" is in state "${manifest.current_state ?? "unknown"}" (status: ${manifest.status ?? "unknown"}); the run must be paused on dispatch_specialists.`,
+        { run_id: runId, current_state: manifest.current_state ?? null, status: manifest.status ?? null },
+      );
+    }
     // The leaf-id may encode the shard via `<leaf>--<idx>` (the
     // format --print-pending-leaf-ids emits — orchestrator pipes it
     // through verbatim) OR the caller can pass --shard-idx
@@ -2749,7 +2782,7 @@ async function main() {
 // the per-leaf prompt + output paths, and emits the canonical shim text.
 function printShimForParsedId(runId, leafId, shardIdx) {
   if (!isValidLeafId(leafId)) {
-    fail(`--print-agent-shim-prompt: invalid --leaf-id "${leafId}" (must match ^[a-z][a-z0-9-]*$ AND must not end in --<digits>; that suffix is reserved for shard ids).`);
+    fail(`--print-agent-shim-prompt: invalid --leaf-id "${leafId}" (must be kebab-case ASCII matching ^[a-z0-9]+(-[a-z0-9]+)*$ — lowercase letters and digits, single hyphens between segments, no leading/trailing hyphens, no consecutive hyphens — AND must not end in --<digits>; that suffix is reserved for shard ids).`);
   }
   if (shardIdx !== null && (!Number.isInteger(shardIdx) || shardIdx < 0)) {
     fail(`--print-agent-shim-prompt: invalid --shard-idx "${shardIdx}" (must be a non-negative integer).`);

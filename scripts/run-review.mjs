@@ -1288,10 +1288,40 @@ export function anySpecialistOutputOnDisk(brief) {
     if (shards === null) {
       const p = defaultSpecialistOutputPath(runId, leaf.id);
       if (p && existsSync(p)) return true;
-    } else {
+      continue;
+    }
+    if (shards.length > 0) {
       for (const idx of shards) {
         const p = defaultSpecialistOutputPath(runId, leaf.id, idx);
         if (p && existsSync(p)) return true;
+      }
+      continue;
+    }
+    // shards === []: no prompts staged for this leaf. In normal
+    // operation cleanupStaleLeafArtifacts (run at the start of each
+    // staging pass) would have wiped outputs alongside prompts, so
+    // there should be nothing to find here. But that cleanup is
+    // best-effort (rmSync errors are swallowed), and a partial-staging
+    // failure could leave outputs behind without prompts. Without
+    // this branch, anySpecialistOutputOnDisk would return false in
+    // that corruption case, the --continue auto-aggregation
+    // fallback would not run, and the user would see a confusing
+    // "default outputs file not found" error even though per-leaf
+    // outputs exist on disk. Sweep the workers/ dir for any
+    // canonical or shard-suffixed output for this leaf — if any
+    // exists, return true so the aggregator runs and surfaces the
+    // missing-prompt rows as failed (the right diagnostic signal).
+    const canonicalOutputPath = defaultSpecialistOutputPath(runId, leaf.id);
+    if (canonicalOutputPath && existsSync(canonicalOutputPath)) return true;
+    const samplePromptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leaf.id);
+    if (!samplePromptPath) continue;
+    const dir = dirname(samplePromptPath);
+    const entries = listWorkersDir(dir);
+    const outputPrefix = `dispatch_specialists-output-${leaf.id}--`;
+    for (const ent of entries) {
+      if (ent.startsWith(outputPrefix) && ent.endsWith(".json")
+          && /^\d+$/.test(ent.slice(outputPrefix.length, -".json".length))) {
+        return true;
       }
     }
   }

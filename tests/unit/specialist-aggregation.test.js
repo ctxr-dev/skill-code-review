@@ -686,6 +686,39 @@ test("discoverLeafShards: contiguous-range expansion fills gaps so the aggregato
   }
 });
 
+test("anySpecialistOutputOnDisk: returns true when only outputs (no prompts) exist on disk (cleanup-failure corruption recovery)", async () => {
+  // Closes the "--continue dead end" reported in round 29:
+  // cleanupStaleLeafArtifacts is best-effort (rmSync I/O errors are
+  // swallowed). A pathological re-stage could remove the prompt
+  // files but fail to remove the corresponding output files,
+  // leaving outputs without prompts. Before the round-29 fix,
+  // anySpecialistOutputOnDisk returned false in that case (because
+  // discoverLeafShards returns [] when no prompts exist), the
+  // --continue auto-aggregation fallback didn't run, and the user
+  // saw "default outputs file not found" even though per-leaf
+  // outputs were sitting in workers/ on disk.
+  //
+  // The fix: when shards is [], sweep workers/ for any
+  // canonical-or-shard-suffixed output for the leaf. If any exists,
+  // return true so the aggregator runs and surfaces the
+  // missing-prompt failed rows (the right diagnostic signal).
+  const { anySpecialistOutputOnDisk } = await import("../../scripts/run-review.mjs");
+  const { runId, cleanup } = freshRun();
+  try {
+    // Plant output files for two leaves WITHOUT planting prompts —
+    // simulates the cleanup-partial-failure case where outputs
+    // survived removal but prompts were successfully removed.
+    writeOutput(runId, "stranded-canonical", null, specialistRow("stranded-canonical"));
+    writeOutput(runId, "stranded-sharded", 0, specialistRow("stranded-sharded"));
+    writeOutput(runId, "stranded-sharded", 1, specialistRow("stranded-sharded"));
+    // No prompts written: discoverLeafShards returns [] for both.
+    const result = anySpecialistOutputOnDisk(brief(runId, ["stranded-canonical", "stranded-sharded"]));
+    assert.equal(result, true, "outputs without prompts must still surface as on-disk evidence");
+  } finally {
+    cleanup();
+  }
+});
+
 test("aggregateSpecialistOutputs: stale output without staged prompt is treated as failed (prompt-files-as-truth)", () => {
   // Closes a subtle masking bug. cleanupStaleLeafArtifacts wipes
   // both prompt and output files for the leaf at the start of each

@@ -235,6 +235,56 @@ test("aggregateSpecialistOutputs: stamps id authoritatively even if worker wrote
   }
 });
 
+test("aggregateSpecialistOutputs: non-object JSON payload (null, array, scalar) surfaces as failed (#93 round-5)", () => {
+  // A worker that writes a syntactically-valid JSON value that isn't
+  // an object — `null`, `42`, `[1,2,3]` — must NOT crash the aggregator
+  // (object-spread on null throws at runtime) and must NOT be silently
+  // treated as a completed row. The aggregator emits a failed row with
+  // skip_reason naming what was actually written.
+  const { runId, cleanup } = freshRun();
+  try {
+    for (const [leafId, raw] of [
+      ["null-payload-leaf", "null"],
+      ["array-payload-leaf", "[1,2,3]"],
+      ["scalar-payload-leaf", "42"],
+    ]) {
+      writePrompt(runId, leafId);
+      const path = defaultSpecialistOutputPath(runId, leafId);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, raw);
+    }
+    const out = aggregateSpecialistOutputs(brief(runId, ["null-payload-leaf", "array-payload-leaf", "scalar-payload-leaf"]));
+    assert.equal(out.specialist_outputs.length, 3);
+    for (const row of out.specialist_outputs) {
+      assert.equal(row.status, "failed");
+      assert.match(row.skip_reason, /not a JSON object/);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
+test("aggregateSpecialistOutputs: shard with invalid status (typo) is normalised to failed (#93 round-5)", () => {
+  // A worker that writes status="weird-status" must NOT cause the
+  // merged leaf row to silently slip through as completed. The
+  // aggregator normalises any out-of-vocabulary status to failed
+  // and records what the worker actually wrote in skip_reason.
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "typo-status-leaf", 0);
+    writePrompt(runId, "typo-status-leaf", 1);
+    writeOutput(runId, "typo-status-leaf", 0, specialistRow("typo-status-leaf", { status: "completed" }));
+    writeOutput(runId, "typo-status-leaf", 1, specialistRow("typo-status-leaf", { status: "weird-status" }));
+    const out = aggregateSpecialistOutputs(brief(runId, ["typo-status-leaf"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.status, "failed");
+    assert.match(row.skip_reason, /weird-status/);
+  } finally {
+    cleanup();
+  }
+});
+
 test("aggregateSpecialistOutputs: unparseable per-leaf JSON surfaces in skip_reason", () => {
   const { runId, cleanup } = freshRun();
   try {

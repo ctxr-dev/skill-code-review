@@ -1071,16 +1071,59 @@ function readSpecialistOutputOrFail(outputPath, leafId, shardIdx) {
         : `shard ${shardIdx} output unparseable: ${err.message}`,
     };
   }
+  // Reject non-object payloads (null, arrays, scalars). Object-spread
+  // on null/scalars throws at runtime; arrays would spread as numeric
+  // keys and collapse the schema. Treat malformed shape as a failed
+  // row so aggregation never crashes on bad worker output.
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      id: leafId,
+      status: "failed",
+      runtime_ms: 0,
+      tokens_in: 0,
+      tokens_out: 0,
+      findings: [],
+      skip_reason: shardIdx === null
+        ? `per-leaf output is not a JSON object (got ${parsed === null ? "null" : Array.isArray(parsed) ? "array" : typeof parsed})`
+        : `shard ${shardIdx} output is not a JSON object (got ${parsed === null ? "null" : Array.isArray(parsed) ? "array" : typeof parsed})`,
+    };
+  }
   // Stamp the leaf id authoritatively — the worker may have written a
   // different id (e.g. copy-paste mistake). The id in the report MUST
   // match the picked_leaves[*].id the runner staged.
   return { ...parsed, id: leafId };
 }
 
+// Status normalisation: the FSM's response_schema only accepts
+// `completed` / `failed` / `skipped`. A worker that wrote anything
+// else (typo, schema drift) must be treated as failed so aggregation
+// can't silently launder malformed shard outputs into a completed
+// leaf row. Returns one of the three legal statuses.
+function normaliseShardStatus(rawStatus) {
+  if (rawStatus === "completed" || rawStatus === "failed" || rawStatus === "skipped") {
+    return rawStatus;
+  }
+  return "failed";
+}
+
 function mergeShardedSpecialistOutputs(runId, leafId, shardIndices) {
   const shardRows = shardIndices.map((idx) => {
     const outputPath = defaultSpecialistOutputPath(runId, leafId, idx);
-    return readSpecialistOutputOrFail(outputPath, leafId, idx);
+    const row = readSpecialistOutputOrFail(outputPath, leafId, idx);
+    // Normalise status here so downstream merging and skip_reason
+    // construction sees only legal values. If the worker wrote
+    // status="weird", record the original value in skip_reason so
+    // the report still surfaces what happened.
+    const normalised = normaliseShardStatus(row.status);
+    if (normalised !== row.status) {
+      const detail = `shard ${idx} status "${String(row.status)}" not in {completed, failed, skipped}; treated as failed`;
+      return {
+        ...row,
+        status: "failed",
+        skip_reason: row.skip_reason ? `${row.skip_reason}; ${detail}` : detail,
+      };
+    }
+    return row;
   });
   // Status precedence: any failed → failed; every skipped → skipped;
   // otherwise completed. (A mix of completed and skipped is "completed"

@@ -961,14 +961,17 @@ export function writeSpecialistPromptsToDisk(brief) {
     const fileGlobs = Array.isArray(leaf.file_globs) ? leaf.file_globs : [];
     const filteredDiff = computeFilteredDiff(baseSha, headSha, fileGlobs);
     const shards = shardFilteredDiff(filteredDiff);
-    // Before writing, clean up the opposite shape's stale files so
-    // discoverLeafShards never sees both canonical and sharded
-    // prompts for the same leaf at the same time. This matters when
-    // a run is re-staged with a different shard threshold (e.g.
-    // SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES changed) — without
-    // cleanup, the previous shape's files would silently shadow the
-    // new shape and aggregate/pending-id discovery would read the
-    // wrong set.
+    // Before writing, remove any stale prompt files for this leaf so
+    // discoverLeafShards never sees old and newly staged prompt
+    // layouts at the same time. cleanupStalePromptShape clears the
+    // canonical prompt AND every shard-indexed prompt path for the
+    // leaf (a full sweep, not just the opposite shape — see the long
+    // comment block above the helper for the three failure modes that
+    // motivated this). This matters when a run is re-staged with a
+    // different shard threshold (e.g. SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES
+    // changed) — without cleanup, the previous shape's files would
+    // silently shadow the new shape and aggregate/pending-id discovery
+    // would read the wrong set.
     cleanupStalePromptShape(brief.run_id, leaf.id);
     if (shards.length === 1) {
       // Common case: one prompt at the existing path shape, preserving

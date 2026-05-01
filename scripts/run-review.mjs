@@ -672,13 +672,14 @@ export function defaultDispatchPromptPath(runId, state, leafId, shardIdx = null)
 //     by brief.outputs_path as the location where the worker writes its
 //     JSON response.
 //   - dispatch_specialists per-leaf (when `opts.leaf` is provided):
-//     the per-specialist template plus the leaf's id/path/dimensions and
-//     body, the project_profile, the changed_paths, the
-//     opts.filteredDiff (or a placeholder), and tool_results. In this
-//     shape outputs_path is included only for audit/orchestration
-//     context; the specialist returns JSON to the orchestrator and
-//     does NOT write to disk directly (the orchestrator aggregates the
-//     K responses and writes once).
+//     the per-specialist template plus the leaf's id/path/dimensions/
+//     file_globs and body, the project_profile, the changed_paths, the
+//     opts.filteredDiff (or a placeholder), opts.shard (when sharded),
+//     tool_results, and the per-leaf output path the specialist writes
+//     to. The specialist writes its JSON to opts.outputPath and the
+//     runner aggregates per-leaf outputs into specialist_outputs[] on
+//     --continue (per the per-leaf-output-files refactor); the
+//     specialist does NOT return JSON inline to the orchestrator.
 export function buildDispatchPromptText(brief, opts = {}) {
   const promptBody = brief?.worker?.prompt_body ?? "";
   const declaredInputs = brief?.worker?.inputs ?? [];
@@ -2345,11 +2346,20 @@ async function main() {
       );
     }
     const pickedLeaves = brief?.inputs?.picked_leaves;
-    if (!Array.isArray(pickedLeaves) || pickedLeaves.length === 0) {
+    if (!Array.isArray(pickedLeaves)) {
       fail(
-        `--print-pending-leaf-ids: brief has no picked_leaves[] (state may have advanced past dispatch_specialists).`,
+        `--print-pending-leaf-ids: brief has no picked_leaves[] field (state may have advanced past dispatch_specialists).`,
         { run_id: runId },
       );
+    }
+    // Empty picked_leaves is NOT an error — it means there's nothing
+    // to dispatch (which is a legal state for the FSM to reach when
+    // earlier states determined no specialists apply). The orchestrator
+    // loop's exit condition is "BATCH is empty"; emit nothing and
+    // exit 0 so the loop progresses cleanly. Hard-failing here would
+    // wedge an orchestrator that's correctly observing "no work left".
+    if (pickedLeaves.length === 0) {
+      return;
     }
     const pending = [];
     for (const leaf of pickedLeaves) {

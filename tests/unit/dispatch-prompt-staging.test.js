@@ -344,7 +344,7 @@ test("buildDispatchPromptText: per-specialist with opts.shard emits --- THIS SHA
   assert.match(text, /dispatch_specialists-output-lang-javascript--1\.json/);
 });
 
-test("writeSpecialistPromptsToDisk: single-shard output keeps the canonical non-sharded prompt path", () => {
+test("writeSpecialistPromptsToDisk: single-shard output keeps the canonical non-sharded prompt path", async () => {
   // When shardFilteredDiff returns a single shard (the small-diff /
   // placeholder case), writeSpecialistPromptsToDisk emits the
   // non-sharded prompt at the canonical
@@ -358,10 +358,20 @@ test("writeSpecialistPromptsToDisk: single-shard output keeps the canonical non-
   // invocation has no git refs so computeFilteredDiff returns a
   // placeholder string that's always well under threshold. The
   // integration tests downstream cover the real-spawn-git case.
-  const runId = "20991231-235959-ddddddd";
+  // Use a unique random run-id so this test doesn't collide with stale
+  // state from other tests (or other local runs) that might have
+  // staged prompts under the same path. node --test runs files in
+  // parallel; sharing a fixed runId across tests is unsafe.
+  const { randomBytes } = await import("node:crypto");
+  const runId = `20991231-235959-${randomBytes(4).toString("hex").slice(0, 7)}`;
   const state = "dispatch_specialists";
   const leafId = "single-shard-leaf";
   const promptPath = defaultDispatchPromptPath(runId, state, leafId);
+  const shardedPath = defaultDispatchPromptPath(runId, state, leafId, 0);
+  // The whole run-dir is unique per test invocation; cleanup removes it
+  // entirely so neither the canonical nor any shard-suffixed prompts
+  // can leak across runs.
+  const runDir = dirname(dirname(promptPath));
   mkdirSync(dirname(promptPath), { recursive: true });
   try {
     writeSpecialistPromptsToDisk({
@@ -372,9 +382,8 @@ test("writeSpecialistPromptsToDisk: single-shard output keeps the canonical non-
       inputs: { picked_leaves: [{ id: leafId, path: "x/y.md", body: "body", file_globs: ["**/*"] }] },
     });
     assert.ok(existsSync(promptPath), `expected ${promptPath} for single-shard (non-sharded) leaf`);
-    const shardedPath = defaultDispatchPromptPath(runId, state, leafId, 0);
     assert.ok(!existsSync(shardedPath), "single-shard leaf must not produce shard-suffixed prompts");
   } finally {
-    rmSync(promptPath, { force: true });
+    rmSync(runDir, { recursive: true, force: true });
   }
 });

@@ -7,10 +7,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 
 import {
   defaultDispatchPromptPath,
+  defaultSpecialistOutputPath,
   buildDispatchPromptText,
   writeDispatchPromptToDisk,
   writeSpecialistPromptsToDisk,
@@ -423,14 +424,15 @@ test("writeSpecialistPromptsToDisk: re-staging after threshold change removes st
   const canonicalPath = defaultDispatchPromptPath(runId, state, leafId);
   const shardPath0 = defaultDispatchPromptPath(runId, state, leafId, 0);
   const shardPath1 = defaultDispatchPromptPath(runId, state, leafId, 1);
-  // The output files we want PRESERVED across re-staging. Use
-  // path.join for separator portability (the rest of the runner
-  // handles Windows paths explicitly; mixing string concatenation
-  // with "/" here would emit mixed-separator paths on Windows test
-  // runs and break the existsSync assertions below).
+  // The output files we want PRESERVED across re-staging. Use the
+  // runner's exported defaultSpecialistOutputPath helper rather than
+  // hand-rolling the filename: keeps the test in lockstep with the
+  // production path contract so any future rename or layout change
+  // (e.g. dispatch_specialists-output- prefix evolution) propagates
+  // automatically.
   const dir = dirname(canonicalPath);
-  const shardOutputPath0 = join(dir, `dispatch_specialists-output-${leafId}--0.json`);
-  const shardOutputPath1 = join(dir, `dispatch_specialists-output-${leafId}--1.json`);
+  const shardOutputPath0 = defaultSpecialistOutputPath(runId, leafId, 0);
+  const shardOutputPath1 = defaultSpecialistOutputPath(runId, leafId, 1);
   const runDir = dirname(dir);
   mkdirSync(dir, { recursive: true });
   try {

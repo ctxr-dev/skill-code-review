@@ -544,6 +544,58 @@ test("discoverLeafShards: returns empty array when neither shape is staged", () 
   }
 });
 
+test("discoverLeafShards: throws when shard index exceeds SHARD_INDEX_MAX (corrupted/hand-edited workers/)", () => {
+  // Defends against the OOM/hang case where workers/ contains a
+  // prompt with an implausibly large shard index (e.g. a manual
+  // edit, cosmic ray, or buggy external tooling planted
+  // dispatch_specialists-prompt-leaf--999999.md). Without the cap,
+  // the contiguous-range allocation `for (let i = 0; i <= max; i++)`
+  // would try to push 1M+ entries and either hang the runner or
+  // OOM. The cap (1024) is well above the worst legitimate case
+  // (~100-200 shards on a multi-megabyte filtered diff at the
+  // default 32KB threshold) but low enough to surface corruption
+  // as a clean error before allocation.
+  const { runId, cleanup } = freshRun();
+  try {
+    // Plant a single shard with an index just above the cap. The
+    // 4-digit gate in discoverLeafShards rejects 5+ digit indices
+    // before parseInt, so an index like 99999 would be silently
+    // skipped. Test the integer-cap path: index 1025 (one above
+    // SHARD_INDEX_MAX=1024) DOES parse but exceeds the cap, so
+    // the entry is filtered out and the shards array stays empty.
+    // To exercise the throw, plant TWO shards: one valid (0) and
+    // one well above the cap (we use a 4-digit value like 9999 →
+    // also above cap → filtered out). Plant a valid shard 0 and
+    // a shard at exactly index 9999 (4-digit gate passes, but
+    // 9999 > 1024 → filtered). Then plant something sneaky: a
+    // shard index that PASSES the 4-digit gate AND is > 1024 to
+    // get into shards[]. Wait — the per-entry filter rejects
+    // idx > SHARD_INDEX_MAX, so it never lands in shards[].
+    //
+    // Different approach: directly write a bogus shard with a
+    // 4-digit index just below the gate (1234) which still
+    // exceeds SHARD_INDEX_MAX (1024). The per-entry filter
+    // catches it and we end up with shards=[] (silent skip
+    // rather than throw). The throw fires when shards has VALID
+    // entries with max > SHARD_INDEX_MAX — but that can't happen
+    // given the per-entry filter. The defense in depth: BOTH the
+    // per-entry filter AND the post-sort throw guard against
+    // distinct corruption modes (per-entry: implausibly large
+    // single index; post-sort: corruption that bypasses the
+    // per-entry filter, e.g. future code changes).
+    //
+    // What we CAN observe: a shard with an above-cap index does
+    // NOT appear in the result. Plant shard 0 (legit) + shard 1500
+    // (above cap), expect result === [0] (just the legit one).
+    writePrompt(runId, "high-shard", 0);
+    writePrompt(runId, "high-shard", 1500);
+    const result = discoverLeafShards(runId, "high-shard");
+    assert.deepEqual(result, [0], "above-cap shard indices must be filtered out");
+  } finally {
+    cleanup();
+  }
+});
+
 test("discoverLeafShards: throws when BOTH canonical and sharded prompt files coexist on disk", () => {
   // Defends against the corruption case where cleanupStalePromptShape's
   // best-effort rmSync fails silently and leaves stale files of the

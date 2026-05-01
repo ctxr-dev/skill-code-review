@@ -148,3 +148,21 @@ test("shardFilteredDiff: invalid threshold falls back to default", () => {
   const fractional = shardFilteredDiff(text, { threshold: 1.5 });
   assert.equal(fractional.length, 1);
 });
+
+test("shardFilteredDiff: tolerates CRLF line endings (Windows-encoded diffs)", () => {
+  // Repro: a CRLF-encoded diff (legitimate output from Windows
+  // toolchains, or a fixture authored on Windows) would silently fail
+  // every header match because the `...$`-anchored regexes in
+  // parseDiffGitHeader don't match the trailing `\r`. Without CRLF
+  // tolerance, shardFilteredDiff would emit a single shard with no
+  // files[], defeating sharding for the whole leaf. With the fix
+  // (single trailing \r is stripped before regex match), CRLF input
+  // partitions identically to LF input.
+  const lf = makeFileDiff("a.js") + makeFileDiff("b.ts");
+  const crlf = lf.replace(/\n/g, "\r\n");
+  const out = shardFilteredDiff(crlf, { threshold: 1024 * 1024 });
+  assert.equal(out.length, 1);
+  assert.deepEqual(out[0].files, ["a.js", "b.ts"], "files[] must be extracted from CRLF headers");
+  // Round-trip preserved: concatenation across shards equals the input.
+  assert.equal(out.map((s) => s.diffText).join(""), crlf);
+});

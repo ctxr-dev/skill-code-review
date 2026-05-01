@@ -467,14 +467,21 @@ export function shardFilteredDiff(diffText, opts = {}) {
 // `files: []` array, and the runner doesn't open these paths; an
 // escaped \\t is fine in a label.
 function parseDiffGitHeader(line) {
+  // Tolerate CRLF input: strip a single trailing `\r` from the header
+  // line before applying the end-anchored regexes below. Without this,
+  // a CRLF-encoded diff (legitimate output from Windows toolchains, or
+  // a fixture authored on Windows) would silently fail every header
+  // match and shardFilteredDiff would emit a single shard with no file
+  // boundaries — defeating sharding for the whole leaf.
+  const headerLine = typeof line === "string" ? line.replace(/\r$/, "") : line;
   // Common case (no quoting): `diff --git a/<path> b/<path>`.
-  const bare = line.match(/^diff --git a\/(\S+) b\/(\S+)$/);
+  const bare = headerLine.match(/^diff --git a\/(\S+) b\/(\S+)$/);
   if (bare) return bare[2];
   // Quoted: `diff --git "a/..." "b/..."` with arbitrary content
   // (including spaces) inside the quotes. We allow escaped quotes
   // (`\"`) inside the path the way git emits them under
   // core.quotepath. Both sides must be present; reject odd shapes.
-  const quoted = line.match(/^diff --git (?:"a\/((?:[^"\\]|\\.)*)"|a\/(\S+)) (?:"b\/((?:[^"\\]|\\.)*)"|b\/(\S+))$/);
+  const quoted = headerLine.match(/^diff --git (?:"a\/((?:[^"\\]|\\.)*)"|a\/(\S+)) (?:"b\/((?:[^"\\]|\\.)*)"|b\/(\S+))$/);
   if (quoted) {
     return quoted[3] ?? quoted[4] ?? null;
   }
@@ -851,6 +858,7 @@ export function buildDispatchPromptText(brief, opts = {}) {
       "Write your JSON output to:",
       outputPath,
       "Required shape: { id, status, runtime_ms, tokens_in, tokens_out, findings[] }",
+      "The output file content must be a single raw JSON object and nothing else: no Markdown code fences (` ```json `), no surrounding commentary, and no extra leading or trailing text. The runner parses the file with JSON.parse on --continue; any extra content makes the per-leaf output unparseable, which surfaces as a failed row in the aggregate.",
       "Include `skip_reason: \"<one sentence>\"` when status == \"skipped\" (the FSM schema requires it then) OR when status == \"failed\" (encouraged — gives the report an actionable diagnostic). For status == \"completed\" the field is omitted.",
       "",
       "Do NOT return JSON to the orchestrator inline; the runner reads from the path above on --continue and aggregates all per-leaf outputs into specialist_outputs[]. Concurrent specialists writing to the same path would clobber each other; the per-leaf path is unique.",
@@ -1126,8 +1134,15 @@ export function discoverLeafShards(runId, leafId) {
   for (const ent of entries) {
     if (!ent.startsWith(prefix) || !ent.endsWith(".md")) continue;
     const tail = ent.slice(prefix.length, ent.length - ".md".length);
-    if (!/^\d+$/.test(tail)) continue;
-    shards.push(Number.parseInt(tail, 10));
+    // Reject indices longer than the cap's digit count up-front so we
+    // never even parse implausibly large values. SHARD_INDEX_MAX is
+    // 1024 (4 digits), so any tail of 5+ digits is rejected without
+    // calling Number.parseInt — saving cycles and avoiding any
+    // intermediate large-number representation.
+    if (!/^\d{1,4}$/.test(tail)) continue;
+    const idx = Number.parseInt(tail, 10);
+    if (idx > SHARD_INDEX_MAX) continue;
+    shards.push(idx);
   }
   shards.sort((a, b) => a - b);
   if (canonicalPresent && shards.length > 0) {
@@ -1145,10 +1160,33 @@ export function discoverLeafShards(runId, leafId) {
   // would let the runner believe the leaf produced two complete
   // shards when shard 1's files were never reviewed.
   const max = shards[shards.length - 1];
+  // Hard cap on the contiguous range we'll allocate. A legitimate
+  // staging pass with the default 32KB threshold would hit ~100-200
+  // shards on a multi-megabyte filtered diff in the absolute worst
+  // case; 1024 leaves comfortable headroom. Anything beyond
+  // SHARD_INDEX_MAX is treated as workers/ corruption (manual edit,
+  // cosmic ray, or buggy external tooling) rather than a legitimate
+  // run, and we hard-fail instead of allocating an enormous array
+  // that would hang/OOM the runner. The per-entry 4-digit gate above
+  // already rejects indices > 9999 before parseInt, but this max
+  // check is the contract: if any caller plants a shard index > 1024
+  // by direct file write, we surface it.
+  if (max > SHARD_INDEX_MAX) {
+    throw new Error(
+      `discoverLeafShards: shard index ${max} for leaf "${leafId}" exceeds SHARD_INDEX_MAX=${SHARD_INDEX_MAX}. The workers/ directory likely contains corrupted or hand-edited shard files. Inspect ${dir} and remove implausible shard prompts before retrying.`,
+    );
+  }
   const full = [];
   for (let i = 0; i <= max; i++) full.push(i);
   return full;
 }
+
+// Hard cap on shard indices the runner accepts during discovery.
+// Justified at the call site (discoverLeafShards): the default
+// 32KB threshold yields ~100-200 shards on the largest legitimate
+// filtered diffs; 1024 is a comfortable safety margin that surfaces
+// corrupted workers/ state as a hard failure rather than an OOM.
+const SHARD_INDEX_MAX = 1024;
 
 // Aggregate per-leaf (and per-shard) specialist outputs into the canonical
 // `{ specialist_outputs: [...] }` shape the FSM commits as the

@@ -461,8 +461,15 @@ test("--print-pending-leaf-ids and --print-agent-shim-prompt: end-to-end CLI con
   //   - empty pending list exits 0 with empty stdout
   //   - --print-agent-shim-prompt emits the canonical shim text
   //   - bad inputs (missing --run-id, missing --leaf-id) hard-fail
-  const baseSha = "HEAD~1";
-  const headSha = "HEAD";
+  // Synthetic 40-hex refs (matching the pattern other tests in this
+  // file use): the rest of this test fabricates workers/* files
+  // manually rather than driving real workers, so the runner only
+  // needs to record these values, not resolve them as live commits.
+  // Using HEAD~1 here was nondeterministic under shallow clones
+  // (actions/checkout@v4 defaults to fetch-depth=1 in this repo's
+  // CI), where HEAD~1 may not exist and --start would fail.
+  const baseSha = "5555555555555555555555555555555555555555";
+  const headSha = "6666666666666666666666666666666666666666";
   const start = spawnSync(
     process.execPath,
     ["scripts/run-review.mjs", "--start", "--base", baseSha, "--head", headSha],

@@ -56,6 +56,28 @@ test("defaultDispatchPromptPath: rejects malformed leaf-ids (path traversal guar
   );
 });
 
+test("defaultDispatchPromptPath: rejects leaf-ids ending in --<digits> (shard-suffix collision guard)", () => {
+  // A leaf id ending in `--<digits>` would collide on disk with the
+  // shard-suffix scheme: `dispatch_specialists-prompt-foo--1.md`
+  // could be either leaf "foo--1" (non-sharded) OR shard 1 of leaf
+  // "foo". The dispatch prompt-path helper must reject the
+  // ambiguous shape so the corpus authoring rule is enforced
+  // structurally, not just by convention.
+  assert.equal(
+    defaultDispatchPromptPath("20260429-200856-cece84b", "dispatch_specialists", "foo--1"),
+    null,
+  );
+  assert.equal(
+    defaultDispatchPromptPath("20260429-200856-cece84b", "dispatch_specialists", "lang-typescript--12"),
+    null,
+  );
+  // Single-hyphen ids are still fine.
+  assert.ok(
+    defaultDispatchPromptPath("20260429-200856-cece84b", "dispatch_specialists", "lang-typescript"),
+    "single-hyphen leaf-id should be accepted",
+  );
+});
+
 test("defaultDispatchPromptPath: dispatch_specialists is strictly per-leaf (rejects missing leaf-id)", () => {
   // Regression for the second-round Copilot review on PR #80: previously a
   // call with state="dispatch_specialists" and no/empty leafId fell back

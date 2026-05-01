@@ -264,6 +264,26 @@ test("aggregateSpecialistOutputs: non-object JSON payload (null, array, scalar) 
   }
 });
 
+test("aggregateSpecialistOutputs: non-sharded leaf with invalid status is normalised to failed (#93 round-6)", () => {
+  // Symmetric to the sharded "typo status" test above. A non-sharded
+  // worker that writes status="weird-status" must NOT propagate the
+  // invalid value into specialist_outputs[] — the FSM's response_schema
+  // would reject post-hoc. Aggregation flattens to failed and records
+  // the typo in skip_reason.
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "non-shard-typo-leaf");
+    writeOutput(runId, "non-shard-typo-leaf", null, specialistRow("non-shard-typo-leaf", { status: "weird-status" }));
+    const out = aggregateSpecialistOutputs(brief(runId, ["non-shard-typo-leaf"]));
+    assert.equal(out.specialist_outputs.length, 1);
+    const row = out.specialist_outputs[0];
+    assert.equal(row.status, "failed");
+    assert.match(row.skip_reason, /weird-status/);
+  } finally {
+    cleanup();
+  }
+});
+
 test("aggregateSpecialistOutputs: shard with invalid status (typo) is normalised to failed (#93 round-5)", () => {
   // A worker that writes status="weird-status" must NOT cause the
   // merged leaf row to silently slip through as completed. The

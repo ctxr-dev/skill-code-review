@@ -566,7 +566,7 @@ export function defaultBriefPath(runId, state) {
 // Returns null on invalid input so the caller never composes a bad path.
 export function defaultSpecialistOutputPath(runId, leafId, shardIdx = null) {
   if (typeof runId !== "string" || !isValidRunId(runId)) return null;
-  if (typeof leafId !== "string" || !/^[a-z][a-z0-9-]*$/.test(leafId)) return null;
+  if (!isValidLeafId(leafId)) return null;
   if (shardIdx !== null) {
     if (!Number.isInteger(shardIdx) || shardIdx < 0) return null;
   }
@@ -635,6 +635,25 @@ function isSafeStateSegment(state) {
   return typeof state === "string" && /^[a-z][a-z0-9_]*$/.test(state);
 }
 
+// Validate a leaf-id (kebab-case ASCII per the corpus contract) AND
+// reject ids that would collide with the shard-suffix scheme. The
+// dispatch_specialists prompt/output paths use `--<shardIdx>` as the
+// shard separator (e.g. `dispatch_specialists-prompt-foo--1.md`); a
+// hypothetical leaf-id `foo--1` would map to the same path as shard 1
+// of leaf `foo`, AND the `--leaf-id foo--1` shorthand the orchestrator
+// uses with --print-pending-leaf-ids would be ambiguous (which
+// interpretation does the runner pick?). The cleanest fix is structural:
+// reject leaf-ids whose tail matches `--\d+`. The corpus's existing
+// 476 leaves all use single-hyphen-separated kebab-case (e.g.
+// `lang-typescript`, `sec-owasp-a01-broken-access-control`); none
+// match the forbidden pattern.
+function isValidLeafId(leafId) {
+  if (typeof leafId !== "string") return false;
+  if (!/^[a-z][a-z0-9-]*$/.test(leafId)) return false;
+  if (/--\d+$/.test(leafId)) return false;
+  return true;
+}
+
 export function defaultDispatchPromptPath(runId, state, leafId, shardIdx = null) {
   if (!runId) return null;
   if (!isSafeStateSegment(state)) return null;
@@ -647,7 +666,7 @@ export function defaultDispatchPromptPath(runId, state, leafId, shardIdx = null)
     // contract) so the helper never falls back to the generic
     // "<state>-dispatch-prompt.md" path that writeSpecialistPromptsToDisk
     // does not produce.
-    if (typeof leafId !== "string" || !/^[a-z][a-z0-9-]*$/.test(leafId)) {
+    if (!isValidLeafId(leafId)) {
       return null;
     }
     if (shardIdx !== null) {
@@ -990,7 +1009,22 @@ export function aggregateSpecialistOutputs(brief) {
       // Non-sharded leaf.
       const outputPath = defaultSpecialistOutputPath(runId, leaf.id);
       const row = readSpecialistOutputOrFail(outputPath, leaf.id, null);
-      out.push(row);
+      // Apply the same status normalisation as the sharded path. A
+      // worker that writes status="weird" must NOT propagate that
+      // value into specialist_outputs[] (the FSM's response_schema
+      // would reject it post-hoc); flatten to "failed" with the
+      // typo recorded in skip_reason for audit.
+      const normalised = normaliseShardStatus(row.status);
+      if (normalised !== row.status) {
+        const detail = `worker wrote status "${String(row.status)}"; not in {completed, failed, skipped}; treated as failed`;
+        out.push({
+          ...row,
+          status: "failed",
+          skip_reason: row.skip_reason ? `${row.skip_reason}; ${detail}` : detail,
+        });
+      } else {
+        out.push(row);
+      }
       continue;
     }
     if (shards.length === 0) {
@@ -2496,8 +2530,8 @@ async function main() {
 // Shared body for --print-agent-shim-prompt. Validates inputs, locates
 // the per-leaf prompt + output paths, and emits the canonical shim text.
 function printShimForParsedId(runId, leafId, shardIdx) {
-  if (typeof leafId !== "string" || !/^[a-z][a-z0-9-]*$/.test(leafId)) {
-    fail(`--print-agent-shim-prompt: invalid --leaf-id "${leafId}" (must match ^[a-z][a-z0-9-]*$).`);
+  if (!isValidLeafId(leafId)) {
+    fail(`--print-agent-shim-prompt: invalid --leaf-id "${leafId}" (must match ^[a-z][a-z0-9-]*$ AND must not end in --<digits>; that suffix is reserved for shard ids).`);
   }
   if (shardIdx !== null && (!Number.isInteger(shardIdx) || shardIdx < 0)) {
     fail(`--print-agent-shim-prompt: invalid --shard-idx "${shardIdx}" (must be a non-negative integer).`);

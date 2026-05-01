@@ -32,6 +32,8 @@ This file is the per-specialist prompt template. The `dispatch_specialists` FSM 
 
 ## Output (JSON, single object)
 
+The Markdown fence below is for **display purposes only** in this template. The actual file you write at the per-leaf output path must contain just the raw JSON object (the lines between the fences, NOT the fences themselves and not the language tag). Including the fences in the output file would make `JSON.parse` reject it.
+
 ```json
 {
   "id": "<leaf-id>",

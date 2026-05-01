@@ -544,7 +544,7 @@ test("discoverLeafShards: returns empty array when neither shape is staged", () 
   }
 });
 
-test("discoverLeafShards: filters out above-cap shard indices to prevent OOM allocation (SHARD_INDEX_MAX defense)", () => {
+test("discoverLeafShards: hard-fails when shard index exceeds SHARD_INDEX_MAX (corrupted/hand-edited workers/)", () => {
   // Defends against the OOM/hang case where workers/ contains a
   // prompt with an implausibly large shard index (e.g. a manual
   // edit, cosmic ray, or buggy external tooling planted
@@ -554,24 +554,59 @@ test("discoverLeafShards: filters out above-cap shard indices to prevent OOM all
   // OOM. The cap (SHARD_INDEX_MAX=1024) is well above the worst
   // legitimate case (~100-200 shards on a multi-megabyte filtered
   // diff at the default 32KB threshold) but low enough to surface
-  // corruption as a clean state before allocation.
+  // corruption as a hard error before allocation.
   //
-  // Defense in depth: the per-entry filter (this test) drops the
-  // bogus shard before it lands in shards[]. The post-sort
-  // `max > SHARD_INDEX_MAX` throw inside discoverLeafShards is the
-  // safety net for corruption modes that bypass the per-entry
-  // filter (e.g. a future code change that broadens the regex).
-  // Both guards exist; only one is exercised here because the
-  // per-entry filter fires first on legitimate filesystem state.
+  // Two-tier defense: the per-entry 4-digit regex gate rejects 5+
+  // digit tails (e.g. 99999) before parseInt — that's about avoiding
+  // wasted cycles on absurd strings. The post-sort throw fires on
+  // ANY in-bounds-shape index > SHARD_INDEX_MAX (e.g. 1025-9999).
+  // Both contribute: the gate keeps the parse cheap; the throw
+  // surfaces real corruption loudly rather than silently skipping
+  // shards (silent skip would let the runner aggregate against an
+  // incomplete shard set and produce a misleading "all green" review).
   const { runId, cleanup } = freshRun();
   try {
-    // Plant shard 0 (legit) + shard 1500 (1500 > 1024 = SHARD_INDEX_MAX,
-    // 4-digit so it passes the regex gate). The per-entry idx-cap
-    // check filters 1500 out, so result === [0].
+    // Plant shard 0 (legit) + shard 1500 (4-digit, passes regex gate,
+    // > SHARD_INDEX_MAX → must throw on the post-sort check).
     writePrompt(runId, "high-shard", 0);
     writePrompt(runId, "high-shard", 1500);
-    const result = discoverLeafShards(runId, "high-shard");
-    assert.deepEqual(result, [0], "above-cap shard indices must be filtered out");
+    assert.throws(
+      () => discoverLeafShards(runId, "high-shard"),
+      (err) => {
+        return (
+          err instanceof Error &&
+          /exceeds SHARD_INDEX_MAX/.test(err.message) &&
+          /high-shard/.test(err.message) &&
+          /1500/.test(err.message)
+        );
+      },
+      "above-cap shard indices must hard-fail with a clear corruption error",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("discoverLeafShards: silently ignores 5+ digit shard indices (regex gate is parse-cost only)", () => {
+  // Companion to the SHARD_INDEX_MAX hard-fail above: 5+ digit tails
+  // (e.g. 99999) are filtered out by the regex gate BEFORE parseInt,
+  // so they never land in shards[]. This is parse-cost optimisation,
+  // not corruption defense — corruption defense lives in the
+  // post-sort throw above. Document the asymmetry so a future
+  // reader doesn't mistake the regex gate for the cap enforcement.
+  const { runId, cleanup } = freshRun();
+  try {
+    writePrompt(runId, "absurd-shard", 0);
+    // Plant a prompt with a 6-digit shard suffix. The regex gate
+    // (^\d{1,4}$) rejects this tail, so it never enters shards[].
+    // Note: writePrompt uses defaultDispatchPromptPath which may
+    // refuse or normalise this — write directly to bypass.
+    const path = defaultDispatchPromptPath(runId, "dispatch_specialists", "absurd-shard");
+    const dir = dirname(path);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(`${dir}/dispatch_specialists-prompt-absurd-shard--999999.md`, "<absurd>\n");
+    // Just shard 0 should appear; the 6-digit one is silently dropped.
+    assert.deepEqual(discoverLeafShards(runId, "absurd-shard"), [0]);
   } finally {
     cleanup();
   }

@@ -1137,14 +1137,15 @@ export function discoverLeafShards(runId, leafId) {
     if (!ent.startsWith(prefix) || !ent.endsWith(".md")) continue;
     const tail = ent.slice(prefix.length, ent.length - ".md".length);
     // Reject indices longer than the cap's digit count up-front so we
-    // never even parse implausibly large values. SHARD_INDEX_MAX is
-    // 1024 (4 digits), so any tail of 5+ digits is rejected without
-    // calling Number.parseInt — saving cycles and avoiding any
-    // intermediate large-number representation.
+    // never call Number.parseInt on implausibly long strings.
+    // SHARD_INDEX_MAX is 1024 (4 digits), so any tail of 5+ digits is
+    // ignored. 4-digit values STILL pass into shards[] so the
+    // post-sort `max > SHARD_INDEX_MAX` check can fire and surface
+    // out-of-range shard prompts (e.g. 1025-9999) as a hard error
+    // rather than silently skipping them — workers/ corruption
+    // should be loud, not quiet.
     if (!/^\d{1,4}$/.test(tail)) continue;
-    const idx = Number.parseInt(tail, 10);
-    if (idx > SHARD_INDEX_MAX) continue;
-    shards.push(idx);
+    shards.push(Number.parseInt(tail, 10));
   }
   shards.sort((a, b) => a - b);
   if (canonicalPresent && shards.length > 0) {

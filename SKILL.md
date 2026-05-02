@@ -17,7 +17,7 @@ The runner emits one JSON object per stdout line. Loop until `{"status": "termin
 
 ### On `{"status": "awaiting_worker", "run_id": "<id>", "brief": {...}}`
 
-**The runner has staged everything you need on disk under `<run_dir>/workers/`.** You do not read worker prompt files, you do not compose prompts from `prompt_body` + inputs, and you do not reach for `python3 -c` to parse the brief. Use the `--print-X` CLIs (below) for runner state — `--print-run-dir`, `--print-current-state`, `--print-dispatch-prompt` — and reserve `jq` for the few small leaf reads the loop needs (`.run_id` from `--start`'s envelope, `.inputs.picked_leaves[].id` for the `dispatch_specialists` fan-out, `.outputs_path` if you ever need it directly). Your dispatch loop is:
+**The runner has staged everything you need on disk under `<run_dir>/workers/`.** You do not read worker prompt files, you do not compose prompts from `prompt_body` + inputs, and you do not reach for `python3 -c` to parse the brief. Use the `--print-X` CLIs (below) for runner state — `--print-run-dir`, `--print-current-state`, `--print-dispatch-prompt`, and for `dispatch_specialists` the per-batch `--print-batch-envelope` (preferred) or `--print-pending-leaf-ids` + `--print-agent-shim-prompt` (older). Reserve `jq` for tiny leaf reads of small fields the loop needs (`.run_id` from `--start`'s envelope; `.batch[]` and `.shims[$id]` (with `--arg id "$ID"`) from `--print-batch-envelope`'s output; `.outputs_path` if you ever need it directly). **Do NOT extract `.inputs.picked_leaves[].id` from the brief yourself for the specialist fan-out** — `--print-batch-envelope` already gives you the dispatchable ids and shim prompts in one call, with prompt-existence and gappy-shard handling correctly applied. Your dispatch loop is:
 
 ```bash
 # After --start, capture run_id (one short string) into a SHELL VARIABLE.
@@ -34,21 +34,33 @@ while true; do
 
   if [ "$STATE" = "dispatch_specialists" ]; then
     # Specialist dispatch is a BATCHED fan-out: at most 10 Agents in
-    # flight at any moment (thread-pool model). Each specialist writes
-    # its JSON output to its own per-leaf file; the runner aggregates
-    # on --continue. The orchestrator no longer assembles JSON.
-    # See the "Special case" section below for the full pattern.
+    # flight at any moment (default; configurable up to 50). Each
+    # specialist writes its JSON output to its own per-leaf file; the
+    # runner aggregates on --continue. The orchestrator no longer
+    # assembles JSON. See the "Special case" section below for the
+    # full pattern. The PREFERRED form uses --print-batch-envelope to
+    # collapse the per-batch CLI calls into one Node invocation.
     while true; do
-      BATCH=$(node scripts/run-review.mjs --print-pending-leaf-ids --run-id "$RUN_ID")
-      [ -z "$BATCH" ] && break
-      # Dispatch one Agent per id in $BATCH (≤10 ids per call).
+      # IMPORTANT: check the runner's exit status. On failure (e.g.
+      # corruption-detection throw, manifest-state mismatch),
+      # --print-batch-envelope writes a JSON error payload to
+      # stdout and exits non-zero. Without the `||` guard, the
+      # error JSON would be parsed as if it were the envelope and
+      # the loop would either hang or dispatch garbage.
+      ENV=$(node scripts/run-review.mjs --print-batch-envelope --run-id "$RUN_ID") \
+        || { echo "envelope call failed: $ENV" >&2; exit 1; }
+      # Envelope is JSON: { batch, shims, remaining_after, pending_now,
+      # total_dispatch_units }. Empty batch [] → exit the loop.
+      BATCH_LEN=$(echo "$ENV" | jq -r '.batch | length')
+      [ "$BATCH_LEN" -eq 0 ] && break
+      # Dispatch one Agent per id in .batch (≤10 ids per call).
       # All Agents in a single orchestrator message run in parallel.
-      # Each Agent's prompt is the small shim text from
-      # --print-agent-shim-prompt; the Agent reads the full per-leaf
-      # prompt from disk and writes its JSON output to the per-leaf
-      # output path (both stated inside the shim).
-      for ID in $BATCH; do
-        SHIM=$(node scripts/run-review.mjs --print-agent-shim-prompt --run-id "$RUN_ID" --leaf-id "$ID")
+      # Each Agent's prompt is the matching shim text from .shims;
+      # the Agent reads the full per-leaf prompt from disk and writes
+      # its JSON output to the per-leaf output path (both stated
+      # inside the shim).
+      for ID in $(echo "$ENV" | jq -r '.batch[]'); do
+        SHIM=$(echo "$ENV" | jq -r --arg id "$ID" '.shims[$id]')
         # ... dispatch Agent with $SHIM as the prompt parameter ...
       done
       # After all batch Agents return, loop to fetch the next batch.
@@ -78,7 +90,7 @@ else
 fi
 ```
 
-**The brief is at `$RUN_DIR/workers/$STATE-brief.json`** if you need to inspect any field directly (`outputs_path`, `worker.response_schema`, etc.). For non-`dispatch_specialists` states, the dispatch prompt is at `$RUN_DIR/workers/$STATE-dispatch-prompt.md` — the literal text to feed to the Agent tool. **For `dispatch_specialists` the prompt path differs** (it's per-leaf and possibly per-shard) and the orchestrator drives a batched loop via `--print-pending-leaf-ids` / `--print-agent-shim-prompt` rather than reading the brief's `picked_leaves[]` directly; see the "Special case" subsection below for the full pattern. **Both brief and prompt are canonical**; stdout is a redundant convenience.
+**The brief is at `$RUN_DIR/workers/$STATE-brief.json`** if you need to inspect any field directly (`outputs_path`, `worker.response_schema`, etc.). For non-`dispatch_specialists` states, the dispatch prompt is at `$RUN_DIR/workers/$STATE-dispatch-prompt.md` — the literal text to feed to the Agent tool. **For `dispatch_specialists` the prompt path differs** (it's per-leaf and possibly per-shard) and the orchestrator drives a batched loop via `--print-batch-envelope` (preferred) or the older `--print-pending-leaf-ids` / `--print-agent-shim-prompt` pair, rather than reading the brief's `picked_leaves[]` directly; see the "Special case" subsection below for the full pattern. **Both brief and prompt are canonical**; stdout is a redundant convenience.
 
 #### Special case: `STATE === "dispatch_specialists"` — batched fan-out
 
@@ -88,26 +100,39 @@ Specialist dispatch is a fan-out with three runner-side guarantees that change h
 2. **Per-leaf output files.** Each specialist Agent writes its JSON output to `$RUN_DIR/workers/dispatch_specialists-output-<leaf-id>.json` (or `dispatch_specialists-output-<leaf-id>--<shard-idx>.json` for shards). The runner aggregates all per-leaf outputs into `specialist_outputs[]` on `--continue`. **The orchestrator does not assemble JSON.**
 3. **Concurrency cap of 10.** The runner exposes pending work via `--print-pending-leaf-ids` capped at `--batch-size 10`. The orchestrator dispatches up to 10 Agents in one parallel message, waits for the batch, then asks for the next batch. K=20 → 2 batches; K=30 → 3. **You never have more than 10 specialist Agents in flight.**
 
-The orchestrator's loop:
+The orchestrator's loop, **preferred form** using `--print-batch-envelope` (one Node call per batch returns batch ids, shim prompts, AND progress in a single JSON envelope):
 
 ```bash
 while true; do
-  BATCH=$(node scripts/run-review.mjs --print-pending-leaf-ids --run-id "$RUN_ID")
-  [ -z "$BATCH" ] && break
-  # For each id in $BATCH (newline-separated, ≤10 ids), dispatch ONE
-  # Agent. All Agents in a single orchestrator message run in parallel.
-  # Each Agent's prompt is the tiny (≤200-token) shim from
-  # --print-agent-shim-prompt; the Agent reads the staged dispatch
-  # prompt from disk and writes its JSON output to the per-leaf
-  # output path. Both paths are stated inside the shim text.
-  for ID in $BATCH; do
-    SHIM=$(node scripts/run-review.mjs --print-agent-shim-prompt --run-id "$RUN_ID" --leaf-id "$ID")
+  # IMPORTANT: check the runner's exit status. On failure
+  # (corruption-detection throw, manifest-state mismatch, etc.),
+  # --print-batch-envelope writes a JSON error payload to stdout
+  # and exits non-zero. Without the `||` guard, the error JSON
+  # would be parsed as if it were a normal envelope and the loop
+  # would dispatch garbage or hang.
+  ENV=$(node scripts/run-review.mjs --print-batch-envelope --run-id "$RUN_ID") \
+    || { echo "envelope call failed: $ENV" >&2; exit 1; }
+  # Envelope is JSON: { batch: [...], shims: { id: prompt, ... },
+  #                     remaining_after: N, pending_now: M,
+  #                     total_dispatch_units: T }
+  # Empty batch [] → exit the loop. (remaining_after === 0 also signals
+  # "this is the final batch" if you want to log progress;
+  # X-of-Y progress: X = total_dispatch_units - pending_now, Y = total_dispatch_units.)
+  BATCH_LEN=$(echo "$ENV" | jq -r '.batch | length')
+  [ "$BATCH_LEN" -eq 0 ] && break
+
+  # For each id in .batch, dispatch ONE Agent with the matching shim
+  # prompt from .shims. All Agents in a single orchestrator message
+  # run in parallel. The shim prompt is small (≤200 tokens); the
+  # Agent reads the staged dispatch prompt from disk and writes its
+  # JSON output to the per-leaf output path stated inside the shim.
+  for ID in $(echo "$ENV" | jq -r '.batch[]'); do
+    SHIM=$(echo "$ENV" | jq -r --arg id "$ID" '.shims[$id]')
     # ... pass $SHIM as the Agent tool call's `prompt` parameter ...
   done
-  # After all dispatched Agents in the batch complete, loop:
-  # --print-pending-leaf-ids returns ids whose output file doesn't
-  # yet exist. When every leaf has produced an output, BATCH is
-  # empty and the while-loop exits.
+  # After all dispatched Agents in the batch complete, loop. The
+  # next --print-batch-envelope call sees the now-written outputs
+  # and returns the next pending batch (or [] when done).
 done
 
 # --continue triggers the runner-side aggregation. The runner walks
@@ -117,11 +142,34 @@ done
 node scripts/run-review.mjs --continue --run-id "$RUN_ID"
 ```
 
-**Concurrency cap.** `--print-pending-leaf-ids` returns at most 10 ids per call (override with `--batch-size N`, max 50). The cap is enforced runner-side: the orchestrator cannot dispatch more than 10 specialists in one message because it is given at most 10 ids to dispatch.
+**Older `--print-pending-leaf-ids` + per-id `--print-agent-shim-prompt` flow** (still supported, useful when you only want plaintext ids without the JSON envelope):
+
+```bash
+while true; do
+  # IMPORTANT: check the runner's exit status. On failure,
+  # --print-pending-leaf-ids writes a JSON error payload to stdout
+  # and exits non-zero. Without the `||` guard, `for ID in $BATCH`
+  # would word-split the error JSON into garbage tokens and dispatch
+  # an Agent for each (or, worse, the [-z] check would be false and
+  # the loop would never terminate).
+  BATCH=$(node scripts/run-review.mjs --print-pending-leaf-ids --run-id "$RUN_ID") \
+    || { echo "pending-leaf-ids call failed: $BATCH" >&2; exit 1; }
+  [ -z "$BATCH" ] && break
+  for ID in $BATCH; do
+    SHIM=$(node scripts/run-review.mjs --print-agent-shim-prompt --run-id "$RUN_ID" --leaf-id "$ID") \
+      || { echo "shim-prompt call failed for $ID: $SHIM" >&2; exit 1; }
+    # ... pass $SHIM as the Agent tool call's `prompt` parameter ...
+  done
+done
+```
+
+**Why prefer `--print-batch-envelope`.** One Node invocation per loop iteration instead of `1 + N` (one `--print-pending-leaf-ids` plus one `--print-agent-shim-prompt` per batch id). On a K=20 review (2 batches at the default size of 10), that's 1 envelope call per batch (2 total) versus 1 + 10 = 11 calls per batch (22 total). The orchestrator transcript shrinks accordingly. The envelope's progress fields make a user-facing "X of Y Agent invocations complete" indicator cheap to render: `total_dispatch_units` is the STABLE total of Agent invocations staged for this state (one per non-sharded leaf, N per sharded leaf — use as Y); `pending_now` shrinks as outputs land (so X = total_dispatch_units - pending_now is work done so far); `remaining_after` is pending count after this batch (0 → final batch). NOTE: `total_dispatch_units` counts Agent invocations (shards), NOT picked leaves. The final report's `summary.specialists_dispatched` counts picked leaves (sharded leaves merge into one row at `--continue` aggregation), so a sharded run will report a smaller specialist count in the report than the dispatch-time `total_dispatch_units` value. Render dispatch-time progress against `total_dispatch_units`; render report-time totals against `specialists_dispatched`.
+
+**Concurrency cap.** Both modes return at most `--batch-size` ids per call (default 10, max 50). The cap is enforced runner-side: the orchestrator cannot dispatch more specialists in one message than the runner returned ids for that call. The default of 10 is the recommended ceiling — large simultaneous Agent dispatches overflow the trace window and make failures hard to attribute. Raise `--batch-size` only with a deliberate reason to widen the pool.
 
 **Why specialists write per-leaf instead of returning JSON.** Concurrent K specialists writing into one orchestrator-aggregated heredoc is fragile: a failed Agent loses its slot; JSON-string quoting breaks on multi-line code samples in `description` / `fix`; orchestrator-side aggregation is opaque to audit. Per-leaf files are observable on disk, resilient to orchestrator-side losses, and let the runner aggregate deterministically on `--continue`.
 
-**Diff sharding.** When a leaf's `activation.file_globs[]` matches many changed files (refactor PRs, sweeping API renames), its filtered diff can grow past 32KB and the specialist loses focus. The runner detects this at staging time and splits the diff at file boundaries into shards: `dispatch_specialists-prompt-<leaf-id>--<shard-idx>.md` and matching output files. `--print-pending-leaf-ids` returns `<leaf-id>--<shard-idx>` per shard; each shard's Agent sees only its own subset of files. Per-shard outputs merge into one specialist row in the report. Sharding is automatic — the orchestrator doesn't need to detect or branch on it.
+**Diff sharding.** When a leaf's `activation.file_globs[]` matches many changed files AND the resulting filtered diff exceeds the runner's shard threshold (default 256KB; overridable via `SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES`), the runner splits the diff at file boundaries into shards: `dispatch_specialists-prompt-<leaf-id>--<shard-idx>.md` and matching output files. The default threshold is intentionally large so that most refactor PRs dispatch ONE Agent per leaf reviewing all matching files — the cross-file picture catches duplication / consistency issues that per-file shards would miss. `--print-pending-leaf-ids` and `--print-batch-envelope` return `<leaf-id>--<shard-idx>` per shard when sharding fires; each shard's Agent sees only its own subset of files. Per-shard outputs merge into one specialist row in the report. Sharding is automatic — the orchestrator doesn't need to detect or branch on it.
 
 **No augmentation.** The staged per-leaf prompt is complete. **Do not concatenate, do not add a fresh `git diff`, do not aggregate JSON yourself.** If you find yourself running `git diff` or composing `{ specialist_outputs: [...] }` during a specialist dispatch, you are on the wrong path.
 
@@ -160,7 +208,7 @@ The runner persists every awaiting_worker brief to disk at **`<run_dir>/workers/
 These are NOT allowed during a review run:
 
 - **Writing your own intermediates to `/tmp/*`** — never. Any orchestrator-created artifacts you control during the review loop (captured stdout, ad-hoc agent prompts, JSON extraction scratch) must live under `<run_dir>/`. The run-dir is per-project, per-run; `/tmp` is mode 1777 (world-readable on every Unix), shared across concurrent sessions, and collides under parallel development. The run-dir is gitignored, isolates parallel runs by run-id, and isolates parallel projects by `.fsmrc.json`'s `storage_root`. (The runner itself does use an OS temp dir internally for short-lived scratch files passed to `fsm-next` / `fsm-commit` — treat that as an implementation detail you do not read from or write to.)
-- **`python3 -c "import json; ..."` to extract fields from a brief** — never. Anything the orchestrator routinely needs (run-dir path, current state, dispatch prompt) is exposed by a `--print-X` CLI. For the small handful of fields the loop reads directly (`.run_id` from `--start`, `.inputs.picked_leaves[].id` for specialists, `.outputs_path`), use `jq` against the on-disk brief at `<run_dir>/workers/<state>-brief.json`. `jq` is fine; ad-hoc `python3 -c` is not.
+- **`python3 -c "import json; ..."` to extract fields from a brief** — never. Anything the orchestrator routinely needs (run-dir path, current state, dispatch prompt, the dispatchable specialist batch + shim prompts) is exposed by a `--print-X` CLI. For the small handful of fields the loop reads directly (`.run_id` from `--start`, `.batch[]` and `.shims[$id]` (with `--arg id "$ID"`) from `--print-batch-envelope`, `.outputs_path`), use `jq` against the corresponding stdout JSON or the on-disk brief at `<run_dir>/workers/<state>-brief.json`. `jq` is fine; ad-hoc `python3 -c` is not. Specifically: do NOT extract `.inputs.picked_leaves[].id` from the brief yourself for the specialist fan-out — `--print-batch-envelope` already returns the dispatchable ids with the correct prompt-existence and gappy-shard handling.
 - **Inventing your own filename for the worker output** — never. Use `brief.outputs_path` from the on-disk brief, or just call `--continue --run-id <id>` without `--outputs-file` (the runner defaults to it).
 - **Composing the agent prompt by concatenating `prompt_body` with inputs yourself** — never. The runner has already done that and written it to `<run_dir>/workers/<state>-dispatch-prompt.md`. Read that file (or use `--print-dispatch-prompt`).
 - **Capturing `--continue` stdout into `/tmp/*` to "look at later"** — never. The brief is on disk after every pause. `--print-current-state` tells you which one.

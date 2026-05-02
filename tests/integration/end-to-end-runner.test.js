@@ -640,3 +640,558 @@ test("--print-pending-leaf-ids and --print-agent-shim-prompt: end-to-end CLI con
   // signal we leaked the unhandled-error path.
   assert.doesNotMatch(corruptPayload.message, /at\s+\S+:\d+:\d+/);
 });
+
+test("--print-batch-envelope: end-to-end CLI contract (single-call batch with shims + progress)", () => {
+  // The --print-batch-envelope mode collapses N×--print-agent-shim-prompt
+  // calls per batch into one Node process invocation that returns a
+  // JSON envelope with shims for every batch id plus progress
+  // (remaining_after, pending_now). This test verifies:
+  //   - happy path: envelope shape, batch ids match pending list,
+  //     shims exist for every batch id, byte-equal to what
+  //     --print-agent-shim-prompt would emit individually
+  //   - --batch-size cap is honoured
+  //   - empty pending list emits a zero-work envelope (NOT empty stdout)
+  //   - manifest-state gate hard-fails on non-dispatch_specialists
+  //   - progress fields are accurate
+  const baseSha = "7777777777777777777777777777777777777777";
+  const headSha = "8888888888888888888888888888888888888888";
+  const start = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--start", "--base", baseSha, "--head", headSha],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
+  );
+  assert.equal(start.status, 0, `--start exited ${start.status}; stderr: ${start.stderr}`);
+  const runId = JSON.parse(start.stdout.split("\n").filter(Boolean)[0]).run_id;
+
+  const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
+  const storageRoot = resolve(REPO_ROOT, settings.storageRoot);
+  const runDir = runDirPath(runId, { storageRoot });
+  const workersDir = join(runDir, "workers");
+  // Three pending leaves + one already-completed leaf to verify the
+  // envelope only includes pending work.
+  const briefShape = {
+    run_id: runId,
+    state: "dispatch_specialists",
+    inputs: {
+      picked_leaves: [
+        { id: "env-alpha", path: "x/env-alpha.md", justification: "j", dimensions: ["correctness"] },
+        { id: "env-beta", path: "x/env-beta.md", justification: "j", dimensions: ["correctness"] },
+        { id: "env-gamma", path: "x/env-gamma.md", justification: "j", dimensions: ["correctness"] },
+        { id: "env-done", path: "x/env-done.md", justification: "j", dimensions: ["correctness"] },
+      ],
+    },
+  };
+  writeFileSync(join(workersDir, "dispatch_specialists-brief.json"), JSON.stringify(briefShape));
+  writeFileSync(join(workersDir, "dispatch_specialists-prompt-env-alpha.md"), "<staged>\n");
+  writeFileSync(join(workersDir, "dispatch_specialists-prompt-env-beta.md"), "<staged>\n");
+  writeFileSync(join(workersDir, "dispatch_specialists-prompt-env-gamma.md"), "<staged>\n");
+  writeFileSync(join(workersDir, "dispatch_specialists-prompt-env-done.md"), "<staged>\n");
+  writeFileSync(
+    join(workersDir, "dispatch_specialists-output-env-done.json"),
+    JSON.stringify({ id: "env-done", status: "completed", findings: [] }),
+  );
+  const manifestPath = `${runDir}/manifest.json`;
+  const realManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  realManifest.current_state = "dispatch_specialists";
+  writeFileSync(manifestPath, JSON.stringify(realManifest));
+
+  // Happy path: envelope returns batch=3 ids, all pending, shims for each.
+  const env = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-batch-envelope", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(env.status, 0, `--print-batch-envelope exited ${env.status}; stderr: ${env.stderr}`);
+  const envelope = JSON.parse(env.stdout);
+  assert.deepEqual(envelope.batch, ["env-alpha", "env-beta", "env-gamma"], "batch must list pending ids in picked_leaves order");
+  assert.equal(envelope.pending_now, 3, "pending_now counts pending ids only (env-done excluded)");
+  // total_dispatch_units is the STABLE count of dispatch units staged for the
+  // dispatch_specialists state (env-alpha, env-beta, env-gamma,
+  // env-done = 4). Unlike pending_now (which shrinks as outputs land),
+  // total_dispatch_units is invariant across the loop's lifetime — orchestrators
+  // can use it as the Y in an "X of Y specialists complete" indicator.
+  assert.equal(envelope.total_dispatch_units, 4, "total_dispatch_units counts ALL staged units (including the already-completed env-done)");
+  assert.equal(envelope.remaining_after, 0, "all 3 fit in default batch size 10 → 0 remaining after");
+  // shims object has one entry per batch id; each is the canonical
+  // shim text the orchestrator would feed to Agent.
+  assert.deepEqual(Object.keys(envelope.shims).sort(), ["env-alpha", "env-beta", "env-gamma"]);
+  for (const id of envelope.batch) {
+    assert.match(envelope.shims[id], /You are a specialist reviewer/);
+    assert.match(envelope.shims[id], new RegExp(`dispatch_specialists-prompt-${id}\\.md`));
+    assert.match(envelope.shims[id], new RegExp(`dispatch_specialists-output-${id}\\.json`));
+  }
+
+  // Byte-equal check: envelope shim must match what
+  // --print-agent-shim-prompt would emit individually for the same id.
+  // Guarantees orchestrators that mix the two modes always get the
+  // same prompt text.
+  const singleShim = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-agent-shim-prompt", "--run-id", runId, "--leaf-id", "env-alpha"],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(singleShim.status, 0);
+  assert.equal(envelope.shims["env-alpha"], singleShim.stdout, "envelope shim must equal --print-agent-shim-prompt output byte-for-byte");
+
+  // Sharded ids: --print-batch-envelope must round-trip `<leaf>--<idx>`
+  // ids correctly through parseLeafIdAndShardIdx and buildShimText so
+  // sharded leaves work end-to-end. Plant a sharded leaf with two
+  // shard prompts and a fresh brief; the envelope must list both
+  // shard ids in `batch[]`, emit a per-shard shim each, and the shim
+  // text must point at the shard-suffixed prompt + output paths.
+  // Without this case a regression in the envelope's shard-id parsing
+  // path would slip through the plain-leaf-id happy path above.
+  const shardedBrief = {
+    run_id: runId,
+    state: "dispatch_specialists",
+    inputs: {
+      picked_leaves: [
+        { id: "env-shard", path: "x/env-shard.md", justification: "j", dimensions: ["correctness"] },
+      ],
+    },
+  };
+  writeFileSync(join(workersDir, "dispatch_specialists-brief.json"), JSON.stringify(shardedBrief));
+  // Stage two sharded prompts (shard 0 and shard 1), no canonical prompt.
+  rmSync(join(workersDir, "dispatch_specialists-prompt-env-shard.md"), { force: true });
+  writeFileSync(join(workersDir, "dispatch_specialists-prompt-env-shard--0.md"), "<staged shard 0>\n");
+  writeFileSync(join(workersDir, "dispatch_specialists-prompt-env-shard--1.md"), "<staged shard 1>\n");
+  const shardedEnv = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-batch-envelope", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(shardedEnv.status, 0, `sharded envelope exited ${shardedEnv.status}; stderr: ${shardedEnv.stderr}`);
+  const shardedEnvelope = JSON.parse(shardedEnv.stdout);
+  assert.deepEqual(shardedEnvelope.batch, ["env-shard--0", "env-shard--1"], "envelope batch must list shard-suffixed ids");
+  // Each sharded shim has its own per-shard prompt + output path.
+  assert.match(shardedEnvelope.shims["env-shard--0"], /dispatch_specialists-prompt-env-shard--0\.md/);
+  assert.match(shardedEnvelope.shims["env-shard--0"], /dispatch_specialists-output-env-shard--0\.json/);
+  assert.match(shardedEnvelope.shims["env-shard--1"], /dispatch_specialists-prompt-env-shard--1\.md/);
+  assert.match(shardedEnvelope.shims["env-shard--1"], /dispatch_specialists-output-env-shard--1\.json/);
+  // Byte-equal check on the sharded path: envelope shim must equal
+  // --print-agent-shim-prompt's output for the same shard id.
+  const shardSingleShim = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-agent-shim-prompt", "--run-id", runId, "--leaf-id", "env-shard--0"],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(shardSingleShim.status, 0);
+  assert.equal(shardedEnvelope.shims["env-shard--0"], shardSingleShim.stdout,
+    "sharded envelope shim must equal --print-agent-shim-prompt output byte-for-byte");
+
+  // Restore the original brief + canonical prompt for the rest of
+  // the test (the --batch-size cap and zero-work checks below assume
+  // the env-alpha/beta/gamma layout).
+  writeFileSync(join(workersDir, "dispatch_specialists-brief.json"), JSON.stringify(briefShape));
+  rmSync(join(workersDir, "dispatch_specialists-prompt-env-shard--0.md"), { force: true });
+  rmSync(join(workersDir, "dispatch_specialists-prompt-env-shard--1.md"), { force: true });
+  writeFileSync(join(workersDir, "dispatch_specialists-prompt-env-alpha.md"), "<staged>\n");
+
+  // --batch-size cap honoured: with --batch-size 2, batch=2 ids,
+  // remaining_after=1 (3 pending total - 2 returned).
+  const capped = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-batch-envelope", "--run-id", runId, "--batch-size", "2"],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(capped.status, 0);
+  const cappedEnvelope = JSON.parse(capped.stdout);
+  assert.equal(cappedEnvelope.batch.length, 2, "--batch-size 2 caps batch at 2");
+  assert.equal(cappedEnvelope.remaining_after, 1, "1 pending leaf remains after a 2-of-3 batch");
+  assert.equal(cappedEnvelope.pending_now, 3);
+  // total_dispatch_units must match the first envelope's value — STABLE across calls
+  // is the whole point of distinguishing it from pending_now.
+  assert.equal(cappedEnvelope.total_dispatch_units, 4, "total_dispatch_units is stable across envelope calls within the same state");
+
+  // Manifest-state gate: non-dispatch_specialists must hard-fail.
+  realManifest.current_state = "scan_project";
+  writeFileSync(manifestPath, JSON.stringify(realManifest));
+  const wrongStateEnv = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-batch-envelope", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.notEqual(wrongStateEnv.status, 0, "--print-batch-envelope must hard-fail on non-dispatch_specialists state");
+  const wrongStateEnvPayload = JSON.parse(wrongStateEnv.stdout);
+  assert.match(wrongStateEnvPayload.message, /dispatch_specialists/);
+  assert.match(wrongStateEnvPayload.message, /scan_project/);
+
+  // Empty pending list: write outputs for the 3 remaining, restore
+  // state, expect zero-work envelope (NOT empty stdout — the JSON
+  // envelope is still emitted so a JSON-parsing orchestrator gets an
+  // explicit zero-work signal).
+  realManifest.current_state = "dispatch_specialists";
+  writeFileSync(manifestPath, JSON.stringify(realManifest));
+  for (const id of ["env-alpha", "env-beta", "env-gamma"]) {
+    writeFileSync(
+      join(workersDir, `dispatch_specialists-output-${id}.json`),
+      JSON.stringify({ id, status: "completed", findings: [] }),
+    );
+  }
+  const empty = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-batch-envelope", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(empty.status, 0, "empty pending must exit 0");
+  const emptyEnvelope = JSON.parse(empty.stdout);
+  assert.deepEqual(emptyEnvelope.batch, [], "empty batch when no pending");
+  assert.equal(emptyEnvelope.pending_now, 0);
+  // total_dispatch_units stays at 4 even after every leaf is done — the four
+  // staged units are still counted; pending_now=0 is what tells the
+  // caller everything is complete. Done = total_dispatch_units - pending_now = 4.
+  assert.equal(emptyEnvelope.total_dispatch_units, 4, "total_dispatch_units stays stable after every output is written");
+  assert.equal(emptyEnvelope.remaining_after, 0);
+  assert.deepEqual(emptyEnvelope.shims, {}, "no shims when no pending ids");
+});
+
+test("--print-batch-envelope: empty picked_leaves[] emits a clean zero-work envelope (no orchestrator wedge)", () => {
+  // The trim worker's contract permits picking fewer than the cap
+  // (down to zero), and the rest of the pipeline (writeSpecialistPromptsToDisk,
+  // aggregateSpecialistOutputs, verify_coverage, aggregate_findings)
+  // accepts empty picked_leaves at this shape. The FSM YAML
+  // precondition is `picked_leaves is an array` (relaxed in this PR
+  // from the previous "is non-empty" to match the runner's
+  // permissive contract); empty MUST NOT be a fatal error or it
+  // would wedge the orchestrator on a legitimate "no leaves picked"
+  // run.
+  //
+  // The envelope must emit a zero-work payload — NOT empty stdout,
+  // since JSON-parsing orchestrators need an explicit signal to
+  // terminate the dispatch loop.
+  const baseSha = "9999999999999999999999999999999999999999";
+  const headSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const start = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--start", "--base", baseSha, "--head", headSha],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
+  );
+  assert.equal(start.status, 0, `--start exited ${start.status}; stderr: ${start.stderr}`);
+  const runId = JSON.parse(start.stdout.split("\n").filter(Boolean)[0]).run_id;
+  const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
+  const storageRoot = resolve(REPO_ROOT, settings.storageRoot);
+  const runDir = runDirPath(runId, { storageRoot });
+  const workersDir = join(runDir, "workers");
+  writeFileSync(join(workersDir, "dispatch_specialists-brief.json"), JSON.stringify({
+    run_id: runId,
+    state: "dispatch_specialists",
+    inputs: { picked_leaves: [] },
+  }));
+  const manifestPath = `${runDir}/manifest.json`;
+  const realManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  realManifest.current_state = "dispatch_specialists";
+  writeFileSync(manifestPath, JSON.stringify(realManifest));
+  const env = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-batch-envelope", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(env.status, 0, `--print-batch-envelope on empty picked_leaves[] must exit 0; stderr: ${env.stderr}`);
+  const envelope = JSON.parse(env.stdout);
+  assert.deepEqual(envelope, {
+    batch: [],
+    remaining_after: 0,
+    pending_now: 0,
+    total_dispatch_units: 0,
+    shims: {},
+  }, "empty picked_leaves[] envelope must have all-zero counters and empty collections");
+
+  // --print-pending-leaf-ids on the same input: emit nothing, exit 0
+  // (matching the pre-envelope behaviour for plaintext consumers).
+  const plain = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-pending-leaf-ids", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(plain.status, 0, "--print-pending-leaf-ids on empty picked_leaves[] must also exit 0 (orchestrator's BATCH=$(...) sees empty string and breaks)");
+  assert.equal(plain.stdout, "", "no leaves to dispatch → no stdout");
+
+  // CRITICAL: the orchestrator's dispatch loop exits cleanly above,
+  // but the next step is `--continue --run-id ...` which auto-
+  // synthesises the aggregate. Without the empty-pick-set fast-path
+  // in handleContinue, --continue would fail with "default outputs
+  // file not found" because anySpecialistOutputOnDisk returns false
+  // (correctly — no per-leaf outputs were written). This test drives
+  // the FULL "no orchestrator wedge" claim by:
+  //   1. Calling --continue.
+  //   2. Asserting it succeeds (exit 0).
+  //   3. Asserting the on-disk outputs file is `{ "specialist_outputs": [] }`.
+  // Without (1)+(2)+(3), the round-11 "no wedge" promise is broken
+  // by --continue's downstream error.
+  const cont = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--continue", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
+  );
+  assert.equal(cont.status, 0, `--continue after empty-batch envelope must exit 0; stdout=${cont.stdout}; stderr=${cont.stderr}`);
+  // The runner auto-synthesizes the aggregate at outputs_path.
+  const outputsPath = join(workersDir, "dispatch_specialists-output.json");
+  assert.ok(existsSync(outputsPath), `expected aggregate at ${outputsPath} after --continue`);
+  const aggregate = JSON.parse(readFileSync(outputsPath, "utf8"));
+  assert.deepEqual(aggregate, { specialist_outputs: [] }, "empty pick set must commit specialist_outputs: []");
+
+});
+
+test("--continue --outputs-file <path>: explicit outputs path also auto-synths empty aggregate (no wedge bypass)", () => {
+  // Companion to the implicit --continue path test above. The auto-
+  // synth block was originally gated on `outputsFile === undefined`,
+  // so callers passing the canonical outputs path EXPLICITLY (e.g.
+  // older orchestrators that hand-rolled `brief.outputs_path`) would
+  // skip the empty-pick-set fast-path and hit "outputs file not
+  // found" — same wedge the implicit fix was meant to remove. Round
+  // 13 caught this; the fix lifted the auto-synth block out of the
+  // implicit branch so it fires for both invocation styles. This
+  // test locks down that contract: --continue with explicit
+  // --outputs-file on empty picked_leaves[] must exit 0 and commit
+  // { specialist_outputs: [] }.
+  const baseSha = "1234567890123456789012345678901234567890";
+  const headSha = "abcdef0123456789abcdef0123456789abcdef01";
+  const start = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--start", "--base", baseSha, "--head", headSha],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
+  );
+  assert.equal(start.status, 0);
+  const runId = JSON.parse(start.stdout.split("\n").filter(Boolean)[0]).run_id;
+  const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
+  const storageRoot = resolve(REPO_ROOT, settings.storageRoot);
+  const runDir = runDirPath(runId, { storageRoot });
+  const workersDir = join(runDir, "workers");
+  writeFileSync(join(workersDir, "dispatch_specialists-brief.json"), JSON.stringify({
+    run_id: runId,
+    state: "dispatch_specialists",
+    inputs: { picked_leaves: [] },
+  }));
+  const manifestPath = `${runDir}/manifest.json`;
+  const realManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  realManifest.current_state = "dispatch_specialists";
+  writeFileSync(manifestPath, JSON.stringify(realManifest));
+  const outputsPath = join(workersDir, "dispatch_specialists-output.json");
+  // EXPLICIT --outputs-file: the auto-synth block must fire even
+  // when the caller doesn't rely on the implicit default.
+  const cont = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--continue", "--run-id", runId, "--outputs-file", outputsPath],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
+  );
+  assert.equal(cont.status, 0, `--continue --outputs-file on empty pick set must exit 0; stdout=${cont.stdout}; stderr=${cont.stderr}`);
+  assert.ok(existsSync(outputsPath), "auto-synth must fire under explicit --outputs-file too");
+  const aggregate = JSON.parse(readFileSync(outputsPath, "utf8"));
+  assert.deepEqual(aggregate, { specialist_outputs: [] }, "explicit --outputs-file must also commit specialist_outputs: []");
+});
+
+test("--print-batch-envelope: non-empty picked_leaves[] with NO prompts staged hard-fails (silent staging-failure detection)", () => {
+  // Round-13 catch: writeSpecialistPromptsToDisk uses atomicWriteFile,
+  // which swallows I/O errors. A transient disk-full / permission /
+  // ENOSPC during staging could leave picked_leaves non-empty AND
+  // every prompt write lost. Without the staging-failure guard:
+  //   - computeDispatchableUnits sees zero staged prompts
+  //     (all leaves silently skipped via the prompt-existence check)
+  //     → returns pending=[], totalDispatchUnits=0.
+  //   - The envelope emits the same zero-work response as the
+  //     legitimate empty-pick-set case → orchestrator exits the
+  //     dispatch loop thinking work is done.
+  //   - --continue then auto-synthesises specialist_outputs: []
+  //     (because anySpecialistOutputOnDisk is also false), commits
+  //     it, and the run advances. An "all green" review surfaces
+  //     for what was actually a staging-failure run.
+  // The fix: hard-fail in the dispatch CLI mode when picked_leaves
+  // is non-empty but totalDispatchUnits is 0.
+  const baseSha = "ffffffffffffffffffffffffffffffffffffffff";
+  const headSha = "fffffffffffffffffffffffffffffffffffffff0";
+  const start = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--start", "--base", baseSha, "--head", headSha],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
+  );
+  assert.equal(start.status, 0);
+  const runId = JSON.parse(start.stdout.split("\n").filter(Boolean)[0]).run_id;
+  const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
+  const storageRoot = resolve(REPO_ROOT, settings.storageRoot);
+  const runDir = runDirPath(runId, { storageRoot });
+  const workersDir = join(runDir, "workers");
+  // Brief with three picked leaves but NO dispatch_specialists-prompt-*.md
+  // files staged anywhere — simulates total atomicWriteFile failure
+  // during writeSpecialistPromptsToDisk.
+  writeFileSync(join(workersDir, "dispatch_specialists-brief.json"), JSON.stringify({
+    run_id: runId,
+    state: "dispatch_specialists",
+    inputs: {
+      picked_leaves: [
+        { id: "staging-fail-a", path: "x/a.md", justification: "j", dimensions: ["correctness"] },
+        { id: "staging-fail-b", path: "x/b.md", justification: "j", dimensions: ["correctness"] },
+        { id: "staging-fail-c", path: "x/c.md", justification: "j", dimensions: ["correctness"] },
+      ],
+    },
+  }));
+  const manifestPath = `${runDir}/manifest.json`;
+  const realManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  realManifest.current_state = "dispatch_specialists";
+  writeFileSync(manifestPath, JSON.stringify(realManifest));
+
+  // --print-batch-envelope must hard-fail, NOT emit a zero-work envelope.
+  const env = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-batch-envelope", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.notEqual(env.status, 0, "non-empty picked_leaves with zero staged prompts must hard-fail");
+  const envPayload = JSON.parse(env.stdout);
+  assert.match(envPayload.message, /no dispatch units are staged/);
+  assert.match(envPayload.message, /3 leaves/, "error message must name the leaf count for diagnostics");
+
+  // --print-pending-leaf-ids must hard-fail with the same contract.
+  const plain = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-pending-leaf-ids", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.notEqual(plain.status, 0, "--print-pending-leaf-ids must also hard-fail");
+  const plainPayload = JSON.parse(plain.stdout);
+  assert.match(plainPayload.message, /no dispatch units are staged/);
+});
+
+test("--print-batch-envelope: degraded staging (gappy shards + unstaged leaves) reports accurate progress fields", () => {
+  // Locks down progress-field accounting for the two failure modes
+  // discoverLeafShards explicitly handles:
+  //   1. Gappy shards: prompts at indices 0 and 2 with shard 1
+  //      missing. discoverLeafShards normalises to [0, 1, 2] (so the
+  //      aggregator can synth a failed row for shard 1), but shard 1
+  //      was never dispatchable. Both pending_now AND total_dispatch_units
+  //      must skip it: only the 2 staged shards count.
+  //   2. Unstaged leaf: a picked leaf with no prompts at all (canonical
+  //      OR sharded). aggregateSpecialistOutputs will emit a single
+  //      failed row for it at --continue, but during dispatch the
+  //      orchestrator can't dispatch what was never staged. Both
+  //      pending_now AND total_dispatch_units silently skip it (contributing
+  //      0 each) — accounting stays consistent so the X-of-Y formula
+  //      never overshoots.
+  //
+  // Without this regression test, a future refactor of total_dispatch_units
+  // (e.g. switching to the contiguous-range expansion) would let
+  // total_dispatch_units drift away from pending_now's accounting and produce
+  // an X-of-Y overshoot once pending drops to zero.
+  const baseSha = "dddddddddddddddddddddddddddddddddddddddd";
+  const headSha = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+  const start = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--start", "--base", baseSha, "--head", headSha],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
+  );
+  assert.equal(start.status, 0);
+  const runId = JSON.parse(start.stdout.split("\n").filter(Boolean)[0]).run_id;
+  const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
+  const storageRoot = resolve(REPO_ROOT, settings.storageRoot);
+  const runDir = runDirPath(runId, { storageRoot });
+  const workersDir = join(runDir, "workers");
+  // Three picked leaves:
+  //   - degraded-gappy: prompts at shards 0 and 2 (gap at 1)
+  //   - degraded-unstaged: NO prompt at all (canonical or sharded)
+  //   - degraded-clean: canonical prompt staged normally
+  writeFileSync(join(workersDir, "dispatch_specialists-brief.json"), JSON.stringify({
+    run_id: runId,
+    state: "dispatch_specialists",
+    inputs: {
+      picked_leaves: [
+        { id: "degraded-gappy", path: "x/degraded-gappy.md", justification: "j", dimensions: ["correctness"] },
+        { id: "degraded-unstaged", path: "x/degraded-unstaged.md", justification: "j", dimensions: ["correctness"] },
+        { id: "degraded-clean", path: "x/degraded-clean.md", justification: "j", dimensions: ["correctness"] },
+      ],
+    },
+  }));
+  writeFileSync(join(workersDir, "dispatch_specialists-prompt-degraded-gappy--0.md"), "<staged shard 0>\n");
+  writeFileSync(join(workersDir, "dispatch_specialists-prompt-degraded-gappy--2.md"), "<staged shard 2>\n");
+  // shard 1 deliberately missing for degraded-gappy.
+  // No prompt at all for degraded-unstaged.
+  writeFileSync(join(workersDir, "dispatch_specialists-prompt-degraded-clean.md"), "<staged>\n");
+  const manifestPath = `${runDir}/manifest.json`;
+  const realManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  realManifest.current_state = "dispatch_specialists";
+  writeFileSync(manifestPath, JSON.stringify(realManifest));
+
+  const env = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-batch-envelope", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(env.status, 0, `degraded-staging envelope exited ${env.status}; stderr: ${env.stderr}`);
+  const envelope = JSON.parse(env.stdout);
+
+  // batch contains only the dispatchable units:
+  //   - degraded-gappy--0 (staged)
+  //   - degraded-gappy--2 (staged)
+  //   - degraded-clean (staged, non-sharded)
+  // degraded-gappy--1 is skipped (no prompt → can't dispatch)
+  // degraded-unstaged is skipped (no prompt at all)
+  assert.deepEqual(
+    envelope.batch.sort(),
+    ["degraded-clean", "degraded-gappy--0", "degraded-gappy--2"].sort(),
+    "batch must list ONLY shards/leaves with staged prompts",
+  );
+  // pending_now: 3 dispatchable, no outputs yet → 3.
+  assert.equal(envelope.pending_now, 3);
+  // total_dispatch_units: same 3, NOT 4 (must not include the gappy shard 1
+  // synthesised by discoverLeafShards's contiguous-range expansion)
+  // and NOT include degraded-unstaged (which has no prompt to
+  // dispatch). The X-of-Y progress formula stays consistent:
+  // X = total_dispatch_units - pending_now = 0 done now → 0; after all 3
+  // outputs land, pending_now=0, X = 3 done = total_dispatch_units. Never
+  // overshoots.
+  assert.equal(envelope.total_dispatch_units, 3, "total_dispatch_units must match pending_now's accounting (skip un-dispatchable units)");
+  assert.equal(envelope.remaining_after, 0);
+
+  // Simulate completion of all 3 dispatchable units. total_dispatch_units
+  // must STAY 3 (stable across calls); pending_now drops to 0.
+  // The output filename embeds the dispatch id verbatim (which may
+  // include the `--<shardIdx>` suffix); the JSON `id` field is the
+  // bare leaf id (the part before `--`, if a shard suffix is present).
+  for (const id of envelope.batch) {
+    const leafId = id.includes("--") ? id.slice(0, id.indexOf("--")) : id;
+    writeFileSync(
+      join(workersDir, `dispatch_specialists-output-${id}.json`),
+      JSON.stringify({ id: leafId, status: "completed", findings: [] }),
+    );
+  }
+  const post = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-batch-envelope", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(post.status, 0);
+  const postEnvelope = JSON.parse(post.stdout);
+  assert.deepEqual(postEnvelope.batch, [], "all dispatchable units done → empty batch");
+  assert.equal(postEnvelope.pending_now, 0);
+  // total_dispatch_units is STABLE: still 3, even though pending_now is now 0.
+  // Locks down "progress denominator does not drift across calls" —
+  // the whole point of distinguishing total_dispatch_units from pending_now.
+  assert.equal(postEnvelope.total_dispatch_units, 3, "total_dispatch_units is stable across the dispatch_specialists state");
+});
+
+test("--print-pending-leaf-ids and --print-batch-envelope: mutually exclusive", () => {
+  // Passing both flags together is a misuse: the envelope branch wins
+  // silently but error attribution would point at --print-pending-leaf-ids
+  // (cliName ordering). Hard-fail with a clear message so callers fix
+  // their script instead of getting a surprising payload shape.
+  const baseSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const headSha = "cccccccccccccccccccccccccccccccccccccccc";
+  const start = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--start", "--base", baseSha, "--head", headSha],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
+  );
+  assert.equal(start.status, 0);
+  const runId = JSON.parse(start.stdout.split("\n").filter(Boolean)[0]).run_id;
+  const both = spawnSync(
+    process.execPath,
+    [
+      "scripts/run-review.mjs",
+      "--print-pending-leaf-ids",
+      "--print-batch-envelope",
+      "--run-id", runId,
+    ],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.notEqual(both.status, 0, "passing both flags must hard-fail");
+  const payload = JSON.parse(both.stdout);
+  assert.match(payload.message, /mutually exclusive/);
+});

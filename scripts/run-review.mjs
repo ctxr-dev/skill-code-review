@@ -386,8 +386,32 @@ function computeFilteredDiff(baseSha, headSha, fileGlobs) {
 //     the diffText slice for those files. Concatenating shard.diffText
 //     across N shards yields the original diffText byte-for-byte.
 //
-// Threshold default 32KB; overridable via SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES.
-const DEFAULT_SHARD_THRESHOLD = 32 * 1024;
+// Threshold default 256KB; overridable via SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES.
+//
+// Why 256KB: shardFilteredDiff greedy-packs files into a shard until
+// the threshold is exceeded, then opens a new shard and continues.
+// Under the previous 32KB threshold, a leaf with file_globs="**/*.js"
+// matching ~6 mid-sized changed files (5-15KB each) would typically
+// produce 2-4 shards — fewer Agents than one-per-file, but still
+// fragmenting the cross-file view. Worse, any single ~30KB+ file
+// forced a flush, so a leaf with 6 such files DID split close to
+// one-per-file. The new 256KB default keeps almost all everyday
+// review diffs in a single shard (one Agent reviewing every file
+// the leaf activates on), preserving the cross-file picture that
+// catches duplication / consistency issues. Modern Claude models
+// comfortably handle 200-400KB of prompt (Sonnet 4.6: 200K context,
+// Opus 4.7: up to 1M); 256KB filtered-diff plus the leaf body /
+// project profile / tool results lands well under the budget.
+// Sharding now fires only when a leaf's filtered diff exceeds
+// ~256KB (a few hundred kilobytes — the size band of a sweeping
+// refactor PR or a generated-code dump).
+//
+// Tuning: SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES env var overrides
+// per-run. Set lower (e.g. 65536) for cost-sensitive runs that
+// prefer many cheap Agents over a few expensive ones; set higher
+// (up to 1MB) for Opus 4.7 1M-context runs that want maximum
+// per-Agent context.
+const DEFAULT_SHARD_THRESHOLD = 256 * 1024;
 function getShardThreshold() {
   const raw = process.env.SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES;
   if (typeof raw === "string" && /^\d+$/.test(raw)) {
@@ -1184,17 +1208,24 @@ export function discoverLeafShards(runId, leafId) {
   // would let the runner believe the leaf produced two complete
   // shards when shard 1's files were never reviewed.
   const max = shards[shards.length - 1];
-  // Hard cap on the contiguous range we'll allocate. A legitimate
-  // staging pass with the default 32KB threshold would hit ~100-200
-  // shards on a multi-megabyte filtered diff in the absolute worst
-  // case; 1024 leaves comfortable headroom. Anything beyond
-  // SHARD_INDEX_MAX is treated as workers/ corruption (manual edit,
-  // cosmic ray, or buggy external tooling) rather than a legitimate
-  // run, and we hard-fail instead of allocating an enormous array
-  // that would hang/OOM the runner. The per-entry 4-digit gate above
-  // already rejects indices > 9999 before parseInt, but this max
-  // check is the contract: if any caller plants a shard index > 1024
-  // by direct file write, we surface it.
+  // Hard cap on the maximum shard INDEX we'll accept (and therefore
+  // on the size of the contiguous range we allocate). A legitimate
+  // staging pass with the default 256KB threshold would max out at
+  // shard index ~10-30 even on a multi-megabyte filtered diff (the
+  // worst real case); under explicit lower thresholds (e.g.
+  // cost-sensitive runs setting SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES=32768)
+  // the same worst-case diff might max at index ~100-200. A cap of
+  // 1024 on the highest shard index leaves comfortable headroom for
+  // any legitimate threshold. (The cap bounds shard indices, not
+  // leaf counts — picked_leaves[].length is bounded separately by
+  // the per-tier specialist cap of 3/8/20/30 in the FSM.) Anything
+  // beyond SHARD_INDEX_MAX is treated as workers/ corruption
+  // (manual edit, cosmic ray, or buggy external tooling) rather
+  // than a legitimate run, and we hard-fail instead of allocating
+  // an enormous array that would hang/OOM the runner. The per-entry
+  // 4-digit gate above already rejects indices > 9999 before parseInt,
+  // but this max check is the contract: if any caller plants a shard
+  // index > 1024 by direct file write, we surface it.
   if (max > SHARD_INDEX_MAX) {
     throw new Error(
       `discoverLeafShards: shard index ${max} for leaf "${leafId}" exceeds SHARD_INDEX_MAX=${SHARD_INDEX_MAX}. The workers/ directory likely contains corrupted or hand-edited shard files. Inspect ${dir} and remove implausible shard prompts before retrying.`,
@@ -1207,9 +1238,12 @@ export function discoverLeafShards(runId, leafId) {
 
 // Hard cap on shard indices the runner accepts during discovery.
 // Justified at the call site (discoverLeafShards): the default
-// 32KB threshold yields ~100-200 shards on the largest legitimate
-// filtered diffs; 1024 is a comfortable safety margin that surfaces
-// corrupted workers/ state as a hard failure rather than an OOM.
+// 256KB threshold yields at most ~10-30 shards on the largest
+// legitimate filtered diffs (the worst real case); even under
+// explicit lower thresholds (e.g. SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES=32768)
+// the same diff would hit at most ~100-200 shards. 1024 is a
+// comfortable safety margin that surfaces corrupted workers/ state
+// as a hard failure rather than an OOM.
 const SHARD_INDEX_MAX = 1024;
 
 // Aggregate per-leaf (and per-shard) specialist outputs into the canonical
@@ -1229,6 +1263,84 @@ const SHARD_INDEX_MAX = 1024;
 //     missing. Lets verify_coverage's downstream check surface the gap
 //     cleanly.
 //
+// Compute the dispatchable-units shape both --print-pending-leaf-ids
+// and --print-batch-envelope need: the pending list (units missing
+// outputs) AND the stable total_dispatch_units count (every unit the runner
+// has staged a prompt for). Single pass with one prompt-existence
+// check guarantees pending_now and total_dispatch_units share the same
+// accounting basis — they cannot drift in future edits because
+// there is no second walk to keep in sync.
+//
+// Inputs:
+//   - runId: the run to scan.
+//   - pickedLeaves: the brief's inputs.picked_leaves[] array.
+//   - cliName: the calling CLI name, used in error messages so a
+//     fail() routed through here is attributable to the right mode.
+//
+// Returns { pending: string[], totalDispatchUnits: number }:
+//   - pending[]: dispatch ids ("<leaf-id>" or "<leaf-id>--<shardIdx>")
+//     whose prompt file exists AND whose output file does NOT.
+//   - totalDispatchUnits: count of dispatch ids whose prompt file exists,
+//     regardless of output state — STABLE across calls within the
+//     dispatch_specialists state's lifetime.
+//
+// Both metrics intentionally skip:
+//   - gappy shard indices (no prompt at index N) — discoverLeafShards
+//     normalises the contiguous range so the aggregator can synth a
+//     failed row, but the orchestrator can't dispatch what was never
+//     staged.
+//   - unstaged leaves (no prompt at all) — same reasoning.
+//
+// discoverLeafShards throws on the both-shapes corruption case;
+// callers (--print-pending-leaf-ids / --print-batch-envelope) catch
+// the throw and route through fail() with the cliName attribution.
+function computeDispatchableUnits(runId, pickedLeaves, cliName) {
+  const pending = [];
+  let totalDispatchUnits = 0;
+  for (const leaf of pickedLeaves) {
+    if (!leaf || typeof leaf.id !== "string") continue;
+    let shards;
+    try {
+      shards = discoverLeafShards(runId, leaf.id);
+    } catch (err) {
+      fail(
+        `${cliName}: ${err?.message ?? String(err)}`,
+        { run_id: runId, leaf_id: leaf.id },
+      );
+    }
+    if (shards === null) {
+      // Non-sharded leaf: 1 unit if its canonical prompt exists.
+      // discoverLeafShards returning null implies the canonical
+      // prompt exists (that's the gate condition), so the existsSync
+      // check is normally redundant — but the explicit check keeps
+      // total_dispatch_units and pending_now in lockstep and survives any
+      // future discovery refactor.
+      const promptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leaf.id);
+      if (!promptPath || !existsSync(promptPath)) continue;
+      totalDispatchUnits += 1;
+      const outPath = defaultSpecialistOutputPath(runId, leaf.id);
+      if (outPath && !existsSync(outPath)) pending.push(leaf.id);
+    } else {
+      // Sharded leaf: walk the contiguous range, but only count
+      // shards whose prompt was actually staged.
+      for (const shardIdx of shards) {
+        const promptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leaf.id, shardIdx);
+        if (!promptPath || !existsSync(promptPath)) continue;
+        totalDispatchUnits += 1;
+        const outPath = defaultSpecialistOutputPath(runId, leaf.id, shardIdx);
+        if (outPath && !existsSync(outPath)) pending.push(`${leaf.id}--${shardIdx}`);
+      }
+    }
+    // shards === [] (no prompts staged at all for this leaf)
+    // contributes 0 to both counts. The aggregator will emit a single
+    // failed row for the leaf at --continue time; that row appears in
+    // specialist_outputs[] in the final report but is intentionally
+    // NOT counted in dispatch progress (the orchestrator never had
+    // a prompt to dispatch).
+  }
+  return { pending, totalDispatchUnits };
+}
+
 // The order of specialist_outputs matches picked_leaves order so the
 // downstream report is deterministic.
 export function aggregateSpecialistOutputs(brief) {
@@ -2294,6 +2406,7 @@ async function main() {
     // brief.outputs_path and call --continue --run-id <id> without
     // --outputs-file in the common case.
     let outputsFile = args["outputs-file"];
+    let currentState = null;
     if (outputsFile === undefined) {
       const storageRoot = resolveStorageRoot();
       const manifest = readManifest(runId, { storageRoot });
@@ -2303,7 +2416,7 @@ async function main() {
           { run_id: runId },
         );
       }
-      const currentState = manifest.current_state;
+      currentState = manifest.current_state;
       if (!currentState) {
         fail(
           `--continue: manifest has no current_state for run-id "${runId}"; cannot resolve default --outputs-file. Pass --outputs-file <path> explicitly.`,
@@ -2311,61 +2424,99 @@ async function main() {
         );
       }
       outputsFile = defaultOutputsPath(runId, currentState);
-      // dispatch_specialists special case: if no aggregate file exists yet,
-      // try to aggregate from per-leaf output files. The new flow has
-      // each specialist writing to <run_dir>/workers/dispatch_specialists-output-<leaf-id>.json
-      // (or per-shard variants); the runner aggregates on --continue.
-      // If neither the aggregate file NOR any per-leaf outputs exist, we
-      // fall through to the existing not-found error so the orchestrator
-      // sees the same "missing output" signal.
-      if (currentState === "dispatch_specialists" && !existsSync(outputsFile)) {
-        const briefPath = defaultBriefPath(runId, currentState);
-        if (existsSync(briefPath)) {
-          let brief;
+    } else if (typeof outputsFile !== "string" || outputsFile.length === 0) {
+      fail("--outputs-file requires a path argument");
+    } else {
+      // Explicit --outputs-file: still need currentState for the
+      // dispatch_specialists empty-pick-set / per-leaf auto-synth
+      // path below. Without this, callers passing the canonical
+      // outputs path explicitly (e.g. as documented in older flow)
+      // would bypass the auto-aggregate fast-path and hit
+      // "ENOENT outputs-file" on legitimate empty-pick / per-leaf
+      // runs.
+      const storageRoot = resolveStorageRoot();
+      const manifest = readManifest(runId, { storageRoot });
+      currentState = manifest?.current_state ?? null;
+    }
+    // dispatch_specialists special case: if no aggregate file exists yet,
+    // try to aggregate from per-leaf output files. The new flow has
+    // each specialist writing to <run_dir>/workers/dispatch_specialists-output-<leaf-id>.json
+    // (or per-shard variants); the runner aggregates on --continue.
+    // If neither the aggregate file NOR any per-leaf outputs exist, we
+    // fall through to the existing not-found error so the orchestrator
+    // sees the same "missing output" signal.
+    //
+    // This block intentionally fires regardless of whether outputsFile
+    // was implicit (default) or explicit (--outputs-file). The
+    // empty-pick-set "no orchestrator wedge" promise has to hold for
+    // both invocation styles; otherwise callers passing the canonical
+    // outputs path explicitly would hit the wedge that the implicit
+    // path was just fixed for.
+    if (currentState === "dispatch_specialists" && !existsSync(outputsFile)) {
+      const briefPath = defaultBriefPath(runId, currentState);
+      if (existsSync(briefPath)) {
+        let brief;
+        try {
+          brief = JSON.parse(readFileSync(briefPath, "utf8"));
+        } catch {
+          brief = null;
+        }
+        if (brief) {
+          // Decide whether to aggregate based on ON-DISK EVIDENCE:
+          // does at least one per-leaf (or per-shard) output FILE
+          // exist? Don't gate on payload status field — a worker
+          // that legitimately wrote `status: "failed"` should still
+          // contribute its row to the aggregate. The previous
+          // status-based gate caused legitimate failed rows to be
+          // dropped and `--continue` to fail with "default outputs
+          // file not found" even when output files existed.
+          //
+          // Special case: empty picked_leaves[]. The dispatch CLI
+          // modes return a clean zero-work envelope for this input
+          // (the trim worker can legitimately pick zero leaves;
+          // the rest of the pipeline accepts []), so the
+          // orchestrator's dispatch loop exits with no per-leaf
+          // outputs ever written. anySpecialistOutputOnDisk
+          // returns false in that case (correctly — there are no
+          // outputs), but we STILL need to synthesize an empty
+          // aggregate so --continue can commit specialist_outputs:
+          // []. Without this, --continue would hit the "default
+          // outputs file not found" error and wedge the orchestrator
+          // — exactly the wedge the round-11 envelope fix was
+          // supposed to remove.
+          //
+          // Both anySpecialistOutputOnDisk and aggregateSpecialistOutputs
+          // call discoverLeafShards, which throws on the corruption
+          // case where BOTH canonical AND sharded prompt files exist
+          // for the same leaf. Catch and route through fail(err.message,
+          // {run_id}) so the CLI emits a clean structured error rather
+          // than the generic "unhandled error: <stack>" wrapper.
           try {
-            brief = JSON.parse(readFileSync(briefPath, "utf8"));
-          } catch {
-            brief = null;
-          }
-          if (brief) {
-            // Decide whether to aggregate based on ON-DISK EVIDENCE:
-            // does at least one per-leaf (or per-shard) output FILE
-            // exist? Don't gate on payload status field — a worker
-            // that legitimately wrote `status: "failed"` should still
-            // contribute its row to the aggregate. The previous
-            // status-based gate caused legitimate failed rows to be
-            // dropped and `--continue` to fail with "default outputs
-            // file not found" even when output files existed.
-            //
-            // Both anySpecialistOutputOnDisk and aggregateSpecialistOutputs
-            // call discoverLeafShards, which throws on the corruption
-            // case where BOTH canonical AND sharded prompt files exist
-            // for the same leaf. Catch and route through fail(err.message,
-            // {run_id}) so the CLI emits a clean structured error rather
-            // than the generic "unhandled error: <stack>" wrapper.
-            try {
-              const haveSomeOnDiskOutput = anySpecialistOutputOnDisk(brief);
-              if (haveSomeOnDiskOutput) {
-                const aggregate = aggregateSpecialistOutputs(brief);
-                atomicWriteFile(outputsFile, JSON.stringify(aggregate, null, 2));
-              }
-            } catch (err) {
-              fail(
-                `--continue: ${err?.message ?? String(err)}`,
-                { run_id: runId, current_state: currentState },
-              );
+            const pickedLeaves = brief?.inputs?.picked_leaves;
+            const isEmptyPickSet = Array.isArray(pickedLeaves) && pickedLeaves.length === 0;
+            const haveSomeOnDiskOutput = anySpecialistOutputOnDisk(brief);
+            if (haveSomeOnDiskOutput || isEmptyPickSet) {
+              // aggregateSpecialistOutputs handles the empty case
+              // intrinsically: with picked_leaves=[], the loop in
+              // that function emits 0 rows and returns
+              // { specialist_outputs: [] }.
+              const aggregate = aggregateSpecialistOutputs(brief);
+              atomicWriteFile(outputsFile, JSON.stringify(aggregate, null, 2));
             }
+          } catch (err) {
+            fail(
+              `--continue: ${err?.message ?? String(err)}`,
+              { run_id: runId, current_state: currentState },
+            );
           }
         }
       }
-      if (!existsSync(outputsFile)) {
-        fail(
-          `--continue: default outputs file not found at "${outputsFile}". Either write your worker output to that path (the brief shipped it as outputs_path) or pass --outputs-file <path> explicitly.`,
-          { run_id: runId, current_state: currentState, expected_path: outputsFile },
-        );
-      }
-    } else if (typeof outputsFile !== "string" || outputsFile.length === 0) {
-      fail("--outputs-file requires a path argument");
+    }
+    if (!existsSync(outputsFile)) {
+      fail(
+        `--continue: outputs file not found at "${outputsFile}". Either write your worker output to that path (the brief shipped it as outputs_path) or pass --outputs-file <path> explicitly.`,
+        { run_id: runId, current_state: currentState, expected_path: outputsFile },
+      );
     }
     const outputs = readJsonFile(outputsFile, "--outputs-file");
 
@@ -2761,20 +2912,31 @@ async function main() {
   // yet exist on disk. Output paths:
   //   <run_dir>/workers/dispatch_specialists-output-<leaf-id>.json
   //   <run_dir>/workers/dispatch_specialists-output-<leaf-id>--<shardIdx>.json
-  if (args["print-pending-leaf-ids"]) {
+  if (args["print-pending-leaf-ids"] || args["print-batch-envelope"]) {
+    // The two modes share the pending-list compute path but emit
+    // different output shapes (newline-separated ids vs JSON envelope).
+    // Refuse to run with BOTH flags set: the output would be the JSON
+    // envelope (because the envelope branch wins below) but the cliName
+    // used in error messages would be --print-pending-leaf-ids, leaving
+    // a caller's script with a surprising payload shape and misleading
+    // error attribution. Hard-fail so callers pick one form.
+    if (args["print-pending-leaf-ids"] && args["print-batch-envelope"]) {
+      fail("--print-pending-leaf-ids and --print-batch-envelope are mutually exclusive; pass exactly one.");
+    }
+    const cliName = args["print-pending-leaf-ids"] ? "--print-pending-leaf-ids" : "--print-batch-envelope";
     const runId = args["run-id"];
     if (!runId || typeof runId !== "string" || !isValidRunId(runId)) {
-      fail("--print-pending-leaf-ids requires --run-id <id>");
+      fail(`${cliName} requires --run-id <id>`);
     }
     const batchSizeRaw = args["batch-size"];
     let batchSize = 10;
     if (batchSizeRaw !== undefined) {
       if (typeof batchSizeRaw !== "string" || !/^\d+$/.test(batchSizeRaw)) {
-        fail("--batch-size requires a positive integer");
+        fail(`${cliName}: --batch-size requires a positive integer`);
       }
       batchSize = Number.parseInt(batchSizeRaw, 10);
       if (batchSize < 1 || batchSize > 50) {
-        fail("--batch-size must be between 1 and 50 (default 10)");
+        fail(`${cliName}: --batch-size must be between 1 and 50 (default 10)`);
       }
     }
     // Validate the run is ACTUALLY paused on dispatch_specialists,
@@ -2787,20 +2949,20 @@ async function main() {
     const manifest = readManifest(runId, { storageRoot });
     if (!manifest) {
       fail(
-        `--print-pending-leaf-ids: no manifest found for run-id "${runId}".`,
+        `${cliName}: no manifest found for run-id "${runId}".`,
         { run_id: runId },
       );
     }
     if (manifest.current_state !== "dispatch_specialists") {
       fail(
-        `--print-pending-leaf-ids: run "${runId}" is in state "${manifest.current_state ?? "unknown"}" (status: ${manifest.status ?? "unknown"}); the run must be paused on dispatch_specialists.`,
+        `${cliName}: run "${runId}" is in state "${manifest.current_state ?? "unknown"}" (status: ${manifest.status ?? "unknown"}); the run must be paused on dispatch_specialists.`,
         { run_id: runId, current_state: manifest.current_state ?? null, status: manifest.status ?? null },
       );
     }
     const briefPath = defaultBriefPath(runId, "dispatch_specialists");
     if (!briefPath || !existsSync(briefPath)) {
       fail(
-        `--print-pending-leaf-ids: no dispatch_specialists brief at "${briefPath}". The run is in state dispatch_specialists per the manifest, but the brief file is missing.`,
+        `${cliName}: no dispatch_specialists brief at "${briefPath}". The run is in state dispatch_specialists per the manifest, but the brief file is missing.`,
         { run_id: runId, expected_path: briefPath },
       );
     }
@@ -2809,75 +2971,114 @@ async function main() {
       brief = JSON.parse(readFileSync(briefPath, "utf8"));
     } catch (err) {
       fail(
-        `--print-pending-leaf-ids: brief at "${briefPath}" is unparseable: ${err?.message ?? String(err)}`,
+        `${cliName}: brief at "${briefPath}" is unparseable: ${err?.message ?? String(err)}`,
         { run_id: runId, brief_path: briefPath },
       );
     }
     const pickedLeaves = brief?.inputs?.picked_leaves;
     if (!Array.isArray(pickedLeaves)) {
       fail(
-        `--print-pending-leaf-ids: brief has no picked_leaves[] field (state may have advanced past dispatch_specialists).`,
+        `${cliName}: brief has no picked_leaves[] field (state may have advanced past dispatch_specialists).`,
         { run_id: runId },
       );
     }
-    // Empty picked_leaves is NOT an error — it means there's nothing
-    // to dispatch (which is a legal state for the FSM to reach when
-    // earlier states determined no specialists apply). The orchestrator
-    // loop's exit condition is "BATCH is empty"; emit nothing and
-    // exit 0 so the loop progresses cleanly. Hard-failing here would
-    // wedge an orchestrator that's correctly observing "no work left".
+    // Empty picked_leaves: render a clean zero-work envelope. The
+    // dispatch_specialists FSM precondition is `picked_leaves is an
+    // array` (fsm/code-reviewer.fsm.yaml — relaxed in this PR from
+    // the previous "is non-empty" to match what the pipeline actually
+    // does). The trim worker's contract permits picking fewer than
+    // the cap (down to and including zero); writeSpecialistPromptsToDisk,
+    // aggregateSpecialistOutputs, verify_coverage, and aggregate_findings
+    // all handle the empty-array case correctly and produce a valid
+    // (empty) report from no specialists. Treating this as a fatal
+    // error would wedge the orchestrator on a legitimate "no leaves
+    // picked" run instead of letting it complete cleanly. For the
+    // plaintext --print-pending-leaf-ids:
+    // emit nothing and exit 0. For --print-batch-envelope: emit
+    // `{ batch: [], remaining_after: 0, pending_now: 0,
+    //    total_dispatch_units: 0, shims: {} }` so an orchestrator
+    // parsing JSON sees an explicit zero-work signal. Both
+    // behaviours let the orchestrator's loop terminate cleanly and
+    // --continue produce a valid empty specialist_outputs[].
     if (pickedLeaves.length === 0) {
+      if (args["print-batch-envelope"]) {
+        process.stdout.write(JSON.stringify({
+          batch: [], remaining_after: 0, pending_now: 0, total_dispatch_units: 0, shims: {},
+        }) + "\n");
+      }
       return;
     }
-    const pending = [];
-    for (const leaf of pickedLeaves) {
-      if (!leaf || typeof leaf.id !== "string") continue;
-      // discoverLeafShards throws on the corruption case where BOTH
-      // canonical AND sharded prompt files exist for the leaf. Catch
-      // here and route through fail(err.message, {run_id, leaf_id})
-      // so the CLI emits a clean structured error rather than the
-      // generic "unhandled error: <stack>" wrapper. The orchestrator
-      // can inspect the structured payload and abort the batch loop
-      // cleanly rather than trying to parse a stack trace.
-      let shards;
-      try {
-        shards = discoverLeafShards(runId, leaf.id);
-      } catch (err) {
-        fail(
-          `--print-pending-leaf-ids: ${err?.message ?? String(err)}`,
-          { run_id: runId, leaf_id: leaf.id },
-        );
-      }
-      if (shards === null) {
-        // Non-sharded leaf.
-        const outPath = defaultSpecialistOutputPath(runId, leaf.id);
-        if (outPath && !existsSync(outPath)) pending.push(leaf.id);
-      } else if (shards.length > 0) {
-        for (const shardIdx of shards) {
-          // Only emit a shard as pending when BOTH its prompt is
-          // staged AND its output is missing. discoverLeafShards
-          // normalises observed indices to a contiguous [0..max]
-          // range to surface partial-staging gaps as failed rows in
-          // the aggregator. Without this prompt-exists check,
-          // --print-pending-leaf-ids would emit shard ids for
-          // gaps (e.g. shard 1 when prompts exist only for 0 and 2),
-          // and the orchestrator's --print-agent-shim-prompt call
-          // for that id would hard-fail (no prompt file), wedging
-          // the batch loop. The aggregator already surfaces the
-          // missing-prompt case as a "failed" row on --continue,
-          // so dropping un-staged shards here is the right move.
-          const promptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leaf.id, shardIdx);
-          if (!promptPath || !existsSync(promptPath)) continue;
-          const outPath = defaultSpecialistOutputPath(runId, leaf.id, shardIdx);
-          if (outPath && !existsSync(outPath)) pending.push(`${leaf.id}--${shardIdx}`);
-        }
-      }
-      // shards === [] (no prompts staged) is treated as silent skip —
-      // aggregateSpecialistOutputs will emit a "failed" row for the
-      // leaf on --continue. The orchestrator can't dispatch what was
-      // never staged.
+    // Single pass over picked_leaves computes BOTH the pending list
+    // (units missing an output) AND the stable total_dispatch_units count
+    // (every dispatchable unit, regardless of output state). Sharing
+    // one walk with one prompt-existence check guarantees pending_now
+    // and total_dispatch_units use the IDENTICAL accounting basis — they
+    // can't drift apart in future edits because there are no two
+    // independent counts to keep in sync. Both metrics treat
+    // "dispatchable unit" the same way: a prompt file must exist on
+    // disk for the leaf or shard to count. Gappy shards (no prompt at
+    // index N even though indices < N and > N have prompts) and
+    // unstaged leaves silently skip in BOTH counts; the aggregator
+    // will surface those as failed rows at --continue time, but the
+    // orchestrator's progress accounting tracks only what's
+    // dispatchable.
+    const { pending, totalDispatchUnits } = computeDispatchableUnits(runId, pickedLeaves, cliName);
+    // Staging-failure detection: picked_leaves is non-empty but
+    // computeDispatchableUnits found zero staged prompts on disk.
+    // Without this guard, both --print-pending-leaf-ids and
+    // --print-batch-envelope would emit a clean zero-work response
+    // — indistinguishable from the legitimate empty-pick-set
+    // zero-work case above — and the orchestrator would exit the
+    // dispatch loop, then fail at --continue with a misleading
+    // "outputs file not found" error. atomicWriteFile is
+    // best-effort (silently swallows I/O errors), so this is a
+    // real failure mode: a transient disk full / permission error
+    // during writeSpecialistPromptsToDisk could leave picked_leaves
+    // non-empty AND totalDispatchUnits == 0. Hard-fail here with a
+    // structured error that names the discrepancy so the
+    // orchestrator aborts cleanly instead of silently producing an
+    // empty review.
+    if (pickedLeaves.length > 0 && totalDispatchUnits === 0) {
+      fail(
+        `${cliName}: picked_leaves[] is non-empty (${pickedLeaves.length} leaves) but no dispatch units are staged on disk. Prompt staging may have failed silently (atomicWriteFile swallows I/O errors). Re-run from --start, or inspect the workers/ directory for missing dispatch_specialists-prompt-*.md files before retrying.`,
+        { run_id: runId, picked_count: pickedLeaves.length, brief_path: briefPath },
+      );
     }
     const batch = pending.slice(0, batchSize);
+    if (args["print-batch-envelope"]) {
+      // JSON envelope: replaces N×--print-agent-shim-prompt calls per
+      // batch. Single Node process invocation gives the orchestrator
+      // everything it needs to dispatch this batch's Agents AND know
+      // whether to loop again (remaining_after > 0) or exit
+      // (remaining_after === 0). Progress visibility via pending_now
+      // (transient — shrinks as outputs land) and total_dispatch_units
+      // (stable across calls within this state — the Y in an "X of Y
+      // Agent invocations complete" indicator, where X =
+      // total_dispatch_units - pending_now) lets the orchestrator
+      // emit user-facing progress without extra CLI calls. Note that
+      // total_dispatch_units counts Agent invocations (shards), NOT
+      // picked leaves — the final report's specialists_dispatched is
+      // a per-leaf count (sharded leaves merge into one row at
+      // --continue aggregation), so the two totals will differ on
+      // sharded runs and that's by design.
+      const shims = {};
+      for (const id of batch) {
+        const parsed = parseLeafIdAndShardIdx({
+          leafIdArg: id,
+          shardIdxArg: undefined,
+          cliName,
+        });
+        shims[id] = buildShimText(runId, parsed.leafId, parsed.shardIdx, cliName);
+      }
+      process.stdout.write(JSON.stringify({
+        batch,
+        remaining_after: Math.max(0, pending.length - batch.length),
+        pending_now: pending.length,
+        total_dispatch_units: totalDispatchUnits,
+        shims,
+      }) + "\n");
+      return;
+    }
     if (batch.length > 0) {
       process.stdout.write(batch.join("\n") + "\n");
     }
@@ -2945,6 +3146,7 @@ async function main() {
       "  run-review.mjs --print-current-state --run-id <id>\n" +
       "  run-review.mjs --print-dispatch-prompt --run-id <id> [--leaf-id <id>] [--shard-idx <N>]\n" +
       "  run-review.mjs --print-pending-leaf-ids --run-id <id> [--batch-size <N>]\n" +
+      "  run-review.mjs --print-batch-envelope --run-id <id> [--batch-size <N>]\n" +
       "  run-review.mjs --print-agent-shim-prompt --run-id <id> --leaf-id <id> [--shard-idx <N>]",
   );
 }
@@ -2952,17 +3154,31 @@ async function main() {
 // Shared body for --print-agent-shim-prompt. Validates inputs, locates
 // the per-leaf prompt + output paths, and emits the canonical shim text.
 function printShimForParsedId(runId, leafId, shardIdx) {
+  process.stdout.write(buildShimText(runId, leafId, shardIdx, "--print-agent-shim-prompt"));
+}
+
+// Shared shim-text builder. Used by --print-agent-shim-prompt (single
+// shim emitted to stdout) and by --print-batch-envelope (multiple
+// shims packed into a JSON envelope, one per batch id). Centralising
+// here keeps the shim text byte-identical across both code paths
+// — orchestrators that mix the two modes always see the same prompt
+// shape, so worker behaviour is independent of which CLI mode the
+// orchestrator chose.
+//
+// `cliName` is the calling CLI's name, used in error messages so a
+// fail() routed through here is attributable to the right mode.
+function buildShimText(runId, leafId, shardIdx, cliName) {
   if (!isValidLeafId(leafId)) {
-    fail(`--print-agent-shim-prompt: invalid --leaf-id "${leafId}" (must be kebab-case ASCII matching ^[a-z0-9]+(-[a-z0-9]+)*$ — lowercase letters and digits, single hyphens between segments, no leading/trailing hyphens, no consecutive hyphens — AND must not end in --<digits>; that suffix is reserved for shard ids).`);
+    fail(`${cliName}: invalid --leaf-id "${leafId}" (must be kebab-case ASCII matching ^[a-z0-9]+(-[a-z0-9]+)*$ — lowercase letters and digits, single hyphens between segments, no leading/trailing hyphens, no consecutive hyphens — AND must not end in --<digits>; that suffix is reserved for shard ids).`);
   }
   if (shardIdx !== null && (!Number.isInteger(shardIdx) || shardIdx < 0)) {
-    fail(`--print-agent-shim-prompt: invalid --shard-idx "${shardIdx}" (must be a non-negative integer).`);
+    fail(`${cliName}: invalid --shard-idx "${shardIdx}" (must be a non-negative integer).`);
   }
   const promptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leafId, shardIdx);
   const outputPath = defaultSpecialistOutputPath(runId, leafId, shardIdx);
   if (!promptPath || !existsSync(promptPath)) {
     fail(
-      `--print-agent-shim-prompt: no prompt file at "${promptPath}". The leaf or shard may not be staged.`,
+      `${cliName}: no prompt file at "${promptPath}". The leaf or shard may not be staged.`,
       { run_id: runId, leaf_id: leafId, shard_idx: shardIdx, expected_path: promptPath },
     );
   }
@@ -2980,7 +3196,7 @@ function printShimForParsedId(runId, leafId, shardIdx) {
     `Repository root: ${REPO_ROOT}`,
     "",
   ];
-  process.stdout.write(lines.join("\n"));
+  return lines.join("\n");
 }
 
 // Gate the auto-run on "this is the entrypoint" so unit tests can import

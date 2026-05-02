@@ -1,10 +1,12 @@
 // diff-shard.test.js — unit tests for the shardFilteredDiff helper.
 //
 // Sharding kicks in when one leaf's pre-computed filtered diff exceeds
-// SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES (default 32KB). The runner stages
-// one prompt per shard so the dispatched specialist sees a focused
-// per-file slice rather than a multi-hundred-KB blob. These tests lock
-// down the partitioning contract: split on `^diff --git a/<path>` markers,
+// SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES (default 256KB; the env var
+// overrides per-run for cost-sensitive batches that prefer many cheap
+// Agents over a few expensive ones). The runner stages one prompt per
+// shard so the dispatched specialist sees a focused per-file slice
+// rather than a multi-hundred-KB blob. These tests lock down the
+// partitioning contract: split on `^diff --git a/<path>` markers,
 // never split inside a file, byte-equal concatenation across shards,
 // trivial passthrough below threshold.
 
@@ -99,6 +101,51 @@ test("shardFilteredDiff: leading text before first diff --git marker attaches to
   assert.ok(out[0].diffText.startsWith(header), `expected header at shard 0 start, got: ${out[0].diffText.slice(0, 50)}`);
   // Re-concatenation still round-trips.
   assert.equal(out.map((s) => s.diffText).join(""), text);
+});
+
+test("shardFilteredDiff: default threshold (256KB) packs files that the previous 32KB default would have split", () => {
+  // Locks down the round-30 behaviour change: the default threshold
+  // bumped from 32KB to 256KB so that a leaf with file_globs="**/*.js"
+  // matching N mid-sized changed files is dispatched as ONE Agent
+  // reviewing all N files, instead of being split across multiple
+  // shard Agents under the old default. (shardFilteredDiff packs
+  // files greedily — under 32KB it could produce anywhere from 2 to
+  // N shards depending on file sizes; under 256KB the same fixture
+  // typically fits in 1.) Modern Claude models comfortably handle
+  // 200-400KB of prompt; sharding now only fires for genuinely
+  // large filtered diffs.
+  //
+  // To actually distinguish the new 256KB default from the previous
+  // 32KB default, the synthetic diff must straddle 32KB (so the old
+  // default WOULD have split it) while staying under 256KB (so the
+  // new default keeps it in one shard). Six ~10KB files = ~60KB
+  // total — well above 32KB, well below 256KB. Asserting both
+  // (out.length === 1 under default AND out.length > 1 under
+  // explicit threshold = 32KB) catches a regression that accidentally
+  // restores the old default value.
+  const filler = "+ // ".repeat(2000); // ~10KB per file
+  const fileDiffs = [];
+  for (let i = 0; i < 6; i++) {
+    fileDiffs.push(makeFileDiff(`file-${i}.js`, `@@ -1 +1 @@\n-old\n${filler}`));
+  }
+  const text = fileDiffs.join("");
+  // The synthetic diff is intentionally above the previous 32KB
+  // default and below the new 256KB default — that's the regression
+  // band we're locking down.
+  assert.ok(
+    text.length > 32 * 1024 && text.length < 256 * 1024,
+    `test fixture must straddle the old/new threshold band; got ${text.length} bytes`,
+  );
+  const outDefault = shardFilteredDiff(text); // no opts → 256KB default
+  assert.equal(outDefault.length, 1, "256KB default must pack the 6×10KB files into one shard");
+  assert.equal(outDefault[0].files.length, 6);
+  assert.equal(outDefault[0].diffText, text);
+  // Under the OLD 32KB threshold (passed explicitly), the same fixture
+  // splits — which is exactly the bug the new default is meant to fix.
+  // If a future change accidentally restores 32KB as the default,
+  // outDefault.length above would jump to >1 and this test would fail.
+  const outOld = shardFilteredDiff(text, { threshold: 32 * 1024 });
+  assert.ok(outOld.length > 1, `32KB threshold must split the same fixture; got ${outOld.length} shard(s)`);
 });
 
 test("shardFilteredDiff: env var SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES overrides default", () => {

@@ -107,9 +107,13 @@ test("shardFilteredDiff: default threshold (256KB) packs files that the previous
   // Locks down the round-30 behaviour change: the default threshold
   // bumped from 32KB to 256KB so that a leaf with file_globs="**/*.js"
   // matching N mid-sized changed files is dispatched as ONE Agent
-  // reviewing all N files, not N Agents reviewing one file each.
-  // Modern Claude models comfortably handle 200-400KB of prompt;
-  // sharding now only fires for genuinely huge refactors.
+  // reviewing all N files, instead of being split across multiple
+  // shard Agents under the old default. (shardFilteredDiff packs
+  // files greedily — under 32KB it could produce anywhere from 2 to
+  // N shards depending on file sizes; under 256KB the same fixture
+  // typically fits in 1.) Modern Claude models comfortably handle
+  // 200-400KB of prompt; sharding now only fires for genuinely
+  // large filtered diffs.
   //
   // To actually distinguish the new 256KB default from the previous
   // 32KB default, the synthetic diff must straddle 32KB (so the old

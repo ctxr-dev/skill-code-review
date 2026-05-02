@@ -388,19 +388,23 @@ function computeFilteredDiff(baseSha, headSha, fileGlobs) {
 //
 // Threshold default 256KB; overridable via SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES.
 //
-// Why 256KB: the previous 32KB threshold caused aggressive sharding —
-// a leaf with file_globs="**/*.js" matching 6 changed files would split
-// into 6 shards (one per file), each dispatched to its own Agent.
-// That's 6x the Agent count, 6x the wall-clock cost, and the
-// per-shard specialist loses the cross-file picture that catches
-// duplication / consistency issues. Modern Claude models comfortably
-// handle 200-400KB of prompt (Sonnet 4.6: 200K context, Opus 4.7:
-// up to 1M); 256KB filtered-diff plus the leaf body / project profile
-// / tool results lands well under the budget. Sharding now fires only
-// when a leaf's filtered diff exceeds ~256KB (a few hundred kilobytes —
-// the size band of a sweeping refactor PR or a generated-code dump);
-// most everyday review diffs land below 256KB and dispatch as a single
-// Agent per leaf.
+// Why 256KB: shardFilteredDiff greedy-packs files into a shard until
+// the threshold is exceeded, then opens a new shard and continues.
+// Under the previous 32KB threshold, a leaf with file_globs="**/*.js"
+// matching ~6 mid-sized changed files (5-15KB each) would typically
+// produce 2-4 shards — fewer Agents than one-per-file, but still
+// fragmenting the cross-file view. Worse, any single ~30KB+ file
+// forced a flush, so a leaf with 6 such files DID split close to
+// one-per-file. The new 256KB default keeps almost all everyday
+// review diffs in a single shard (one Agent reviewing every file
+// the leaf activates on), preserving the cross-file picture that
+// catches duplication / consistency issues. Modern Claude models
+// comfortably handle 200-400KB of prompt (Sonnet 4.6: 200K context,
+// Opus 4.7: up to 1M); 256KB filtered-diff plus the leaf body /
+// project profile / tool results lands well under the budget.
+// Sharding now fires only when a leaf's filtered diff exceeds
+// ~256KB (a few hundred kilobytes — the size band of a sweeping
+// refactor PR or a generated-code dump).
 //
 // Tuning: SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES env var overrides
 // per-run. Set lower (e.g. 65536) for cost-sensitive runs that

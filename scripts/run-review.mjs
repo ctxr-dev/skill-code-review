@@ -2406,6 +2406,7 @@ async function main() {
     // brief.outputs_path and call --continue --run-id <id> without
     // --outputs-file in the common case.
     let outputsFile = args["outputs-file"];
+    let currentState = null;
     if (outputsFile === undefined) {
       const storageRoot = resolveStorageRoot();
       const manifest = readManifest(runId, { storageRoot });
@@ -2415,7 +2416,7 @@ async function main() {
           { run_id: runId },
         );
       }
-      const currentState = manifest.current_state;
+      currentState = manifest.current_state;
       if (!currentState) {
         fail(
           `--continue: manifest has no current_state for run-id "${runId}"; cannot resolve default --outputs-file. Pass --outputs-file <path> explicitly.`,
@@ -2423,81 +2424,99 @@ async function main() {
         );
       }
       outputsFile = defaultOutputsPath(runId, currentState);
-      // dispatch_specialists special case: if no aggregate file exists yet,
-      // try to aggregate from per-leaf output files. The new flow has
-      // each specialist writing to <run_dir>/workers/dispatch_specialists-output-<leaf-id>.json
-      // (or per-shard variants); the runner aggregates on --continue.
-      // If neither the aggregate file NOR any per-leaf outputs exist, we
-      // fall through to the existing not-found error so the orchestrator
-      // sees the same "missing output" signal.
-      if (currentState === "dispatch_specialists" && !existsSync(outputsFile)) {
-        const briefPath = defaultBriefPath(runId, currentState);
-        if (existsSync(briefPath)) {
-          let brief;
+    } else if (typeof outputsFile !== "string" || outputsFile.length === 0) {
+      fail("--outputs-file requires a path argument");
+    } else {
+      // Explicit --outputs-file: still need currentState for the
+      // dispatch_specialists empty-pick-set / per-leaf auto-synth
+      // path below. Without this, callers passing the canonical
+      // outputs path explicitly (e.g. as documented in older flow)
+      // would bypass the auto-aggregate fast-path and hit
+      // "ENOENT outputs-file" on legitimate empty-pick / per-leaf
+      // runs.
+      const storageRoot = resolveStorageRoot();
+      const manifest = readManifest(runId, { storageRoot });
+      currentState = manifest?.current_state ?? null;
+    }
+    // dispatch_specialists special case: if no aggregate file exists yet,
+    // try to aggregate from per-leaf output files. The new flow has
+    // each specialist writing to <run_dir>/workers/dispatch_specialists-output-<leaf-id>.json
+    // (or per-shard variants); the runner aggregates on --continue.
+    // If neither the aggregate file NOR any per-leaf outputs exist, we
+    // fall through to the existing not-found error so the orchestrator
+    // sees the same "missing output" signal.
+    //
+    // This block intentionally fires regardless of whether outputsFile
+    // was implicit (default) or explicit (--outputs-file). The
+    // empty-pick-set "no orchestrator wedge" promise has to hold for
+    // both invocation styles; otherwise callers passing the canonical
+    // outputs path explicitly would hit the wedge that the implicit
+    // path was just fixed for.
+    if (currentState === "dispatch_specialists" && !existsSync(outputsFile)) {
+      const briefPath = defaultBriefPath(runId, currentState);
+      if (existsSync(briefPath)) {
+        let brief;
+        try {
+          brief = JSON.parse(readFileSync(briefPath, "utf8"));
+        } catch {
+          brief = null;
+        }
+        if (brief) {
+          // Decide whether to aggregate based on ON-DISK EVIDENCE:
+          // does at least one per-leaf (or per-shard) output FILE
+          // exist? Don't gate on payload status field — a worker
+          // that legitimately wrote `status: "failed"` should still
+          // contribute its row to the aggregate. The previous
+          // status-based gate caused legitimate failed rows to be
+          // dropped and `--continue` to fail with "default outputs
+          // file not found" even when output files existed.
+          //
+          // Special case: empty picked_leaves[]. The dispatch CLI
+          // modes return a clean zero-work envelope for this input
+          // (the trim worker can legitimately pick zero leaves;
+          // the rest of the pipeline accepts []), so the
+          // orchestrator's dispatch loop exits with no per-leaf
+          // outputs ever written. anySpecialistOutputOnDisk
+          // returns false in that case (correctly — there are no
+          // outputs), but we STILL need to synthesize an empty
+          // aggregate so --continue can commit specialist_outputs:
+          // []. Without this, --continue would hit the "default
+          // outputs file not found" error and wedge the orchestrator
+          // — exactly the wedge the round-11 envelope fix was
+          // supposed to remove.
+          //
+          // Both anySpecialistOutputOnDisk and aggregateSpecialistOutputs
+          // call discoverLeafShards, which throws on the corruption
+          // case where BOTH canonical AND sharded prompt files exist
+          // for the same leaf. Catch and route through fail(err.message,
+          // {run_id}) so the CLI emits a clean structured error rather
+          // than the generic "unhandled error: <stack>" wrapper.
           try {
-            brief = JSON.parse(readFileSync(briefPath, "utf8"));
-          } catch {
-            brief = null;
-          }
-          if (brief) {
-            // Decide whether to aggregate based on ON-DISK EVIDENCE:
-            // does at least one per-leaf (or per-shard) output FILE
-            // exist? Don't gate on payload status field — a worker
-            // that legitimately wrote `status: "failed"` should still
-            // contribute its row to the aggregate. The previous
-            // status-based gate caused legitimate failed rows to be
-            // dropped and `--continue` to fail with "default outputs
-            // file not found" even when output files existed.
-            //
-            // Special case: empty picked_leaves[]. The dispatch CLI
-            // modes return a clean zero-work envelope for this input
-            // (the trim worker can legitimately pick zero leaves;
-            // the rest of the pipeline accepts []), so the
-            // orchestrator's dispatch loop exits with no per-leaf
-            // outputs ever written. anySpecialistOutputOnDisk
-            // returns false in that case (correctly — there are no
-            // outputs), but we STILL need to synthesize an empty
-            // aggregate so --continue can commit specialist_outputs:
-            // []. Without this, --continue would hit the "default
-            // outputs file not found" error and wedge the orchestrator
-            // — exactly the wedge the round-11 envelope fix was
-            // supposed to remove.
-            //
-            // Both anySpecialistOutputOnDisk and aggregateSpecialistOutputs
-            // call discoverLeafShards, which throws on the corruption
-            // case where BOTH canonical AND sharded prompt files exist
-            // for the same leaf. Catch and route through fail(err.message,
-            // {run_id}) so the CLI emits a clean structured error rather
-            // than the generic "unhandled error: <stack>" wrapper.
-            try {
-              const pickedLeaves = brief?.inputs?.picked_leaves;
-              const isEmptyPickSet = Array.isArray(pickedLeaves) && pickedLeaves.length === 0;
-              const haveSomeOnDiskOutput = anySpecialistOutputOnDisk(brief);
-              if (haveSomeOnDiskOutput || isEmptyPickSet) {
-                // aggregateSpecialistOutputs handles the empty case
-                // intrinsically: with picked_leaves=[], the loop in
-                // that function emits 0 rows and returns
-                // { specialist_outputs: [] }.
-                const aggregate = aggregateSpecialistOutputs(brief);
-                atomicWriteFile(outputsFile, JSON.stringify(aggregate, null, 2));
-              }
-            } catch (err) {
-              fail(
-                `--continue: ${err?.message ?? String(err)}`,
-                { run_id: runId, current_state: currentState },
-              );
+            const pickedLeaves = brief?.inputs?.picked_leaves;
+            const isEmptyPickSet = Array.isArray(pickedLeaves) && pickedLeaves.length === 0;
+            const haveSomeOnDiskOutput = anySpecialistOutputOnDisk(brief);
+            if (haveSomeOnDiskOutput || isEmptyPickSet) {
+              // aggregateSpecialistOutputs handles the empty case
+              // intrinsically: with picked_leaves=[], the loop in
+              // that function emits 0 rows and returns
+              // { specialist_outputs: [] }.
+              const aggregate = aggregateSpecialistOutputs(brief);
+              atomicWriteFile(outputsFile, JSON.stringify(aggregate, null, 2));
             }
+          } catch (err) {
+            fail(
+              `--continue: ${err?.message ?? String(err)}`,
+              { run_id: runId, current_state: currentState },
+            );
           }
         }
       }
-      if (!existsSync(outputsFile)) {
-        fail(
-          `--continue: default outputs file not found at "${outputsFile}". Either write your worker output to that path (the brief shipped it as outputs_path) or pass --outputs-file <path> explicitly.`,
-          { run_id: runId, current_state: currentState, expected_path: outputsFile },
-        );
-      }
-    } else if (typeof outputsFile !== "string" || outputsFile.length === 0) {
-      fail("--outputs-file requires a path argument");
+    }
+    if (!existsSync(outputsFile)) {
+      fail(
+        `--continue: outputs file not found at "${outputsFile}". Either write your worker output to that path (the brief shipped it as outputs_path) or pass --outputs-file <path> explicitly.`,
+        { run_id: runId, current_state: currentState, expected_path: outputsFile },
+      );
     }
     const outputs = readJsonFile(outputsFile, "--outputs-file");
 
@@ -3005,6 +3024,27 @@ async function main() {
     // orchestrator's progress accounting tracks only what's
     // dispatchable.
     const { pending, totalDispatchUnits } = computeDispatchableUnits(runId, pickedLeaves, cliName);
+    // Staging-failure detection: picked_leaves is non-empty but
+    // computeDispatchableUnits found zero staged prompts on disk.
+    // Without this guard, both --print-pending-leaf-ids and
+    // --print-batch-envelope would emit a clean zero-work response
+    // — indistinguishable from the legitimate empty-pick-set
+    // zero-work case above — and the orchestrator would exit the
+    // dispatch loop, then fail at --continue with a misleading
+    // "outputs file not found" error. atomicWriteFile is
+    // best-effort (silently swallows I/O errors), so this is a
+    // real failure mode: a transient disk full / permission error
+    // during writeSpecialistPromptsToDisk could leave picked_leaves
+    // non-empty AND totalDispatchUnits == 0. Hard-fail here with a
+    // structured error that names the discrepancy so the
+    // orchestrator aborts cleanly instead of silently producing an
+    // empty review.
+    if (pickedLeaves.length > 0 && totalDispatchUnits === 0) {
+      fail(
+        `${cliName}: picked_leaves[] is non-empty (${pickedLeaves.length} leaves) but no dispatch units are staged on disk. Prompt staging may have failed silently (atomicWriteFile swallows I/O errors). Re-run from --start, or inspect the workers/ directory for missing dispatch_specialists-prompt-*.md files before retrying.`,
+        { run_id: runId, picked_count: pickedLeaves.length, brief_path: briefPath },
+      );
+    }
     const batch = pending.slice(0, batchSize);
     if (args["print-batch-envelope"]) {
       // JSON envelope: replaces N×--print-agent-shim-prompt calls per

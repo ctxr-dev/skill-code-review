@@ -905,6 +905,35 @@ test("--print-batch-envelope: empty picked_leaves[] emits a clean zero-work enve
   );
   assert.equal(plain.status, 0, "--print-pending-leaf-ids on empty picked_leaves[] must also exit 0 (orchestrator's BATCH=$(...) sees empty string and breaks)");
   assert.equal(plain.stdout, "", "no leaves to dispatch → no stdout");
+
+  // CRITICAL: the orchestrator's dispatch loop exits cleanly above,
+  // but the next step is `--continue --run-id ...` which auto-
+  // synthesises the aggregate. Without the empty-pick-set fast-path
+  // in handleContinue, --continue would fail with "default outputs
+  // file not found" because anySpecialistOutputOnDisk returns false
+  // (correctly — no per-leaf outputs were written). This test drives
+  // the FULL "no orchestrator wedge" claim by:
+  //   1. Calling --continue.
+  //   2. Asserting it succeeds (exit 0).
+  //   3. Asserting the on-disk outputs file is `{ "specialist_outputs": [] }`.
+  // Without (1)+(2)+(3), the round-11 "no wedge" promise is broken
+  // by --continue's downstream error.
+  const cont = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--continue", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
+  );
+  assert.equal(cont.status, 0, `--continue after empty-batch envelope must exit 0; stdout=${cont.stdout}; stderr=${cont.stderr}`);
+  // The runner auto-synthesizes the aggregate at outputs_path. Read
+  // the brief to find the path and assert the aggregate is empty.
+  const briefRaw = readFileSync(join(workersDir, "dispatch_specialists-brief.json"), "utf8");
+  const briefObj = JSON.parse(briefRaw);
+  // The brief we wrote above doesn't carry outputs_path; reconstruct
+  // from the canonical staging convention.
+  const outputsPath = join(workersDir, "dispatch_specialists-output.json");
+  assert.ok(existsSync(outputsPath), `expected aggregate at ${outputsPath} after --continue`);
+  const aggregate = JSON.parse(readFileSync(outputsPath, "utf8"));
+  assert.deepEqual(aggregate, { specialist_outputs: [] }, "empty pick set must commit specialist_outputs: []");
 });
 
 test("--print-batch-envelope: degraded staging (gappy shards + unstaged leaves) reports accurate progress fields", () => {

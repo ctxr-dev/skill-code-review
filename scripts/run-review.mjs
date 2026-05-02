@@ -2449,6 +2449,20 @@ async function main() {
             // dropped and `--continue` to fail with "default outputs
             // file not found" even when output files existed.
             //
+            // Special case: empty picked_leaves[]. The dispatch CLI
+            // modes return a clean zero-work envelope for this input
+            // (the trim worker can legitimately pick zero leaves;
+            // the rest of the pipeline accepts []), so the
+            // orchestrator's dispatch loop exits with no per-leaf
+            // outputs ever written. anySpecialistOutputOnDisk
+            // returns false in that case (correctly — there are no
+            // outputs), but we STILL need to synthesize an empty
+            // aggregate so --continue can commit specialist_outputs:
+            // []. Without this, --continue would hit the "default
+            // outputs file not found" error and wedge the orchestrator
+            // — exactly the wedge the round-11 envelope fix was
+            // supposed to remove.
+            //
             // Both anySpecialistOutputOnDisk and aggregateSpecialistOutputs
             // call discoverLeafShards, which throws on the corruption
             // case where BOTH canonical AND sharded prompt files exist
@@ -2456,8 +2470,14 @@ async function main() {
             // {run_id}) so the CLI emits a clean structured error rather
             // than the generic "unhandled error: <stack>" wrapper.
             try {
+              const pickedLeaves = brief?.inputs?.picked_leaves;
+              const isEmptyPickSet = Array.isArray(pickedLeaves) && pickedLeaves.length === 0;
               const haveSomeOnDiskOutput = anySpecialistOutputOnDisk(brief);
-              if (haveSomeOnDiskOutput) {
+              if (haveSomeOnDiskOutput || isEmptyPickSet) {
+                // aggregateSpecialistOutputs handles the empty case
+                // intrinsically: with picked_leaves=[], the loop in
+                // that function emits 0 rows and returns
+                // { specialist_outputs: [] }.
                 const aggregate = aggregateSpecialistOutputs(brief);
                 atomicWriteFile(outputsFile, JSON.stringify(aggregate, null, 2));
               }

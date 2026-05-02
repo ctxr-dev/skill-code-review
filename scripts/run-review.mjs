@@ -886,6 +886,8 @@ export function buildDispatchPromptText(brief, opts = {}) {
       "",
       "Do NOT return JSON to the orchestrator inline; the runner reads from the path above on --continue and aggregates all per-leaf outputs into specialist_outputs[]. Concurrent specialists writing to the same path would clobber each other; the per-leaf path is unique.",
       "",
+      "FORBIDDEN PATHS: NEVER write to /tmp/* or any path outside the run-dir. This includes scratch files (build.js, leaves.json, ad-hoc node -e workspaces, etc.). /tmp is mode 1777 (world-readable on every Unix), shared across concurrent sessions, and collides under parallel development. The ONLY allowed write target is the per-leaf output path above; if you need scratch space, use the same workers/ directory that holds your dispatch prompt.",
+      "",
       `(For audit context: the runner's aggregate output is written to ${outputsPath}.)`,
       "",
     );
@@ -928,6 +930,9 @@ export function buildDispatchPromptText(brief, opts = {}) {
     lines.push("Write your JSON response to:");
   }
   lines.push(outputsPath);
+  lines.push("");
+  lines.push("--- FORBIDDEN PATHS ---");
+  lines.push("NEVER write to /tmp/* or any path outside the run-dir. This includes scratch files (build.js, leaves.json, ad-hoc node -e scripts, etc.). /tmp is mode 1777 (world-readable on every Unix), shared across concurrent sessions, and collides under parallel development. The ONLY allowed write target is the OUTPUTS PATH above; if you need scratch space, use the same workers/ directory that holds your dispatch prompt.");
   lines.push("");
   return lines.join("\n");
 }
@@ -2433,10 +2438,26 @@ async function main() {
       // outputs path explicitly (e.g. as documented in older flow)
       // would bypass the auto-aggregate fast-path and hit
       // "ENOENT outputs-file" on legitimate empty-pick / per-leaf
-      // runs.
+      // runs. Mirror the implicit branch's hard-fail semantics so
+      // both paths handle missing manifest / current_state the same
+      // way — silently nulling currentState here would degrade an
+      // explicit-path corruption signal into a misleading "outputs
+      // file not found" downstream.
       const storageRoot = resolveStorageRoot();
       const manifest = readManifest(runId, { storageRoot });
-      currentState = manifest?.current_state ?? null;
+      if (!manifest) {
+        fail(
+          `--continue: no manifest found for run-id "${runId}". Run --start first, or check that the run-id is correct.`,
+          { run_id: runId },
+        );
+      }
+      currentState = manifest.current_state;
+      if (!currentState) {
+        fail(
+          `--continue: manifest has no current_state for run-id "${runId}". The manifest is corrupted; inspect it before retrying.`,
+          { run_id: runId },
+        );
+      }
     }
     // dispatch_specialists special case: if no aggregate file exists yet,
     // try to aggregate from per-leaf output files. The new flow has
@@ -2458,8 +2479,17 @@ async function main() {
         let brief;
         try {
           brief = JSON.parse(readFileSync(briefPath, "utf8"));
-        } catch {
-          brief = null;
+        } catch (err) {
+          // Mirror the structured error contract used by --print-batch-envelope
+          // / --print-pending-leaf-ids on the same brief: don't silently
+          // null the brief and fall through to a misleading "outputs
+          // file not found" — surface the real corruption with the
+          // brief path and parse error so the operator can fix the
+          // root cause.
+          fail(
+            `--continue: brief at "${briefPath}" is unparseable: ${err?.message ?? String(err)}`,
+            { run_id: runId, brief_path: briefPath, current_state: currentState },
+          );
         }
         if (brief) {
           // Decide whether to aggregate based on ON-DISK EVIDENCE:
@@ -3193,6 +3223,7 @@ function buildShimText(runId, leafId, shardIdx, cliName) {
     "Include `skip_reason: \"<one sentence>\"` when status == \"skipped\" (FSM schema requires it then) OR when status == \"failed\" (encouraged for actionable diagnostics).",
     "",
     "Do NOT return JSON inline; the runner aggregates from this file path on --continue.",
+    "FORBIDDEN PATHS: NEVER write to /tmp/* or any path outside the run-dir. The ONLY allowed write target is the output path above. /tmp is shared across concurrent sessions and forbidden by skill contract.",
     `Repository root: ${REPO_ROOT}`,
     "",
   ];

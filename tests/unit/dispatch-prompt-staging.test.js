@@ -117,6 +117,13 @@ test("buildDispatchPromptText: standard worker — embeds prompt_body, INPUTS, O
   assert.match(text, /args = \{[\s\S]*"foo"[\s\S]*"bar"/);
   assert.match(text, /--- OUTPUTS PATH ---/);
   assert.match(text, /\/run\/dir\/workers\/scan_project-output\.json/);
+  // FORBIDDEN PATHS guidance: dispatched workers must not write to
+  // /tmp/* or anywhere outside the run-dir. Real-world regression —
+  // tree-descender and other workers have been observed writing
+  // scratch files like /tmp/tree-descend/build.js. The shipped
+  // dispatch prompt MUST carry the prohibition.
+  assert.match(text, /--- FORBIDDEN PATHS ---/);
+  assert.match(text, /NEVER write to \/tmp/);
 });
 
 test("buildDispatchPromptText: standard worker — embeds RESPONSE SCHEMA when brief carries one (#85)", () => {
@@ -238,6 +245,16 @@ test("buildDispatchPromptText: per-specialist (no opts.filteredDiff) — emits F
   );
   assert.match(text, /Do NOT return JSON to the orchestrator inline/);
   assert.match(text, /aggregates all per-leaf outputs into specialist_outputs/);
+  // FORBIDDEN PATHS guidance: dispatched specialist Agents must not
+  // write to /tmp/* or anywhere outside the run-dir. Real-world
+  // regression — the tree-descender and other workers have been
+  // observed writing /tmp/<role>/build.js + /tmp/<role>/*.json
+  // scratch files (skill explicitly forbids it). The shipped
+  // per-specialist prompt MUST carry the prohibition so the
+  // dispatched Agent sees it before deciding where to write
+  // intermediates.
+  assert.match(text, /FORBIDDEN PATHS/);
+  assert.match(text, /NEVER write to \/tmp/);
 });
 
 test("defaultDispatchPromptPath: rejects unsafe state segments (path traversal guard on state)", () => {

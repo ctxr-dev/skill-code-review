@@ -62,6 +62,7 @@ Fields:
 - Allowed reads: the root `reviewers.wiki/index.md` and every retained subcategory `index.md`.
 - Do NOT read leaf `.md` files (frontmatter or body) — `activated_leaves[]` already gives you everything you need to assemble the output.
 - **Do NOT call `evaluateActivation()` or re-implement activation logic.** The runner already did that. If you find yourself reading a leaf's `activation:` block, stop — that signals you've drifted from the contract.
+- **NEVER write to `/tmp` or any path outside the run-dir.** This includes scratch files (`/tmp/tree-descend/...`, `/tmp/leaves.json`, ad-hoc `node -e` build scripts, etc.). `/tmp` is mode 1777 (world-readable on every Unix), shared across concurrent sessions, and collides under parallel development. If you need scratch space, write to `<run_dir>/workers/` (the same dir that holds your dispatch prompt). The single allowed write target is your output JSON path stated in the dispatch prompt's response contract — that is also under `<run_dir>/workers/`.
 - Return ONLY the JSON object.
 
 ## Validation will reject

@@ -544,6 +544,13 @@ test("--print-pending-leaf-ids and --print-agent-shim-prompt: end-to-end CLI con
   assert.match(shim.stdout, /You are a specialist reviewer/);
   assert.match(shim.stdout, /dispatch_specialists-prompt-cli-alpha\.md/);
   assert.match(shim.stdout, /dispatch_specialists-output-cli-alpha\.json/);
+  // FORBIDDEN PATHS: dispatched specialist Agents must not write to
+  // /tmp/* (real-world regression — observed Agents creating
+  // /tmp/tree-descend/build.js etc.). The shim prompt is the
+  // ONLY thing the dispatched Agent reads inline; the prohibition
+  // must be in the shim, not just in the on-disk per-leaf prompt.
+  assert.match(shim.stdout, /FORBIDDEN PATHS/);
+  assert.match(shim.stdout, /NEVER write to \/tmp/);
   // Shim is small — under 1500 chars (plenty under the documented 200-token bound).
   assert.ok(shim.stdout.length < 1500, `shim should be small; got ${shim.stdout.length} chars`);
 
@@ -1194,4 +1201,74 @@ test("--print-pending-leaf-ids and --print-batch-envelope: mutually exclusive", 
   assert.notEqual(both.status, 0, "passing both flags must hard-fail");
   const payload = JSON.parse(both.stdout);
   assert.match(payload.message, /mutually exclusive/);
+});
+
+test("--continue: dispatch_specialists brief unparseable JSON hard-fails with structured error (no silent swallow)", () => {
+  // Closes the silent-swallow review finding: the previous
+  // `try { JSON.parse(...) } catch { brief = null; }` masked
+  // brief corruption and let --continue fall through to a
+  // misleading "outputs file not found" error. The fix routes
+  // parse errors through fail() with the brief path and parse
+  // message — same contract as --print-batch-envelope /
+  // --print-pending-leaf-ids on the same brief.
+  const baseSha = "0123456789abcdef0123456789abcdef01234567";
+  const headSha = "fedcba9876543210fedcba9876543210fedcba98";
+  const start = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--start", "--base", baseSha, "--head", headSha],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
+  );
+  assert.equal(start.status, 0);
+  const runId = JSON.parse(start.stdout.split("\n").filter(Boolean)[0]).run_id;
+  const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
+  const storageRoot = resolve(REPO_ROOT, settings.storageRoot);
+  const runDir = runDirPath(runId, { storageRoot });
+  const workersDir = join(runDir, "workers");
+  // Plant a brief with broken JSON. Simulates a partial atomicWriteFile,
+  // disk corruption, or a worker that wrote unparseable JSON to the
+  // brief slot.
+  const briefPath = join(workersDir, "dispatch_specialists-brief.json");
+  writeFileSync(briefPath, "{ this is not json }");
+  // Manifest must claim dispatch_specialists state so --continue
+  // reaches the brief read.
+  const manifestPath = `${runDir}/manifest.json`;
+  const realManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  realManifest.current_state = "dispatch_specialists";
+  writeFileSync(manifestPath, JSON.stringify(realManifest));
+  const cont = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--continue", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
+  );
+  assert.notEqual(cont.status, 0, "--continue on unparseable brief must hard-fail");
+  const payload = JSON.parse(cont.stdout);
+  assert.match(payload.message, /brief at .* is unparseable/, "error must name the brief and the parse failure");
+  assert.match(payload.message, new RegExp("dispatch_specialists-brief\\.json"), "error must point at the brief path");
+  // Critically: NO leaked stack-frame paths and NO misleading
+  // "outputs file not found" — that was the bug.
+  assert.doesNotMatch(payload.message, /outputs file not found/);
+  assert.doesNotMatch(payload.message, /at\s+\S+:\d+:\d+/);
+});
+
+test("--continue --outputs-file <path>: explicit-path branch hard-fails on missing manifest (no silent null)", () => {
+  // Closes the silent-degradation review finding: the explicit
+  // --outputs-file branch previously did `manifest?.current_state ??
+  // null`, which collapsed missing-manifest into the same path as
+  // missing-current_state and silently degraded into the generic
+  // "outputs file not found" error. Now mirrors the implicit branch's
+  // hard-fail: missing manifest → `--continue: no manifest found` with
+  // a clear message naming the run-id.
+  // We need a run-id that passes the regex but has no on-disk
+  // manifest. The sentinel format is yyyymmdd-hhmmss-7hex; pick one
+  // far in the future to guarantee no manifest exists.
+  const fakeRunId = "20991231-235959-deadbe0";
+  const cont = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--continue", "--run-id", fakeRunId, "--outputs-file", "/nonexistent/x.json"],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.notEqual(cont.status, 0, "missing manifest with explicit --outputs-file must hard-fail");
+  const payload = JSON.parse(cont.stdout);
+  assert.match(payload.message, /no manifest found/, "error must say 'no manifest found'");
+  assert.match(payload.message, new RegExp(fakeRunId), "error must name the run-id");
 });

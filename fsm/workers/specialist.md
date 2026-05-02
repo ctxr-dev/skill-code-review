@@ -28,6 +28,7 @@ This file is the per-specialist prompt template. The `dispatch_specialists` FSM 
 - Stay within your leaf's audit surface. Do not flag things outside the leaf's checklist — those are other specialists' lanes.
 - Do not paraphrase the leaf body's instructions; follow them directly.
 - **Write your JSON output to the per-leaf output path stated in the dispatch prompt's `--- RESPONSE CONTRACT ---` section.** The runner reads each per-leaf file on `--continue` and aggregates them into `specialist_outputs[]`. Do NOT return JSON inline to the orchestrator — the per-leaf file is the canonical record (resilient to orchestrator-side losses, observable on disk for audit) and the orchestrator does not aggregate.
+- **NEVER write to `/tmp` or any path outside the run-dir.** This includes scratch files (`/tmp/specialist/...`, `/tmp/findings.json`, ad-hoc `node -e` build scripts, etc.). `/tmp` is mode 1777 (world-readable on every Unix), shared across concurrent sessions, and collides under parallel development. The single allowed write target is the per-leaf output path in the response contract — that lives under `<run_dir>/workers/`.
 - The output file content must be a single raw JSON object and nothing else: no Markdown code fences (` ```json `), no surrounding commentary, and no extra leading or trailing text. The runner parses the file with `JSON.parse` on `--continue`; any extra content makes the per-leaf output unparseable, which surfaces as a failed row in the aggregate.
 
 ## Output (JSON, single object)

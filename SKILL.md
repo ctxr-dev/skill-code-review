@@ -34,21 +34,26 @@ while true; do
 
   if [ "$STATE" = "dispatch_specialists" ]; then
     # Specialist dispatch is a BATCHED fan-out: at most 10 Agents in
-    # flight at any moment (thread-pool model). Each specialist writes
-    # its JSON output to its own per-leaf file; the runner aggregates
-    # on --continue. The orchestrator no longer assembles JSON.
-    # See the "Special case" section below for the full pattern.
+    # flight at any moment (default; configurable up to 50). Each
+    # specialist writes its JSON output to its own per-leaf file; the
+    # runner aggregates on --continue. The orchestrator no longer
+    # assembles JSON. See the "Special case" section below for the
+    # full pattern. The PREFERRED form uses --print-batch-envelope to
+    # collapse the per-batch CLI calls into one Node invocation.
     while true; do
-      BATCH=$(node scripts/run-review.mjs --print-pending-leaf-ids --run-id "$RUN_ID")
-      [ -z "$BATCH" ] && break
-      # Dispatch one Agent per id in $BATCH (≤10 ids per call).
+      ENV=$(node scripts/run-review.mjs --print-batch-envelope --run-id "$RUN_ID")
+      # Envelope is JSON: { batch, shims, remaining_after, pending_now,
+      # total_picked }. Empty batch [] → exit the loop.
+      BATCH_LEN=$(echo "$ENV" | jq -r '.batch | length')
+      [ "$BATCH_LEN" -eq 0 ] && break
+      # Dispatch one Agent per id in .batch (≤10 ids per call).
       # All Agents in a single orchestrator message run in parallel.
-      # Each Agent's prompt is the small shim text from
-      # --print-agent-shim-prompt; the Agent reads the full per-leaf
-      # prompt from disk and writes its JSON output to the per-leaf
-      # output path (both stated inside the shim).
-      for ID in $BATCH; do
-        SHIM=$(node scripts/run-review.mjs --print-agent-shim-prompt --run-id "$RUN_ID" --leaf-id "$ID")
+      # Each Agent's prompt is the matching shim text from .shims;
+      # the Agent reads the full per-leaf prompt from disk and writes
+      # its JSON output to the per-leaf output path (both stated
+      # inside the shim).
+      for ID in $(echo "$ENV" | jq -r '.batch[]'); do
+        SHIM=$(echo "$ENV" | jq -r --arg id "$ID" '.shims[$id]')
         # ... dispatch Agent with $SHIM as the prompt parameter ...
       done
       # After all batch Agents return, loop to fetch the next batch.
@@ -78,7 +83,7 @@ else
 fi
 ```
 
-**The brief is at `$RUN_DIR/workers/$STATE-brief.json`** if you need to inspect any field directly (`outputs_path`, `worker.response_schema`, etc.). For non-`dispatch_specialists` states, the dispatch prompt is at `$RUN_DIR/workers/$STATE-dispatch-prompt.md` — the literal text to feed to the Agent tool. **For `dispatch_specialists` the prompt path differs** (it's per-leaf and possibly per-shard) and the orchestrator drives a batched loop via `--print-pending-leaf-ids` / `--print-agent-shim-prompt` rather than reading the brief's `picked_leaves[]` directly; see the "Special case" subsection below for the full pattern. **Both brief and prompt are canonical**; stdout is a redundant convenience.
+**The brief is at `$RUN_DIR/workers/$STATE-brief.json`** if you need to inspect any field directly (`outputs_path`, `worker.response_schema`, etc.). For non-`dispatch_specialists` states, the dispatch prompt is at `$RUN_DIR/workers/$STATE-dispatch-prompt.md` — the literal text to feed to the Agent tool. **For `dispatch_specialists` the prompt path differs** (it's per-leaf and possibly per-shard) and the orchestrator drives a batched loop via `--print-batch-envelope` (preferred) or the older `--print-pending-leaf-ids` / `--print-agent-shim-prompt` pair, rather than reading the brief's `picked_leaves[]` directly; see the "Special case" subsection below for the full pattern. **Both brief and prompt are canonical**; stdout is a redundant convenience.
 
 #### Special case: `STATE === "dispatch_specialists"` — batched fan-out
 
@@ -94,9 +99,11 @@ The orchestrator's loop, **preferred form** using `--print-batch-envelope` (one 
 while true; do
   ENV=$(node scripts/run-review.mjs --print-batch-envelope --run-id "$RUN_ID")
   # Envelope is JSON: { batch: [...], shims: { id: prompt, ... },
-  #                     remaining_after: N, total_pending: M }
+  #                     remaining_after: N, pending_now: M,
+  #                     total_picked: T }
   # Empty batch [] → exit the loop. (remaining_after === 0 also signals
-  # "this is the final batch" if you want to log progress.)
+  # "this is the final batch" if you want to log progress;
+  # X-of-Y progress: X = total_picked - pending_now, Y = total_picked.)
   BATCH_LEN=$(echo "$ENV" | jq -r '.batch | length')
   [ "$BATCH_LEN" -eq 0 ] && break
 
@@ -134,9 +141,9 @@ while true; do
 done
 ```
 
-**Why prefer `--print-batch-envelope`.** One Node invocation per loop iteration instead of `1 + N` (one `--print-pending-leaf-ids` plus one `--print-agent-shim-prompt` per batch id). On a K=20 review (2 batches at the default size of 10), that's 1 envelope call per batch (2 total) versus 1 + 10 = 11 calls per batch (22 total). The orchestrator transcript shrinks accordingly. The envelope's `total_pending` / `remaining_after` fields make progress visible without extra CLI calls.
+**Why prefer `--print-batch-envelope`.** One Node invocation per loop iteration instead of `1 + N` (one `--print-pending-leaf-ids` plus one `--print-agent-shim-prompt` per batch id). On a K=20 review (2 batches at the default size of 10), that's 1 envelope call per batch (2 total) versus 1 + 10 = 11 calls per batch (22 total). The orchestrator transcript shrinks accordingly. The envelope's progress fields make user-facing "X of Y specialists complete" reporting cheap: `total_picked` is the STABLE total of dispatch units staged for this state (use as Y); `pending_now` shrinks as outputs land (so X = total_picked - pending_now is work done so far); `remaining_after` is pending count after this batch (0 → final batch).
 
-**Concurrency cap.** Both modes return at most 10 ids per call (override with `--batch-size N`, max 50). The cap is enforced runner-side: the orchestrator cannot dispatch more than 10 specialists in one message because it is given at most 10 ids to dispatch.
+**Concurrency cap.** Both modes return at most `--batch-size` ids per call (default 10, max 50). The cap is enforced runner-side: the orchestrator cannot dispatch more specialists in one message than the runner returned ids for that call. The default of 10 is the recommended ceiling — large simultaneous Agent dispatches overflow the trace window and make failures hard to attribute. Raise `--batch-size` only with a deliberate reason to widen the pool.
 
 **Why specialists write per-leaf instead of returning JSON.** Concurrent K specialists writing into one orchestrator-aggregated heredoc is fragile: a failed Agent loses its slot; JSON-string quoting breaks on multi-line code samples in `description` / `fix`; orchestrator-side aggregation is opaque to audit. Per-leaf files are observable on disk, resilient to orchestrator-side losses, and let the runner aggregate deterministically on `--continue`.
 

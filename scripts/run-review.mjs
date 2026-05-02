@@ -396,8 +396,11 @@ function computeFilteredDiff(baseSha, headSha, fileGlobs) {
 // duplication / consistency issues. Modern Claude models comfortably
 // handle 200-400KB of prompt (Sonnet 4.6: 200K context, Opus 4.7:
 // up to 1M); 256KB filtered-diff plus the leaf body / project profile
-// / tool results lands well under the budget. Sharding now only
-// fires for genuinely huge refactors (multi-megabyte filtered diffs).
+// / tool results lands well under the budget. Sharding now fires only
+// when a leaf's filtered diff exceeds ~256KB (a few hundred kilobytes —
+// the size band of a sweeping refactor PR or a generated-code dump);
+// most everyday review diffs land below 256KB and dispatch as a single
+// Agent per leaf.
 //
 // Tuning: SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES env var overrides
 // per-run. Set lower (e.g. 65536) for cost-sensitive runs that
@@ -2779,6 +2782,16 @@ async function main() {
   //   <run_dir>/workers/dispatch_specialists-output-<leaf-id>.json
   //   <run_dir>/workers/dispatch_specialists-output-<leaf-id>--<shardIdx>.json
   if (args["print-pending-leaf-ids"] || args["print-batch-envelope"]) {
+    // The two modes share the pending-list compute path but emit
+    // different output shapes (newline-separated ids vs JSON envelope).
+    // Refuse to run with BOTH flags set: the output would be the JSON
+    // envelope (because the envelope branch wins below) but the cliName
+    // used in error messages would be --print-pending-leaf-ids, leaving
+    // a caller's script with a surprising payload shape and misleading
+    // error attribution. Hard-fail so callers pick one form.
+    if (args["print-pending-leaf-ids"] && args["print-batch-envelope"]) {
+      fail("--print-pending-leaf-ids and --print-batch-envelope are mutually exclusive; pass exactly one.");
+    }
     const cliName = args["print-pending-leaf-ids"] ? "--print-pending-leaf-ids" : "--print-batch-envelope";
     const runId = args["run-id"];
     if (!runId || typeof runId !== "string" || !isValidRunId(runId)) {
@@ -2849,7 +2862,7 @@ async function main() {
     if (pickedLeaves.length === 0) {
       if (args["print-batch-envelope"]) {
         process.stdout.write(JSON.stringify({
-          batch: [], remaining_after: 0, total_pending: 0, shims: {},
+          batch: [], remaining_after: 0, pending_now: 0, total_picked: 0, shims: {},
         }) + "\n");
       }
       return;
@@ -2920,10 +2933,31 @@ async function main() {
         });
         shims[id] = buildShimText(runId, parsed.leafId, parsed.shardIdx, cliName);
       }
+      // Stable progress denominator: count of dispatch units the runner
+      // staged for this state (1 per non-sharded leaf, N per sharded
+      // leaf where N is the discovered shard count). Unlike pending_now
+      // (which shrinks as outputs land), total_picked is invariant
+      // across the dispatch_specialists state's lifetime — orchestrators
+      // can use it as the stable Y in an "X of Y specialists complete"
+      // progress indicator (X = total_picked - pending_now). discoverLeafShards
+      // throws on the both-shapes corruption case; the same per-leaf
+      // try/catch above already routed those errors through fail() and
+      // exited, so by the time we reach this loop discovery succeeds
+      // for every leaf. We re-discover here (cheaply, against the
+      // cached workers/ listing) rather than threading state out of
+      // the earlier loop.
+      let totalPicked = 0;
+      for (const leaf of pickedLeaves) {
+        if (!leaf || typeof leaf.id !== "string") continue;
+        const shards = discoverLeafShards(runId, leaf.id);
+        if (shards === null) totalPicked += 1;
+        else totalPicked += shards.length;
+      }
       process.stdout.write(JSON.stringify({
         batch,
         remaining_after: Math.max(0, pending.length - batch.length),
-        total_pending: pending.length,
+        pending_now: pending.length,
+        total_picked: totalPicked,
         shims,
       }) + "\n");
       return;

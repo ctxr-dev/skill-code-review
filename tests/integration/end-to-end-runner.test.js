@@ -645,7 +645,7 @@ test("--print-batch-envelope: end-to-end CLI contract (single-call batch with sh
   // The --print-batch-envelope mode collapses N×--print-agent-shim-prompt
   // calls per batch into one Node process invocation that returns a
   // JSON envelope with shims for every batch id plus progress
-  // (remaining_after, total_pending). This test verifies:
+  // (remaining_after, pending_now). This test verifies:
   //   - happy path: envelope shape, batch ids match pending list,
   //     shims exist for every batch id, byte-equal to what
   //     --print-agent-shim-prompt would emit individually
@@ -704,7 +704,13 @@ test("--print-batch-envelope: end-to-end CLI contract (single-call batch with sh
   assert.equal(env.status, 0, `--print-batch-envelope exited ${env.status}; stderr: ${env.stderr}`);
   const envelope = JSON.parse(env.stdout);
   assert.deepEqual(envelope.batch, ["env-alpha", "env-beta", "env-gamma"], "batch must list pending ids in picked_leaves order");
-  assert.equal(envelope.total_pending, 3, "total_pending counts pending ids only (env-done excluded)");
+  assert.equal(envelope.pending_now, 3, "pending_now counts pending ids only (env-done excluded)");
+  // total_picked is the STABLE count of dispatch units staged for the
+  // dispatch_specialists state (env-alpha, env-beta, env-gamma,
+  // env-done = 4). Unlike pending_now (which shrinks as outputs land),
+  // total_picked is invariant across the loop's lifetime — orchestrators
+  // can use it as the Y in an "X of Y specialists complete" indicator.
+  assert.equal(envelope.total_picked, 4, "total_picked counts ALL staged units (including the already-completed env-done)");
   assert.equal(envelope.remaining_after, 0, "all 3 fit in default batch size 10 → 0 remaining after");
   // shims object has one entry per batch id; each is the canonical
   // shim text the orchestrator would feed to Agent.
@@ -792,7 +798,10 @@ test("--print-batch-envelope: end-to-end CLI contract (single-call batch with sh
   const cappedEnvelope = JSON.parse(capped.stdout);
   assert.equal(cappedEnvelope.batch.length, 2, "--batch-size 2 caps batch at 2");
   assert.equal(cappedEnvelope.remaining_after, 1, "1 pending leaf remains after a 2-of-3 batch");
-  assert.equal(cappedEnvelope.total_pending, 3);
+  assert.equal(cappedEnvelope.pending_now, 3);
+  // total_picked must match the first envelope's value — STABLE across calls
+  // is the whole point of distinguishing it from pending_now.
+  assert.equal(cappedEnvelope.total_picked, 4, "total_picked is stable across envelope calls within the same state");
 
   // Manifest-state gate: non-dispatch_specialists must hard-fail.
   realManifest.current_state = "scan_project";
@@ -827,7 +836,92 @@ test("--print-batch-envelope: end-to-end CLI contract (single-call batch with sh
   assert.equal(empty.status, 0, "empty pending must exit 0");
   const emptyEnvelope = JSON.parse(empty.stdout);
   assert.deepEqual(emptyEnvelope.batch, [], "empty batch when no pending");
-  assert.equal(emptyEnvelope.total_pending, 0);
+  assert.equal(emptyEnvelope.pending_now, 0);
+  // total_picked stays at 4 even after every leaf is done — the four
+  // staged units are still counted; pending_now=0 is what tells the
+  // caller everything is complete. Done = total_picked - pending_now = 4.
+  assert.equal(emptyEnvelope.total_picked, 4, "total_picked stays stable after every output is written");
   assert.equal(emptyEnvelope.remaining_after, 0);
   assert.deepEqual(emptyEnvelope.shims, {}, "no shims when no pending ids");
+});
+
+test("--print-batch-envelope: empty picked_leaves[] emits an explicit zero-work envelope", () => {
+  // Distinct zero-work path from the "all outputs already written" case
+  // covered above. When the brief has picked_leaves: [] (the FSM legally
+  // reaches dispatch_specialists with no specialists to run, e.g. when
+  // every relevant leaf was rescued by the coverage gate to a
+  // changed_paths entry but no leaf actually activated), the envelope
+  // must emit a zero-work payload — NOT empty stdout, since
+  // JSON-parsing orchestrators need an explicit signal to terminate
+  // the dispatch loop. This test locks down the explicit JSON envelope
+  // returned by that branch.
+  const baseSha = "9999999999999999999999999999999999999999";
+  const headSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const start = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--start", "--base", baseSha, "--head", headSha],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
+  );
+  assert.equal(start.status, 0, `--start exited ${start.status}; stderr: ${start.stderr}`);
+  const runId = JSON.parse(start.stdout.split("\n").filter(Boolean)[0]).run_id;
+  const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
+  const storageRoot = resolve(REPO_ROOT, settings.storageRoot);
+  const runDir = runDirPath(runId, { storageRoot });
+  const workersDir = join(runDir, "workers");
+  // Brief with explicitly empty picked_leaves[].
+  writeFileSync(join(workersDir, "dispatch_specialists-brief.json"), JSON.stringify({
+    run_id: runId,
+    state: "dispatch_specialists",
+    inputs: { picked_leaves: [] },
+  }));
+  const manifestPath = `${runDir}/manifest.json`;
+  const realManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  realManifest.current_state = "dispatch_specialists";
+  writeFileSync(manifestPath, JSON.stringify(realManifest));
+  const env = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-batch-envelope", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(env.status, 0, `--print-batch-envelope on empty picked_leaves[] must exit 0; stderr: ${env.stderr}`);
+  // Zero-work envelope shape: every numeric field is 0, batch is [],
+  // shims is {}. JSON-parsing orchestrator can break out of its loop
+  // on `batch.length === 0`.
+  const envelope = JSON.parse(env.stdout);
+  assert.deepEqual(envelope, {
+    batch: [],
+    remaining_after: 0,
+    pending_now: 0,
+    total_picked: 0,
+    shims: {},
+  }, "empty picked_leaves[] envelope must have all-zero counters and empty collections");
+});
+
+test("--print-pending-leaf-ids and --print-batch-envelope: mutually exclusive", () => {
+  // Passing both flags together is a misuse: the envelope branch wins
+  // silently but error attribution would point at --print-pending-leaf-ids
+  // (cliName ordering). Hard-fail with a clear message so callers fix
+  // their script instead of getting a surprising payload shape.
+  const baseSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const headSha = "cccccccccccccccccccccccccccccccccccccccc";
+  const start = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--start", "--base", baseSha, "--head", headSha],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
+  );
+  assert.equal(start.status, 0);
+  const runId = JSON.parse(start.stdout.split("\n").filter(Boolean)[0]).run_id;
+  const both = spawnSync(
+    process.execPath,
+    [
+      "scripts/run-review.mjs",
+      "--print-pending-leaf-ids",
+      "--print-batch-envelope",
+      "--run-id", runId,
+    ],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.notEqual(both.status, 0, "passing both flags must hard-fail");
+  const payload = JSON.parse(both.stdout);
+  assert.match(payload.message, /mutually exclusive/);
 });

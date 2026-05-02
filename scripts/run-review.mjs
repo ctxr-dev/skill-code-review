@@ -2982,19 +2982,18 @@ async function main() {
         { run_id: runId },
       );
     }
-    // Empty picked_leaves: render a clean zero-work envelope instead
-    // of hard-failing. The FSM declares `picked_leaves is non-empty`
-    // as a precondition on dispatch_specialists
-    // (fsm/code-reviewer.fsm.yaml line ~327), but the rest of the
-    // pipeline already accepts empty arrays at this shape: the trim
-    // worker's contract permits picking fewer than the cap (down to
-    // and including zero); writeSpecialistPromptsToDisk and
-    // aggregateSpecialistOutputs already handle the empty-array
-    // case; and downstream verify_coverage / aggregate_findings
-    // produce a valid (empty) report from no specialists. Treating
-    // this as a fatal error would wedge the orchestrator on a
-    // legitimate "no leaves picked" run instead of letting it
-    // complete cleanly. For the plaintext --print-pending-leaf-ids:
+    // Empty picked_leaves: render a clean zero-work envelope. The
+    // dispatch_specialists FSM precondition is `picked_leaves is an
+    // array` (fsm/code-reviewer.fsm.yaml — relaxed in this PR from
+    // the previous "is non-empty" to match what the pipeline actually
+    // does). The trim worker's contract permits picking fewer than
+    // the cap (down to and including zero); writeSpecialistPromptsToDisk,
+    // aggregateSpecialistOutputs, verify_coverage, and aggregate_findings
+    // all handle the empty-array case correctly and produce a valid
+    // (empty) report from no specialists. Treating this as a fatal
+    // error would wedge the orchestrator on a legitimate "no leaves
+    // picked" run instead of letting it complete cleanly. For the
+    // plaintext --print-pending-leaf-ids:
     // emit nothing and exit 0. For --print-batch-envelope: emit
     // `{ batch: [], remaining_after: 0, pending_now: 0,
     //    total_dispatch_units: 0, shims: {} }` so an orchestrator

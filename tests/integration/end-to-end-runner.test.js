@@ -849,12 +849,12 @@ test("--print-batch-envelope: empty picked_leaves[] emits a clean zero-work enve
   // The trim worker's contract permits picking fewer than the cap
   // (down to zero), and the rest of the pipeline (writeSpecialistPromptsToDisk,
   // aggregateSpecialistOutputs, verify_coverage, aggregate_findings)
-  // accepts empty picked_leaves at this shape. The FSM YAML declares
-  // `picked_leaves is non-empty` as a precondition on
-  // dispatch_specialists, but treating this as a fatal error here
+  // accepts empty picked_leaves at this shape. The FSM YAML
+  // precondition is `picked_leaves is an array` (relaxed in this PR
+  // from the previous "is non-empty" to match the runner's
+  // permissive contract); empty MUST NOT be a fatal error or it
   // would wedge the orchestrator on a legitimate "no leaves picked"
-  // run instead of letting it complete with an empty
-  // specialist_outputs[].
+  // run.
   //
   // The envelope must emit a zero-work payload — NOT empty stdout,
   // since JSON-parsing orchestrators need an explicit signal to

@@ -34,7 +34,21 @@ import { dirname, isAbsolute, join, resolve, relative, sep } from "node:path";
 import { tmpdir, platform } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { loadConfig, runEnv, runDirPath, readLock, readManifest } from "@ctxr/fsm";
+import { runEnv, runDirPath, readLock, readManifest } from "@ctxr/fsm";
+
+// Shared helpers for SKILL_ROOT vs PROJECT_ROOT resolution and
+// .fsmrc.json validation. Pre-extraction these were duplicated
+// across run-review.mjs and the inline-state handlers; the
+// post-#101 local skill review flagged the duplication as a
+// principle-dry-kiss-yagni "important" finding.
+import {
+  FSM_NAME,
+  MAX_GIT_TOPLEVEL_WALK_DEPTH,
+  coerceAbsoluteProjectRoot,
+  gitToplevelFromCwd,
+  readFsmRcDirect,
+  validateStorageRootEntry,
+} from "./lib/project-root.mjs";
 
 import {
   resolveReplayMode,
@@ -69,12 +83,14 @@ import { ID_PATTERN } from "./lib/reviewer-schema.mjs";
 //
 // Exported so unit tests can pin the gate without a live FSM run.
 // `_deps` is an optional injection seam (resolveStorageRoot, runEnv,
-// repoRoot) so tests can drive both happy and failure paths.
+// skillRoot) so tests can drive both happy and failure paths.
+// The leaf-globs validator reads bundled wiki files, which live with
+// the skill (SKILL_ROOT), so `skillRoot` is the right name here.
 export function runTrimValidationGate(runId, outputs, _deps = {}) {
   if (!outputs || !Array.isArray(outputs.picked_leaves)) return { ok: true };
   const resolveStorageRootFn = _deps.resolveStorageRoot ?? resolveStorageRoot;
   const runEnvFn = _deps.runEnv ?? runEnv;
-  const repoRoot = _deps.repoRoot ?? SKILL_ROOT;
+  const skillRoot = _deps.skillRoot ?? SKILL_ROOT;
   let env;
   try {
     const storageRoot = resolveStorageRootFn();
@@ -94,12 +110,12 @@ export function runTrimValidationGate(runId, outputs, _deps = {}) {
       details: { state: "llm_trim", run_id: runId },
     };
   }
-  const v = validateTrimOutput(outputs, env, { repoRoot });
-  if (!v.ok) {
+  const validation = validateTrimOutput(outputs, env, { repoRoot: skillRoot });
+  if (!validation.ok) {
     return {
       ok: false,
-      message: `llm_trim referential-integrity validation failed: ${v.errors.join("; ")}`,
-      details: { state: "llm_trim", run_id: runId, violations: v.errors },
+      message: `llm_trim referential-integrity validation failed: ${validation.errors.join("; ")}`,
+      details: { state: "llm_trim", run_id: runId, violations: validation.errors },
     };
   }
   return { ok: true };
@@ -177,19 +193,41 @@ export function repoRelativePromptPath(briefPath) {
 // ALREADY needs the file body will surface its own errors at that point.
 // We do NOT want a transient ENOENT on prompt-body enrichment to fault
 // out a run that would otherwise advance fine.
-export function enrichBriefWithPromptBody(brief) {
+export function enrichBriefWithPromptBody(brief, _deps = {}) {
+  const writeStderr = _deps.writeStderr ?? ((msg) => process.stderr.write(msg));
+  const readFile = _deps.readFile ?? readFileSync;
+  const skillRoot = _deps.skillRoot ?? SKILL_ROOT;
   const promptTemplate = brief?.worker?.prompt_template;
   if (!promptTemplate || typeof promptTemplate !== "string") return brief;
+  // Bind the error rather than swallowing it bare. Pre-fix this catch
+  // had no error binding, contradicting the same anti-pattern this
+  // PR explicitly removed in --continue. The injection seams on
+  // _deps.writeStderr / _deps.readFile / _deps.skillRoot let unit
+  // tests pin the warn-on-failure contract without spinning up a
+  // subprocess (closes finding #4 from the v2.4 round-3 review).
+  // Best-effort enrichment still succeeds — we continue with `brief`
+  // as-is rather than fault the run — but the failure is now visible
+  // on stderr instead of fully silent.
   let bodyPath;
   try {
-    bodyPath = resolve(SKILL_ROOT, repoRelativePromptPath(promptTemplate));
-  } catch {
+    bodyPath = resolve(skillRoot, repoRelativePromptPath(promptTemplate));
+  } catch (err) {
+    writeStderr(
+      `WARN: enrichBriefWithPromptBody: could not resolve body path for ` +
+      `prompt_template="${promptTemplate}": ${err?.message ?? err}. ` +
+      `Continuing without prompt_body; the orchestrator can still read ` +
+      `from the on-disk prompt-template path directly.\n`,
+    );
     return brief;
   }
   let body;
   try {
-    body = readFileSync(bodyPath, "utf8");
-  } catch {
+    body = readFile(bodyPath, "utf8");
+  } catch (err) {
+    writeStderr(
+      `WARN: enrichBriefWithPromptBody: could not read body at "${bodyPath}": ` +
+      `${err?.message ?? err}. Continuing without prompt_body.\n`,
+    );
     return brief;
   }
   // Return a new object with the enriched worker; do not mutate input.
@@ -1859,22 +1897,12 @@ export function setProjectRootForTesting(path) {
   // forever.
   _projectRootCached = null;
 }
-function gitToplevelFromCwd(cwd) {
-  // Walk up `cwd` looking for a .git directory or file (worktree marker).
-  // Doing the walk in JS rather than spawning `git rev-parse` keeps the
-  // hot path off a process boundary and avoids the silent "git not
-  // installed" failure mode.
-  let dir = cwd;
-  for (let i = 0; i < 64; i++) {
-    if (existsSync(join(dir, ".git"))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-  return null;
-}
+// gitToplevelFromCwd is now in scripts/lib/project-root.mjs (shared
+// with the inline-state handlers, so the hardcoded 64-depth cap and
+// its warning live in one place — closes findings #19, #24).
+
 function discoverProjectRoot() {
-  if (_projectRootOverride) return _projectRootOverride;
+  if (_projectRootOverride !== null) return _projectRootOverride;
   // CLI args are parsed lazily so unit tests don't need to set process.argv.
   const args = parseArgs(process.argv);
   const explicit = args["repo-root"] ?? args.repoRoot ?? null;
@@ -1900,8 +1928,6 @@ function discoverProjectRoot() {
     // anchors to process.cwd(), which would let a typo'd
     // --repo-root=foo (instead of /foo) be accepted but point at a
     // surprising location depending on where the runner was invoked.
-    // The doc string and downstream error messages all describe an
-    // absolute path; enforce it here so the contract matches.
     if (!isAbsolute(explicit)) {
       fail(
         `--repo-root requires an absolute path (got "${explicit}"). ` +
@@ -1927,9 +1953,30 @@ function discoverProjectRoot() {
   }
   const fromCwd = gitToplevelFromCwd(process.cwd());
   if (fromCwd) return fromCwd;
+  // Fall back to SKILL_ROOT as a documented last resort. Emit a
+  // stderr warning so the operator sees the signal — silently using
+  // the skill's own dir as the project being reviewed is exactly
+  // the misconfig that pre-#101 caused 14 of 20 specialists to skip
+  // (closes finding #20). The "in-skill tests" path is the only
+  // legitimate trigger; everything else is an operator mistake.
+  process.stderr.write(
+    `WARN: --repo-root not given and process.cwd() ("${process.cwd()}") ` +
+    `is not in a git repository. Falling back to skill install dir ` +
+    `${SKILL_ROOT}. If you intended to review a different project, ` +
+    `pass --repo-root <absolute-path> explicitly.\n`,
+  );
   return SKILL_ROOT;
 }
-function projectRoot() {
+// Use strict `!== null` so the override-cleared sentinel (null) is
+// the ONLY way to reach the discovery path. Pre-fix, this site used
+// truthy-checking (`if (_projectRootOverride)`) while the function
+// below used `!== null`; the inconsistency is a latent foot-gun if
+// the override contract loosens (closes finding #21).
+//
+// Exported so unit tests can verify setProjectRootForTesting's
+// observable behaviour (override is honoured; null reset re-enables
+// discovery; cache invalidation works) without spawning a subprocess.
+export function projectRoot() {
   if (_projectRootOverride !== null) return _projectRootOverride;
   if (_projectRootCached === null) {
     _projectRootCached = discoverProjectRoot();
@@ -1938,65 +1985,29 @@ function projectRoot() {
 }
 
 function resolveStorageRoot() {
-  // The .fsmrc.json lives in the skill's install dir (it ships with
-  // the skill), so SKILL_ROOT is the right cwd for loadConfig().
-  // We then take the RAW storage_root field (e.g. ".skill-code-review")
-  // and resolve it under PROJECT_ROOT so the run-dir lives WITH the
-  // project being reviewed.
+  // The .fsmrc.json lives in the skill's install dir; the resolved
+  // storage path lives with the project being reviewed. The raw
+  // validation logic is in scripts/lib/project-root.mjs's
+  // validateStorageRootEntry, shared with write-run-directory.mjs
+  // so the contract is enforced in one place (closes finding #4 from
+  // the post-#101 local skill review).
   //
-  // Why not resolveSettings(): it pre-resolves storageRoot against the
-  // cwd it's given (SKILL_ROOT), returning an absolute path under the
-  // skill's install tree — which is exactly what we want to AVOID.
-  // Reading the raw config field bypasses that resolution and lets us
-  // re-anchor against PROJECT_ROOT here.
-  //
-  // Closes #100, eval finding #2: pre-fix, run-dirs landed in
-  // ~/.claude/skills/.skill-code-review/... when the skill was
-  // installed globally, orphaning per-run state from the project
-  // being reviewed.
-  const cfg = loadConfig(SKILL_ROOT);
-  // Defence-in-depth: a malformed/missing .fsmrc.json could leave
-  // cfg.fsms undefined. Without this guard, .find() throws an opaque
-  // TypeError with no path context. (Round-5 Copilot review.)
-  if (!cfg || !Array.isArray(cfg.fsms)) {
-    fail(
-      `.fsmrc.json at ${SKILL_ROOT} is missing or has no "fsms" array; ` +
-      `the skill's install dir is corrupt. Reinstall the skill.`,
-    );
+  // The try-block returns directly so the success path doesn't depend
+  // on a temp variable that would be `undefined` if `fail()` ever
+  // returned (e.g., a future refactor that swaps fail()'s exit-process
+  // semantics for a recoverable throw). resolve(projectRoot(),
+  // undefined) would throw an opaque TypeError that masks the original
+  // validation error; this shape forecloses that risk. (Closes the
+  // round-2 lang-javascript finding on the v2.4 self-review.)
+  try {
+    const cfg = readFsmRcDirect(SKILL_ROOT);
+    return resolve(projectRoot(), validateStorageRootEntry(cfg, SKILL_ROOT));
+  } catch (err) {
+    fail(err.message);
   }
-  const entry = cfg.fsms.find((f) => f.name === "code-reviewer");
-  if (!entry) {
-    fail(
-      `code-reviewer entry not found in .fsmrc.json at ${SKILL_ROOT}; ` +
-      `the skill's install dir is missing or corrupt. Reinstall the skill.`,
-    );
-  }
-  const rawStorageRoot = entry.storage_root;
-  if (typeof rawStorageRoot !== "string" || rawStorageRoot.length === 0) {
-    fail(
-      `.fsmrc.json's "storage_root" is missing or empty for the ` +
-      `code-reviewer entry; expected something like ".skill-code-review".`,
-    );
-  }
-  // Defence-in-depth: require storage_root to be a safe relative
-  // path. resolve(projectRoot, "/abs/path") returns "/abs/path",
-  // which would let a malformed/tampered .fsmrc.json escape the
-  // project root and write run artefacts to an arbitrary directory.
-  // ".." segments would do the same. (Round-6 Copilot review on
-  // PR #101.)
-  if (isAbsolute(rawStorageRoot)) {
-    fail(
-      `.fsmrc.json's "storage_root" must be a relative path under the project root; ` +
-      `got absolute path "${rawStorageRoot}". Reinstall the skill or fix the .fsmrc.json.`,
-    );
-  }
-  if (rawStorageRoot.split(/[\\/]/).includes("..")) {
-    fail(
-      `.fsmrc.json's "storage_root" must not contain ".." segments (got "${rawStorageRoot}"). ` +
-      `This would let storage escape the project root. Reinstall the skill or fix the .fsmrc.json.`,
-    );
-  }
-  return resolve(projectRoot(), rawStorageRoot);
+  // Unreachable in normal flow (fail() exits the process). Kept for
+  // type-system completeness.
+  return undefined;
 }
 
 export function parseArgs(argv) {
@@ -2187,6 +2198,16 @@ function runFsmNextStart({ baseSha, headSha, argsBag, sessionId }) {
   // + .fsmrc.json's relative storage_root), which orphaned run-dirs in
   // ~/.claude/skills/ when the runner was invoked from a different repo.
   const storageRoot = resolveStorageRoot();
+  // The --repo flag belongs to @ctxr/fsm and we cannot rename it.
+  // Its semantics shifted in PR #101: pre-fix it carried a static
+  // string ("skill-code-review") used as a manifest label; post-fix
+  // it carries projectRoot() — an absolute path to the project being
+  // reviewed. The fsm engine uses this for buildRunId() (manifest
+  // metadata only), not for any path resolution; storage location
+  // is governed exclusively by --storage-root above. Calling out
+  // the semantic shift here so future readers don't think --repo
+  // and --storage-root drift apart accidentally. (Closes finding
+  // #23 from the post-#101 local skill review.)
   const args = [
     "--new-run",
     "--repo",

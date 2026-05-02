@@ -1259,6 +1259,84 @@ const SHARD_INDEX_MAX = 1024;
 //     missing. Lets verify_coverage's downstream check surface the gap
 //     cleanly.
 //
+// Compute the dispatchable-units shape both --print-pending-leaf-ids
+// and --print-batch-envelope need: the pending list (units missing
+// outputs) AND the stable total_picked count (every unit the runner
+// has staged a prompt for). Single pass with one prompt-existence
+// check guarantees pending_now and total_picked share the same
+// accounting basis — they cannot drift in future edits because
+// there is no second walk to keep in sync.
+//
+// Inputs:
+//   - runId: the run to scan.
+//   - pickedLeaves: the brief's inputs.picked_leaves[] array.
+//   - cliName: the calling CLI name, used in error messages so a
+//     fail() routed through here is attributable to the right mode.
+//
+// Returns { pending: string[], totalPicked: number }:
+//   - pending[]: dispatch ids ("<leaf-id>" or "<leaf-id>--<shardIdx>")
+//     whose prompt file exists AND whose output file does NOT.
+//   - totalPicked: count of dispatch ids whose prompt file exists,
+//     regardless of output state — STABLE across calls within the
+//     dispatch_specialists state's lifetime.
+//
+// Both metrics intentionally skip:
+//   - gappy shard indices (no prompt at index N) — discoverLeafShards
+//     normalises the contiguous range so the aggregator can synth a
+//     failed row, but the orchestrator can't dispatch what was never
+//     staged.
+//   - unstaged leaves (no prompt at all) — same reasoning.
+//
+// discoverLeafShards throws on the both-shapes corruption case;
+// callers (--print-pending-leaf-ids / --print-batch-envelope) catch
+// the throw and route through fail() with the cliName attribution.
+function computeDispatchableUnits(runId, pickedLeaves, cliName) {
+  const pending = [];
+  let totalPicked = 0;
+  for (const leaf of pickedLeaves) {
+    if (!leaf || typeof leaf.id !== "string") continue;
+    let shards;
+    try {
+      shards = discoverLeafShards(runId, leaf.id);
+    } catch (err) {
+      fail(
+        `${cliName}: ${err?.message ?? String(err)}`,
+        { run_id: runId, leaf_id: leaf.id },
+      );
+    }
+    if (shards === null) {
+      // Non-sharded leaf: 1 unit if its canonical prompt exists.
+      // discoverLeafShards returning null implies the canonical
+      // prompt exists (that's the gate condition), so the existsSync
+      // check is normally redundant — but the explicit check keeps
+      // total_picked and pending_now in lockstep and survives any
+      // future discovery refactor.
+      const promptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leaf.id);
+      if (!promptPath || !existsSync(promptPath)) continue;
+      totalPicked += 1;
+      const outPath = defaultSpecialistOutputPath(runId, leaf.id);
+      if (outPath && !existsSync(outPath)) pending.push(leaf.id);
+    } else {
+      // Sharded leaf: walk the contiguous range, but only count
+      // shards whose prompt was actually staged.
+      for (const shardIdx of shards) {
+        const promptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leaf.id, shardIdx);
+        if (!promptPath || !existsSync(promptPath)) continue;
+        totalPicked += 1;
+        const outPath = defaultSpecialistOutputPath(runId, leaf.id, shardIdx);
+        if (outPath && !existsSync(outPath)) pending.push(`${leaf.id}--${shardIdx}`);
+      }
+    }
+    // shards === [] (no prompts staged at all for this leaf)
+    // contributes 0 to both counts. The aggregator will emit a single
+    // failed row for the leaf at --continue time; that row appears in
+    // specialist_outputs[] in the final report but is intentionally
+    // NOT counted in dispatch progress (the orchestrator never had
+    // a prompt to dispatch).
+  }
+  return { pending, totalPicked };
+}
+
 // The order of specialist_outputs matches picked_leaves order so the
 // downstream report is deterministic.
 export function aggregateSpecialistOutputs(brief) {
@@ -2877,54 +2955,21 @@ async function main() {
       }
       return;
     }
-    const pending = [];
-    for (const leaf of pickedLeaves) {
-      if (!leaf || typeof leaf.id !== "string") continue;
-      // discoverLeafShards throws on the corruption case where BOTH
-      // canonical AND sharded prompt files exist for the leaf. Catch
-      // here and route through fail(err.message, {run_id, leaf_id})
-      // so the CLI emits a clean structured error rather than the
-      // generic "unhandled error: <stack>" wrapper. The orchestrator
-      // can inspect the structured payload and abort the batch loop
-      // cleanly rather than trying to parse a stack trace.
-      let shards;
-      try {
-        shards = discoverLeafShards(runId, leaf.id);
-      } catch (err) {
-        fail(
-          `${cliName}: ${err?.message ?? String(err)}`,
-          { run_id: runId, leaf_id: leaf.id },
-        );
-      }
-      if (shards === null) {
-        // Non-sharded leaf.
-        const outPath = defaultSpecialistOutputPath(runId, leaf.id);
-        if (outPath && !existsSync(outPath)) pending.push(leaf.id);
-      } else if (shards.length > 0) {
-        for (const shardIdx of shards) {
-          // Only emit a shard as pending when BOTH its prompt is
-          // staged AND its output is missing. discoverLeafShards
-          // normalises observed indices to a contiguous [0..max]
-          // range to surface partial-staging gaps as failed rows in
-          // the aggregator. Without this prompt-exists check,
-          // --print-pending-leaf-ids would emit shard ids for
-          // gaps (e.g. shard 1 when prompts exist only for 0 and 2),
-          // and the orchestrator's --print-agent-shim-prompt call
-          // for that id would hard-fail (no prompt file), wedging
-          // the batch loop. The aggregator already surfaces the
-          // missing-prompt case as a "failed" row on --continue,
-          // so dropping un-staged shards here is the right move.
-          const promptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leaf.id, shardIdx);
-          if (!promptPath || !existsSync(promptPath)) continue;
-          const outPath = defaultSpecialistOutputPath(runId, leaf.id, shardIdx);
-          if (outPath && !existsSync(outPath)) pending.push(`${leaf.id}--${shardIdx}`);
-        }
-      }
-      // shards === [] (no prompts staged) is treated as silent skip —
-      // aggregateSpecialistOutputs will emit a "failed" row for the
-      // leaf on --continue. The orchestrator can't dispatch what was
-      // never staged.
-    }
+    // Single pass over picked_leaves computes BOTH the pending list
+    // (units missing an output) AND the stable total_picked count
+    // (every dispatchable unit, regardless of output state). Sharing
+    // one walk with one prompt-existence check guarantees pending_now
+    // and total_picked use the IDENTICAL accounting basis — they
+    // can't drift apart in future edits because there are no two
+    // independent counts to keep in sync. Both metrics treat
+    // "dispatchable unit" the same way: a prompt file must exist on
+    // disk for the leaf or shard to count. Gappy shards (no prompt at
+    // index N even though indices < N and > N have prompts) and
+    // unstaged leaves silently skip in BOTH counts; the aggregator
+    // will surface those as failed rows at --continue time, but the
+    // orchestrator's progress accounting tracks only what's
+    // dispatchable.
+    const { pending, totalPicked } = computeDispatchableUnits(runId, pickedLeaves, cliName);
     const batch = pending.slice(0, batchSize);
     if (args["print-batch-envelope"]) {
       // JSON envelope: replaces N×--print-agent-shim-prompt calls per
@@ -2945,62 +2990,6 @@ async function main() {
           cliName,
         });
         shims[id] = buildShimText(runId, parsed.leafId, parsed.shardIdx, cliName);
-      }
-      // Stable progress denominator: count of dispatch units the runner
-      // staged for this state (1 per non-sharded leaf, N per sharded
-      // leaf where N is the discovered shard count). Unlike pending_now
-      // (which shrinks as outputs land), total_picked is invariant
-      // across the dispatch_specialists state's lifetime — orchestrators
-      // can use it as the stable Y in an "X of Y specialists complete"
-      // progress indicator (X = total_picked - pending_now). The
-      // accounting MUST match the pending_now computation above —
-      // counting only dispatch units the orchestrator actually has a
-      // prompt for. discoverLeafShards normalises gappy shard layouts
-      // (e.g. prompts at indices 0 and 2 with shard 1 missing) to a
-      // contiguous [0..max] range so the aggregator can synthesise a
-      // failed row for the missing shard, but the orchestrator can't
-      // DISPATCH a shard it has no prompt for. Counting `shards.length`
-      // here would inflate total_picked by the gap-count and produce
-      // an apparent "X of Y" overshoot when pending drops to zero
-      // before the gap is observed. Instead, match the
-      // pending-list filter and count only shard indices whose prompt
-      // file exists on disk.
-      //
-      // discoverLeafShards throws on the both-shapes corruption case;
-      // the same per-leaf try/catch above already routed those errors
-      // through fail() and exited, so by the time we reach this loop
-      // discovery succeeds for every leaf. We re-discover here
-      // (cheaply, against the cached workers/ listing) rather than
-      // threading state out of the earlier loop.
-      let totalPicked = 0;
-      for (const leaf of pickedLeaves) {
-        if (!leaf || typeof leaf.id !== "string") continue;
-        const shards = discoverLeafShards(runId, leaf.id);
-        if (shards === null) {
-          // Non-sharded leaf: 1 unit if its canonical prompt exists.
-          // discoverLeafShards returning null implies the canonical
-          // prompt exists (that's the gate condition), so this is
-          // always 1 here — but the explicit check matches the
-          // pending-list filter shape and survives any future
-          // discovery refactor.
-          const promptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leaf.id);
-          if (promptPath && existsSync(promptPath)) totalPicked += 1;
-        } else {
-          // Sharded leaf: only count shards whose prompt was actually
-          // staged. Gappy layouts (prompt at 0, 2 with 1 missing)
-          // contribute 2, not 3.
-          for (const shardIdx of shards) {
-            const promptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leaf.id, shardIdx);
-            if (promptPath && existsSync(promptPath)) totalPicked += 1;
-          }
-        }
-        // shards === [] (no prompts staged at all for this leaf)
-        // contributes 0 — same as pending_now's silent skip. The
-        // aggregator will emit a single failed row for the leaf at
-        // --continue time; that row appears in specialist_outputs[]
-        // in the final report but is intentionally NOT counted in
-        // dispatch progress (the orchestrator never had a prompt to
-        // dispatch).
       }
       process.stdout.write(JSON.stringify({
         batch,

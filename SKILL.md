@@ -41,7 +41,14 @@ while true; do
     # full pattern. The PREFERRED form uses --print-batch-envelope to
     # collapse the per-batch CLI calls into one Node invocation.
     while true; do
-      ENV=$(node scripts/run-review.mjs --print-batch-envelope --run-id "$RUN_ID")
+      # IMPORTANT: check the runner's exit status. On failure (e.g.
+      # corruption-detection throw, manifest-state mismatch),
+      # --print-batch-envelope writes a JSON error payload to
+      # stdout and exits non-zero. Without the `||` guard, the
+      # error JSON would be parsed as if it were the envelope and
+      # the loop would either hang or dispatch garbage.
+      ENV=$(node scripts/run-review.mjs --print-batch-envelope --run-id "$RUN_ID") \
+        || { echo "envelope call failed: $ENV" >&2; exit 1; }
       # Envelope is JSON: { batch, shims, remaining_after, pending_now,
       # total_picked }. Empty batch [] → exit the loop.
       BATCH_LEN=$(echo "$ENV" | jq -r '.batch | length')
@@ -97,7 +104,14 @@ The orchestrator's loop, **preferred form** using `--print-batch-envelope` (one 
 
 ```bash
 while true; do
-  ENV=$(node scripts/run-review.mjs --print-batch-envelope --run-id "$RUN_ID")
+  # IMPORTANT: check the runner's exit status. On failure
+  # (corruption-detection throw, manifest-state mismatch, etc.),
+  # --print-batch-envelope writes a JSON error payload to stdout
+  # and exits non-zero. Without the `||` guard, the error JSON
+  # would be parsed as if it were a normal envelope and the loop
+  # would dispatch garbage or hang.
+  ENV=$(node scripts/run-review.mjs --print-batch-envelope --run-id "$RUN_ID") \
+    || { echo "envelope call failed: $ENV" >&2; exit 1; }
   # Envelope is JSON: { batch: [...], shims: { id: prompt, ... },
   #                     remaining_after: N, pending_now: M,
   #                     total_picked: T }
@@ -132,10 +146,18 @@ node scripts/run-review.mjs --continue --run-id "$RUN_ID"
 
 ```bash
 while true; do
-  BATCH=$(node scripts/run-review.mjs --print-pending-leaf-ids --run-id "$RUN_ID")
+  # IMPORTANT: check the runner's exit status. On failure,
+  # --print-pending-leaf-ids writes a JSON error payload to stdout
+  # and exits non-zero. Without the `||` guard, `for ID in $BATCH`
+  # would word-split the error JSON into garbage tokens and dispatch
+  # an Agent for each (or, worse, the [-z] check would be false and
+  # the loop would never terminate).
+  BATCH=$(node scripts/run-review.mjs --print-pending-leaf-ids --run-id "$RUN_ID") \
+    || { echo "pending-leaf-ids call failed: $BATCH" >&2; exit 1; }
   [ -z "$BATCH" ] && break
   for ID in $BATCH; do
-    SHIM=$(node scripts/run-review.mjs --print-agent-shim-prompt --run-id "$RUN_ID" --leaf-id "$ID")
+    SHIM=$(node scripts/run-review.mjs --print-agent-shim-prompt --run-id "$RUN_ID" --leaf-id "$ID") \
+      || { echo "shim-prompt call failed for $ID: $SHIM" >&2; exit 1; }
     # ... pass $SHIM as the Agent tool call's `prompt` parameter ...
   done
 done

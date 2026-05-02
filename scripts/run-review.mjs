@@ -1978,6 +1978,24 @@ function resolveStorageRoot() {
       `code-reviewer entry; expected something like ".skill-code-review".`,
     );
   }
+  // Defence-in-depth: require storage_root to be a safe relative
+  // path. resolve(projectRoot, "/abs/path") returns "/abs/path",
+  // which would let a malformed/tampered .fsmrc.json escape the
+  // project root and write run artefacts to an arbitrary directory.
+  // ".." segments would do the same. (Round-6 Copilot review on
+  // PR #101.)
+  if (isAbsolute(rawStorageRoot)) {
+    fail(
+      `.fsmrc.json's "storage_root" must be a relative path under the project root; ` +
+      `got absolute path "${rawStorageRoot}". Reinstall the skill or fix the .fsmrc.json.`,
+    );
+  }
+  if (rawStorageRoot.split(/[\\/]/).includes("..")) {
+    fail(
+      `.fsmrc.json's "storage_root" must not contain ".." segments (got "${rawStorageRoot}"). ` +
+      `This would let storage escape the project root. Reinstall the skill or fix the .fsmrc.json.`,
+    );
+  }
   return resolve(projectRoot(), rawStorageRoot);
 }
 

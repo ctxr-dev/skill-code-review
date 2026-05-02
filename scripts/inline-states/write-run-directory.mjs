@@ -61,6 +61,23 @@ function resolveStorageRoot(skillRoot, projectRoot) {
       `the skill's install dir is corrupt. Reinstall the skill.`,
     );
   }
+  // Defence-in-depth: require storage_root to be a safe relative
+  // path. resolve(projectRoot, "/abs/path") returns "/abs/path",
+  // letting a malformed/tampered .fsmrc.json escape the project
+  // root. ".." segments would do the same. (Round-6 Copilot review
+  // on PR #101.)
+  if (isAbsolute(entry.storage_root)) {
+    throw new Error(
+      `.fsmrc.json's "storage_root" must be a relative path under the project root; ` +
+      `got absolute path "${entry.storage_root}". Reinstall the skill or fix the .fsmrc.json.`,
+    );
+  }
+  if (entry.storage_root.split(/[\\/]/).includes("..")) {
+    throw new Error(
+      `.fsmrc.json's "storage_root" must not contain ".." segments (got "${entry.storage_root}"). ` +
+      `This would let storage escape the project root. Reinstall the skill or fix the .fsmrc.json.`,
+    );
+  }
   return resolve(projectRoot, entry.storage_root);
 }
 

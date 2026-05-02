@@ -1,6 +1,6 @@
 {
   "name": "@ctxr/skill-code-review",
-  "version": "2.2.1",
+  "version": "2.2.2",
   "description": "Claude Code skill — wiki-organised corpus of ~476 specialist reviewer leaves selected by semantic tree descent against the diff, aggregated into an 8-gate GO/NO-GO release verdict.",
   "type": "module",
   "license": "MIT",

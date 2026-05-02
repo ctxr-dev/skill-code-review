@@ -56,12 +56,26 @@ function fail(violation, message, extra = {}) {
 // that's either undefined or starts with `--`. Both forms are
 // rejected — same fail-fast contract the runner enforces for its own
 // `--repo-root`. (Closes the round-2 principle-fail-fast finding.)
+// Per-flag remediation hints. `consumeValue` formats one error
+// shape ("requires a value") but each flag gets a flag-appropriate
+// example so operators see the right kind of value, not "absolute
+// path" for every flag. Closes the Copilot finding that the
+// generic "Pass an absolute path" hint was wrong for --run-id /
+// --base / --head / --max-age-seconds.
+const FLAG_REMEDIATION_HINTS = {
+  "--run-id": "a run-id, e.g. --run-id 20260503-123456-abcdef0",
+  "--base": "a git ref or SHA, e.g. --base abc123",
+  "--head": "a git ref or SHA, e.g. --head HEAD",
+  "--max-age-seconds": "an integer, e.g. --max-age-seconds 600",
+  "--repo-root": "an absolute path, e.g. --repo-root /path/to/project",
+};
+
 function consumeValue(argv, i, flag) {
   const value = argv[i + 1];
   if (value === undefined || value.startsWith("--")) {
+    const hint = FLAG_REMEDIATION_HINTS[flag] ?? `a value for ${flag}`;
     throw new Error(
-      `${flag} requires a value (got ${value === undefined ? "bare flag" : `next flag "${value}"`}). ` +
-      `Pass an absolute path, e.g. ${flag} /path/to/project.`,
+      `${flag} requires a value (got ${value === undefined ? "bare flag" : `next flag "${value}"`}). Pass ${hint}.`,
     );
   }
   return value;

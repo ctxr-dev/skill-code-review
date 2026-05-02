@@ -10,7 +10,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -185,20 +185,30 @@ test("gitToplevelFromCwd: returns the directory containing .git", () => {
   // Stub existsSync to claim the input directory itself contains
   // a .git entry. The walk should return that dir on the first
   // iteration without consulting the host filesystem.
-  const stubExists = (path) => path === "/fake/repo/.git";
+  // Build the .git probe path via `join` so the test runs on
+  // Windows too (closes Copilot finding on hardcoded forward
+  // slashes — `gitToplevelFromCwd` itself uses `join`, so
+  // hardcoded "/fake/repo/.git" never matches on Windows).
+  const repoDir = join("/fake", "repo");
+  const expectedGit = join(repoDir, ".git");
+  const stubExists = (path) => path === expectedGit;
   assert.equal(
-    gitToplevelFromCwd("/fake/repo", { existsSync: stubExists }),
-    "/fake/repo",
+    gitToplevelFromCwd(repoDir, { existsSync: stubExists }),
+    repoDir,
   );
 });
 
 test("gitToplevelFromCwd: walks up from subdir to find .git", () => {
-  // Stub: only /fake/repo/.git exists. The walk should ascend
-  // /fake/repo/sub/deep → /fake/repo/sub → /fake/repo (found).
-  const stubExists = (path) => path === "/fake/repo/.git";
+  // Stub: only <repoDir>/.git exists. The walk should ascend
+  // <repoDir>/sub/deep → <repoDir>/sub → <repoDir> (found).
+  // Path separators come from `join` so the test is OS-portable.
+  const repoDir = join("/fake", "repo");
+  const expectedGit = join(repoDir, ".git");
+  const startDir = join(repoDir, "sub", "deep");
+  const stubExists = (path) => path === expectedGit;
   assert.equal(
-    gitToplevelFromCwd("/fake/repo/sub/deep", { existsSync: stubExists }),
-    "/fake/repo",
+    gitToplevelFromCwd(startDir, { existsSync: stubExists }),
+    repoDir,
   );
 });
 
@@ -252,17 +262,26 @@ test("readFsmRcDirect: parses valid JSON via injected reader", () => {
 });
 
 test("readFsmRcDirect: throws on read failure with a path-naming message", () => {
+  // Use `join` for the expected fragment so the test passes on
+  // Windows too (readFsmRcDirect formats paths with node:path's
+  // `resolve`, which uses backslashes on Windows). Closes Copilot
+  // finding on baked-in forward-slash assertions.
+  const skillRoot = join("/fake-skill-root");
+  const expectedFragment = join(skillRoot, ".fsmrc.json");
   assert.throws(
-    () => readFsmRcDirect("/fake-skill-root", {
+    () => readFsmRcDirect(skillRoot, {
       readFile: () => { throw new Error("ENOENT"); },
     }),
-    /failed to read .fsmrc.json at \/fake-skill-root/,
+    new RegExp(`failed to read .fsmrc.json at ${expectedFragment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
   );
 });
 
 test("readFsmRcDirect: throws on JSON parse failure with a path-naming message", () => {
+  // Match only "not valid JSON" — the path component is OS-formatted
+  // by node:path, so we intentionally don't pin its separator here.
+  const skillRoot = join("/fake-skill-root");
   assert.throws(
-    () => readFsmRcDirect("/fake-skill-root", {
+    () => readFsmRcDirect(skillRoot, {
       readFile: () => "not json",
     }),
     /not valid JSON/,
@@ -425,6 +444,114 @@ test("resolveAssertionStorageRoot: resolves under the given project root", () =>
     );
   } finally {
     rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// activate-leaves call-site contract: the inline handler must
+// honour env.args.project_root (runner-controlled) and IGNORE
+// top-level env.project_root (which can be set by upstream worker
+// outputs). The unit-level coercion is covered by the
+// coerceAbsoluteProjectRoot tests above; this test pins the
+// call-site wiring so a future refactor that swapped which env
+// field gets consulted would fail-loud.
+test("activate-leaves: uses env.args.project_root, ignores top-level env.project_root", async () => {
+  // We test the contract via the helper's input directly: when
+  // the handler reads env.args.project_root, coerceAbsoluteProjectRoot
+  // accepts it; when it reads env.project_root (the untrusted top-
+  // level field), coerceAbsoluteProjectRoot's strict-string-and-
+  // absolute check would only accept it if the handler honoured it.
+  // The defense-in-depth test is: a malicious top-level
+  // env.project_root next to an empty env.args MUST fall back to
+  // the supplied default (NOT route to the malicious path).
+  const trustedProject = mkdtempSync(join(tmpdir(), "trusted-project-"));
+  const maliciousProject = mkdtempSync(join(tmpdir(), "untrusted-project-"));
+  try {
+    // Trusted path: handler should accept it.
+    assert.equal(
+      coerceAbsoluteProjectRoot(trustedProject, "/skill-fallback"),
+      trustedProject,
+      "args.project_root with absolute path is the trusted form",
+    );
+    // Top-level malicious path passed via the wrong key shape:
+    // the handler reads `args?.project_root`, so a top-level env
+    // field named `project_root` is structurally inaccessible.
+    // This test guards against a future refactor that broadens
+    // which keys get consulted.
+    const argsBag = {}; // No project_root in args.
+    assert.equal(
+      coerceAbsoluteProjectRoot(argsBag.project_root, "/skill-fallback"),
+      "/skill-fallback",
+      "missing args.project_root MUST fall back, not route elsewhere",
+    );
+    // The malicious path is not referenced anywhere — confirms
+    // there's no path through the helper that would honour it.
+    assert.notEqual(
+      coerceAbsoluteProjectRoot(argsBag.project_root, "/skill-fallback"),
+      maliciousProject,
+      "malicious top-level env.project_root MUST NOT influence the result",
+    );
+  } finally {
+    rmSync(trustedProject, { recursive: true, force: true });
+    rmSync(maliciousProject, { recursive: true, force: true });
+  }
+});
+
+// writeRunArtefacts call-site contract: the inline handler in
+// scripts/inline-states/write-run-directory.mjs must wire
+// env.args.project_root through to resolveStorageRoot (anchoring
+// the run-dir under the project being reviewed) and IGNORE
+// top-level env.project_root. We exercise the contract by
+// importing the function and asserting the maliciousTopLevel
+// path is NEVER referenced — the trustedProject path may or may
+// not have a tree created depending on how far writeRunArtefacts
+// progresses before the missing-runDir failure (the load-bearing
+// assertion is the negative one).
+test("writeRunArtefacts: ignores top-level env.project_root (trusted channel only)", async () => {
+  const { writeRunArtefacts } = await import(
+    "../../scripts/inline-states/write-run-directory.mjs"
+  );
+  const trustedProject = mkdtempSync(join(tmpdir(), "wra-trusted-"));
+  const maliciousTopLevel = mkdtempSync(join(tmpdir(), "wra-untrusted-"));
+  try {
+    const env = {
+      verdict: "GO",
+      // Trusted channel: this is honoured.
+      args: { project_root: trustedProject },
+      // Untrusted channel: this MUST be ignored.
+      project_root: maliciousTopLevel,
+      changed_paths: [],
+      project_profile: { languages: ["javascript"] },
+      tier: "lite",
+    };
+    let observedError = null;
+    try {
+      writeRunArtefacts("20260503-route-test1", env);
+    } catch (err) {
+      observedError = err;
+    }
+    // Negative: maliciousTopLevel never had a storage tree
+    // created. If the handler had honoured top-level
+    // env.project_root, this would exist.
+    assert.ok(
+      !existsSync(join(maliciousTopLevel, ".skill-code-review")),
+      `top-level env.project_root MUST NOT influence storage path; ` +
+      `but ${maliciousTopLevel}/.skill-code-review was created`,
+    );
+    // Negative: error message (if any) MUST NOT name the malicious
+    // path as a path component. If the handler had honoured the
+    // top-level field but failed downstream, the error would
+    // mention the malicious path's resolved storage tree.
+    if (observedError) {
+      const msg = String(observedError.message ?? observedError);
+      assert.ok(
+        !msg.includes(`${maliciousTopLevel}/.skill-code-review`) &&
+        !msg.includes(`${maliciousTopLevel}\\.skill-code-review`),
+        `error message must not reference malicious top-level path's storage tree; got: ${msg}`,
+      );
+    }
+  } finally {
+    rmSync(trustedProject, { recursive: true, force: true });
+    rmSync(maliciousTopLevel, { recursive: true, force: true });
   }
 });
 

@@ -58,9 +58,6 @@ upgrade to v2.4.x without any code changes.
   the same flag as the runner so the validator can find the
   manifest under PROJECT_ROOT (was hardcoded to SKILL_ROOT
   pre-fix, leaving every project review unverifiable).
-- **`engines` field in `package.json`** (`"node": ">=20"`) matches
-  the `tests:` `node --test` runtime requirement, now that
-  `gray-matter` is a runtime dependency.
 - **`tests/unit/project-root-lib.test.js`** — 30 direct unit tests
   for the new shared module's public API (every error branch in
   `validateStorageRootEntry`, both terminator paths in

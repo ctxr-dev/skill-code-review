@@ -215,8 +215,11 @@ export function enrichBriefWithPromptBody(brief, _deps = {}) {
     writeStderr(
       `WARN: enrichBriefWithPromptBody: could not resolve body path for ` +
       `prompt_template="${promptTemplate}": ${err?.message ?? err}. ` +
-      `Continuing without prompt_body; the orchestrator can still read ` +
-      `from the on-disk prompt-template path directly.\n`,
+      `Continuing without prompt_body. The orchestrator's dispatch ` +
+      `prompt at <run_dir>/workers/<state>-dispatch-prompt.md is still ` +
+      `valid (it bakes in the body at brief-stage time when this enrichment ` +
+      `succeeds; if THIS enrichment failed, the dispatch-prompt path is the ` +
+      `intended fallback).\n`,
     );
     return brief;
   }

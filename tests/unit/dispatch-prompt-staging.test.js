@@ -541,21 +541,25 @@ test("writeSpecialistPromptsToDisk: single-shard output keeps the canonical non-
   }
 });
 
-test("FORBIDDEN_PATHS_NOTICE_FULL and FORBIDDEN_PATHS_NOTICE_SHIM share load-bearing tokens (no silent drift)", () => {
+// Load-bearing tokens both FORBIDDEN PATHS notice variants must
+// preserve. A divergent edit (e.g. updating the full rationale to
+// allow a new scratch dir but forgetting the shim) would silently
+// weaken the contract for the audience that reads the stale copy.
+// Defined at module scope so both invariants below test against the
+// same shared definition.
+const FORBIDDEN_PATHS_LOAD_BEARING_TOKENS = [
+  "NEVER write to /tmp",
+  // Both forms must name the canonical write target as the output path.
+  "ONLY allowed write target is the output path",
+];
+
+test("FORBIDDEN_PATHS_NOTICE_FULL and FORBIDDEN_PATHS_NOTICE_SHIM both carry the load-bearing tokens (no silent drift)", () => {
   // The two constants serve different audiences (full rationale for
   // the dispatch prompt, compact pointer for the ~200-token shim) but
-  // must agree on the load-bearing rule clauses. A divergent edit
-  // (e.g. someone updates the full rationale to allow a new scratch
-  // dir but forgets the shim) would silently weaken the contract for
-  // dispatched specialist Agents — the shim is what they read inline.
-  // This test guards against drift on the rule wording without
-  // demanding mechanical derivation of one form from the other.
-  const loadBearingTokens = [
-    "NEVER write to /tmp",
-    // Both forms must name the canonical write target as the output path.
-    "ONLY allowed write target is the output path",
-  ];
-  for (const token of loadBearingTokens) {
+  // must agree on the load-bearing rule clauses. This test guards
+  // against drift on the rule wording without demanding mechanical
+  // derivation of one form from the other.
+  for (const token of FORBIDDEN_PATHS_LOAD_BEARING_TOKENS) {
     assert.ok(
       FORBIDDEN_PATHS_NOTICE_FULL.includes(token),
       `FORBIDDEN_PATHS_NOTICE_FULL is missing load-bearing token: "${token}"`,
@@ -565,8 +569,12 @@ test("FORBIDDEN_PATHS_NOTICE_FULL and FORBIDDEN_PATHS_NOTICE_SHIM share load-bea
       `FORBIDDEN_PATHS_NOTICE_SHIM is missing load-bearing token: "${token}"`,
     );
   }
-  // The shim must be SHORTER than the full notice (it lives inside a
-  // documented ~200-token bound). If the shim grows past the full
+});
+
+test("FORBIDDEN_PATHS_NOTICE_SHIM is shorter than FORBIDDEN_PATHS_NOTICE_FULL (audience-inversion guard)", () => {
+  // The shim lives inside a documented ~200-token bound and is what
+  // the dispatched specialist Agent reads inline before opening the
+  // staged dispatch prompt. If the shim ever grows past the full
   // form, somebody has the audiences inverted.
   assert.ok(
     FORBIDDEN_PATHS_NOTICE_SHIM.length < FORBIDDEN_PATHS_NOTICE_FULL.length,

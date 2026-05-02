@@ -1208,20 +1208,24 @@ export function discoverLeafShards(runId, leafId) {
   // would let the runner believe the leaf produced two complete
   // shards when shard 1's files were never reviewed.
   const max = shards[shards.length - 1];
-  // Hard cap on the contiguous range we'll allocate. A legitimate
-  // staging pass with the default 256KB threshold would hit ~10-30
-  // shards even on a multi-megabyte filtered diff (the worst real
-  // case); under explicit lower thresholds (e.g. cost-sensitive runs
-  // setting SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES=32768) the same
-  // worst-case diff might hit ~100-200 shards. 1024 leaves comfortable
-  // headroom for any legitimate threshold. Anything beyond
-  // SHARD_INDEX_MAX is treated as workers/ corruption (manual edit,
-  // cosmic ray, or buggy external tooling) rather than a legitimate
-  // run, and we hard-fail instead of allocating an enormous array
-  // that would hang/OOM the runner. The per-entry 4-digit gate above
-  // already rejects indices > 9999 before parseInt, but this max
-  // check is the contract: if any caller plants a shard index > 1024
-  // by direct file write, we surface it.
+  // Hard cap on the maximum shard INDEX we'll accept (and therefore
+  // on the size of the contiguous range we allocate). A legitimate
+  // staging pass with the default 256KB threshold would max out at
+  // shard index ~10-30 even on a multi-megabyte filtered diff (the
+  // worst real case); under explicit lower thresholds (e.g.
+  // cost-sensitive runs setting SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES=32768)
+  // the same worst-case diff might max at index ~100-200. A cap of
+  // 1024 on the highest shard index leaves comfortable headroom for
+  // any legitimate threshold. (The cap bounds shard indices, not
+  // leaf counts — picked_leaves[].length is bounded separately by
+  // the per-tier specialist cap of 3/8/20/30 in the FSM.) Anything
+  // beyond SHARD_INDEX_MAX is treated as workers/ corruption
+  // (manual edit, cosmic ray, or buggy external tooling) rather
+  // than a legitimate run, and we hard-fail instead of allocating
+  // an enormous array that would hang/OOM the runner. The per-entry
+  // 4-digit gate above already rejects indices > 9999 before parseInt,
+  // but this max check is the contract: if any caller plants a shard
+  // index > 1024 by direct file write, we surface it.
   if (max > SHARD_INDEX_MAX) {
     throw new Error(
       `discoverLeafShards: shard index ${max} for leaf "${leafId}" exceeds SHARD_INDEX_MAX=${SHARD_INDEX_MAX}. The workers/ directory likely contains corrupted or hand-edited shard files. Inspect ${dir} and remove implausible shard prompts before retrying.`,

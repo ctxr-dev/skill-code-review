@@ -2943,24 +2943,32 @@ async function main() {
         { run_id: runId },
       );
     }
-    // Empty picked_leaves IS an error at this state. The FSM declares
-    // `picked_leaves is non-empty` as a precondition for
-    // dispatch_specialists (fsm/code-reviewer.fsm.yaml — the
-    // preconditions block on the dispatch_specialists state). If we
-    // reach this CLI mode with picked_leaves: [], the brief is
-    // either corrupted, out of sync with the run state, or the FSM
-    // advanced past dispatch_specialists and the brief on disk is
-    // stale. Treating it as a successful zero-work response would
-    // silently skip all specialist review on a corrupted run; hard-
-    // fail instead so the orchestrator surfaces the FSM-invariant
-    // violation rather than emitting an empty report. (The legitimate
-    // "all specialists already ran" case lands in the loop below
-    // with batch=[] and pending_now=0; that is NOT this case.)
+    // Empty picked_leaves: render a clean zero-work envelope instead
+    // of hard-failing. The FSM declares `picked_leaves is non-empty`
+    // as a precondition on dispatch_specialists
+    // (fsm/code-reviewer.fsm.yaml line ~327), but the rest of the
+    // pipeline already accepts empty arrays at this shape: the trim
+    // worker's contract permits picking fewer than the cap (down to
+    // and including zero); writeSpecialistPromptsToDisk and
+    // aggregateSpecialistOutputs already handle the empty-array
+    // case; and downstream verify_coverage / aggregate_findings
+    // produce a valid (empty) report from no specialists. Treating
+    // this as a fatal error would wedge the orchestrator on a
+    // legitimate "no leaves picked" run instead of letting it
+    // complete cleanly. For the plaintext --print-pending-leaf-ids:
+    // emit nothing and exit 0. For --print-batch-envelope: emit
+    // `{ batch: [], remaining_after: 0, pending_now: 0,
+    //    total_dispatch_units: 0, shims: {} }` so an orchestrator
+    // parsing JSON sees an explicit zero-work signal. Both
+    // behaviours let the orchestrator's loop terminate cleanly and
+    // --continue produce a valid empty specialist_outputs[].
     if (pickedLeaves.length === 0) {
-      fail(
-        `${cliName}: dispatch_specialists brief has empty picked_leaves[]. The FSM declares picked_leaves non-empty as a precondition for this state (fsm/code-reviewer.fsm.yaml). The brief is either corrupted, out of sync, or the run advanced past dispatch_specialists and the brief on disk is stale.`,
-        { run_id: runId, brief_path: briefPath },
-      );
+      if (args["print-batch-envelope"]) {
+        process.stdout.write(JSON.stringify({
+          batch: [], remaining_after: 0, pending_now: 0, total_dispatch_units: 0, shims: {},
+        }) + "\n");
+      }
+      return;
     }
     // Single pass over picked_leaves computes BOTH the pending list
     // (units missing an output) AND the stable total_dispatch_units count

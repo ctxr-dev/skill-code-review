@@ -845,19 +845,20 @@ test("--print-batch-envelope: end-to-end CLI contract (single-call batch with sh
   assert.deepEqual(emptyEnvelope.shims, {}, "no shims when no pending ids");
 });
 
-test("--print-batch-envelope: empty picked_leaves[] is an FSM-invariant violation, hard-fails", () => {
-  // The FSM (fsm/code-reviewer.fsm.yaml) declares `picked_leaves is
-  // non-empty` as a precondition for dispatch_specialists. Reaching
-  // this CLI mode with picked_leaves: [] means the brief is
-  // corrupted, out of sync, or the FSM advanced past
-  // dispatch_specialists and the brief on disk is stale. Treating it
-  // as a successful zero-work response would silently skip all
-  // specialist review on a corrupted run; we hard-fail instead so
-  // the orchestrator surfaces the violation and aborts. (The
-  // legitimate "all specialists already ran" case lands in the
-  // pending-list compute path with an empty batch and pending_now=0,
-  // which is covered by the happy-path test above; this is NOT
-  // that case.)
+test("--print-batch-envelope: empty picked_leaves[] emits a clean zero-work envelope (no orchestrator wedge)", () => {
+  // The trim worker's contract permits picking fewer than the cap
+  // (down to zero), and the rest of the pipeline (writeSpecialistPromptsToDisk,
+  // aggregateSpecialistOutputs, verify_coverage, aggregate_findings)
+  // accepts empty picked_leaves at this shape. The FSM YAML declares
+  // `picked_leaves is non-empty` as a precondition on
+  // dispatch_specialists, but treating this as a fatal error here
+  // would wedge the orchestrator on a legitimate "no leaves picked"
+  // run instead of letting it complete with an empty
+  // specialist_outputs[].
+  //
+  // The envelope must emit a zero-work payload — NOT empty stdout,
+  // since JSON-parsing orchestrators need an explicit signal to
+  // terminate the dispatch loop.
   const baseSha = "9999999999999999999999999999999999999999";
   const headSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const start = spawnSync(
@@ -871,7 +872,6 @@ test("--print-batch-envelope: empty picked_leaves[] is an FSM-invariant violatio
   const storageRoot = resolve(REPO_ROOT, settings.storageRoot);
   const runDir = runDirPath(runId, { storageRoot });
   const workersDir = join(runDir, "workers");
-  // Brief with explicitly empty picked_leaves[] — simulates corruption.
   writeFileSync(join(workersDir, "dispatch_specialists-brief.json"), JSON.stringify({
     run_id: runId,
     state: "dispatch_specialists",
@@ -886,25 +886,25 @@ test("--print-batch-envelope: empty picked_leaves[] is an FSM-invariant violatio
     ["scripts/run-review.mjs", "--print-batch-envelope", "--run-id", runId],
     { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
   );
-  assert.notEqual(env.status, 0, "empty picked_leaves[] must hard-fail (FSM precondition violation)");
-  const payload = JSON.parse(env.stdout);
-  // Error message names the violation and points at the FSM file so
-  // the orchestrator (and humans debugging) can find the precondition
-  // contract being enforced.
-  assert.match(payload.message, /empty picked_leaves\[\]/);
-  assert.match(payload.message, /precondition/);
-  assert.match(payload.message, /fsm\/code-reviewer\.fsm\.yaml/);
+  assert.equal(env.status, 0, `--print-batch-envelope on empty picked_leaves[] must exit 0; stderr: ${env.stderr}`);
+  const envelope = JSON.parse(env.stdout);
+  assert.deepEqual(envelope, {
+    batch: [],
+    remaining_after: 0,
+    pending_now: 0,
+    total_dispatch_units: 0,
+    shims: {},
+  }, "empty picked_leaves[] envelope must have all-zero counters and empty collections");
 
-  // --print-pending-leaf-ids on the same corruption: same hard-fail
-  // (cliName attribution differs but the contract is identical).
+  // --print-pending-leaf-ids on the same input: emit nothing, exit 0
+  // (matching the pre-envelope behaviour for plaintext consumers).
   const plain = spawnSync(
     process.execPath,
     ["scripts/run-review.mjs", "--print-pending-leaf-ids", "--run-id", runId],
     { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
   );
-  assert.notEqual(plain.status, 0, "--print-pending-leaf-ids on empty picked_leaves[] must hard-fail too");
-  const plainPayload = JSON.parse(plain.stdout);
-  assert.match(plainPayload.message, /empty picked_leaves\[\]/);
+  assert.equal(plain.status, 0, "--print-pending-leaf-ids on empty picked_leaves[] must also exit 0 (orchestrator's BATCH=$(...) sees empty string and breaks)");
+  assert.equal(plain.stdout, "", "no leaves to dispatch → no stdout");
 });
 
 test("--print-batch-envelope: degraded staging (gappy shards + unstaged leaves) reports accurate progress fields", () => {

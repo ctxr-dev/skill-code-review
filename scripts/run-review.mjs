@@ -1265,9 +1265,9 @@ const SHARD_INDEX_MAX = 1024;
 //
 // Compute the dispatchable-units shape both --print-pending-leaf-ids
 // and --print-batch-envelope need: the pending list (units missing
-// outputs) AND the stable total_picked count (every unit the runner
+// outputs) AND the stable total_dispatch_units count (every unit the runner
 // has staged a prompt for). Single pass with one prompt-existence
-// check guarantees pending_now and total_picked share the same
+// check guarantees pending_now and total_dispatch_units share the same
 // accounting basis — they cannot drift in future edits because
 // there is no second walk to keep in sync.
 //
@@ -1277,10 +1277,10 @@ const SHARD_INDEX_MAX = 1024;
 //   - cliName: the calling CLI name, used in error messages so a
 //     fail() routed through here is attributable to the right mode.
 //
-// Returns { pending: string[], totalPicked: number }:
+// Returns { pending: string[], totalDispatchUnits: number }:
 //   - pending[]: dispatch ids ("<leaf-id>" or "<leaf-id>--<shardIdx>")
 //     whose prompt file exists AND whose output file does NOT.
-//   - totalPicked: count of dispatch ids whose prompt file exists,
+//   - totalDispatchUnits: count of dispatch ids whose prompt file exists,
 //     regardless of output state — STABLE across calls within the
 //     dispatch_specialists state's lifetime.
 //
@@ -1296,7 +1296,7 @@ const SHARD_INDEX_MAX = 1024;
 // the throw and route through fail() with the cliName attribution.
 function computeDispatchableUnits(runId, pickedLeaves, cliName) {
   const pending = [];
-  let totalPicked = 0;
+  let totalDispatchUnits = 0;
   for (const leaf of pickedLeaves) {
     if (!leaf || typeof leaf.id !== "string") continue;
     let shards;
@@ -1313,11 +1313,11 @@ function computeDispatchableUnits(runId, pickedLeaves, cliName) {
       // discoverLeafShards returning null implies the canonical
       // prompt exists (that's the gate condition), so the existsSync
       // check is normally redundant — but the explicit check keeps
-      // total_picked and pending_now in lockstep and survives any
+      // total_dispatch_units and pending_now in lockstep and survives any
       // future discovery refactor.
       const promptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leaf.id);
       if (!promptPath || !existsSync(promptPath)) continue;
-      totalPicked += 1;
+      totalDispatchUnits += 1;
       const outPath = defaultSpecialistOutputPath(runId, leaf.id);
       if (outPath && !existsSync(outPath)) pending.push(leaf.id);
     } else {
@@ -1326,7 +1326,7 @@ function computeDispatchableUnits(runId, pickedLeaves, cliName) {
       for (const shardIdx of shards) {
         const promptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leaf.id, shardIdx);
         if (!promptPath || !existsSync(promptPath)) continue;
-        totalPicked += 1;
+        totalDispatchUnits += 1;
         const outPath = defaultSpecialistOutputPath(runId, leaf.id, shardIdx);
         if (outPath && !existsSync(outPath)) pending.push(`${leaf.id}--${shardIdx}`);
       }
@@ -1338,7 +1338,7 @@ function computeDispatchableUnits(runId, pickedLeaves, cliName) {
     // NOT counted in dispatch progress (the orchestrator never had
     // a prompt to dispatch).
   }
-  return { pending, totalPicked };
+  return { pending, totalDispatchUnits };
 }
 
 // The order of specialist_outputs matches picked_leaves order so the
@@ -2943,27 +2943,30 @@ async function main() {
         { run_id: runId },
       );
     }
-    // Empty picked_leaves is NOT an error — it means there's nothing
-    // to dispatch (which is a legal state for the FSM to reach when
-    // earlier states determined no specialists apply). For the
-    // plaintext --print-pending-leaf-ids: emit nothing and exit 0.
-    // For --print-batch-envelope: emit `{ batch: [], remaining_after: 0,
-    // pending_now: 0, total_picked: 0, shims: {} }` so an orchestrator
-    // parsing JSON sees an explicit zero-work signal. Both behaviours
-    // let the orchestrator's loop terminate cleanly.
+    // Empty picked_leaves IS an error at this state. The FSM declares
+    // `picked_leaves is non-empty` as a precondition for
+    // dispatch_specialists (fsm/code-reviewer.fsm.yaml — the
+    // preconditions block on the dispatch_specialists state). If we
+    // reach this CLI mode with picked_leaves: [], the brief is
+    // either corrupted, out of sync with the run state, or the FSM
+    // advanced past dispatch_specialists and the brief on disk is
+    // stale. Treating it as a successful zero-work response would
+    // silently skip all specialist review on a corrupted run; hard-
+    // fail instead so the orchestrator surfaces the FSM-invariant
+    // violation rather than emitting an empty report. (The legitimate
+    // "all specialists already ran" case lands in the loop below
+    // with batch=[] and pending_now=0; that is NOT this case.)
     if (pickedLeaves.length === 0) {
-      if (args["print-batch-envelope"]) {
-        process.stdout.write(JSON.stringify({
-          batch: [], remaining_after: 0, pending_now: 0, total_picked: 0, shims: {},
-        }) + "\n");
-      }
-      return;
+      fail(
+        `${cliName}: dispatch_specialists brief has empty picked_leaves[]. The FSM declares picked_leaves non-empty as a precondition for this state (fsm/code-reviewer.fsm.yaml). The brief is either corrupted, out of sync, or the run advanced past dispatch_specialists and the brief on disk is stale.`,
+        { run_id: runId, brief_path: briefPath },
+      );
     }
     // Single pass over picked_leaves computes BOTH the pending list
-    // (units missing an output) AND the stable total_picked count
+    // (units missing an output) AND the stable total_dispatch_units count
     // (every dispatchable unit, regardless of output state). Sharing
     // one walk with one prompt-existence check guarantees pending_now
-    // and total_picked use the IDENTICAL accounting basis — they
+    // and total_dispatch_units use the IDENTICAL accounting basis — they
     // can't drift apart in future edits because there are no two
     // independent counts to keep in sync. Both metrics treat
     // "dispatchable unit" the same way: a prompt file must exist on
@@ -2973,7 +2976,7 @@ async function main() {
     // will surface those as failed rows at --continue time, but the
     // orchestrator's progress accounting tracks only what's
     // dispatchable.
-    const { pending, totalPicked } = computeDispatchableUnits(runId, pickedLeaves, cliName);
+    const { pending, totalDispatchUnits } = computeDispatchableUnits(runId, pickedLeaves, cliName);
     const batch = pending.slice(0, batchSize);
     if (args["print-batch-envelope"]) {
       // JSON envelope: replaces N×--print-agent-shim-prompt calls per
@@ -2981,11 +2984,16 @@ async function main() {
       // everything it needs to dispatch this batch's Agents AND know
       // whether to loop again (remaining_after > 0) or exit
       // (remaining_after === 0). Progress visibility via pending_now
-      // (transient — shrinks as outputs land) and total_picked
+      // (transient — shrinks as outputs land) and total_dispatch_units
       // (stable across calls within this state — the Y in an "X of Y
-      // specialists complete" indicator, where X = total_picked -
-      // pending_now) lets the orchestrator emit user-facing progress
-      // without extra CLI calls.
+      // Agent invocations complete" indicator, where X =
+      // total_dispatch_units - pending_now) lets the orchestrator
+      // emit user-facing progress without extra CLI calls. Note that
+      // total_dispatch_units counts Agent invocations (shards), NOT
+      // picked leaves — the final report's specialists_dispatched is
+      // a per-leaf count (sharded leaves merge into one row at
+      // --continue aggregation), so the two totals will differ on
+      // sharded runs and that's by design.
       const shims = {};
       for (const id of batch) {
         const parsed = parseLeafIdAndShardIdx({
@@ -2999,7 +3007,7 @@ async function main() {
         batch,
         remaining_after: Math.max(0, pending.length - batch.length),
         pending_now: pending.length,
-        total_picked: totalPicked,
+        total_dispatch_units: totalDispatchUnits,
         shims,
       }) + "\n");
       return;

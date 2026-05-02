@@ -50,7 +50,7 @@ while true; do
       ENV=$(node scripts/run-review.mjs --print-batch-envelope --run-id "$RUN_ID") \
         || { echo "envelope call failed: $ENV" >&2; exit 1; }
       # Envelope is JSON: { batch, shims, remaining_after, pending_now,
-      # total_picked }. Empty batch [] → exit the loop.
+      # total_dispatch_units }. Empty batch [] → exit the loop.
       BATCH_LEN=$(echo "$ENV" | jq -r '.batch | length')
       [ "$BATCH_LEN" -eq 0 ] && break
       # Dispatch one Agent per id in .batch (≤10 ids per call).
@@ -114,10 +114,10 @@ while true; do
     || { echo "envelope call failed: $ENV" >&2; exit 1; }
   # Envelope is JSON: { batch: [...], shims: { id: prompt, ... },
   #                     remaining_after: N, pending_now: M,
-  #                     total_picked: T }
+  #                     total_dispatch_units: T }
   # Empty batch [] → exit the loop. (remaining_after === 0 also signals
   # "this is the final batch" if you want to log progress;
-  # X-of-Y progress: X = total_picked - pending_now, Y = total_picked.)
+  # X-of-Y progress: X = total_dispatch_units - pending_now, Y = total_dispatch_units.)
   BATCH_LEN=$(echo "$ENV" | jq -r '.batch | length')
   [ "$BATCH_LEN" -eq 0 ] && break
 
@@ -163,7 +163,7 @@ while true; do
 done
 ```
 
-**Why prefer `--print-batch-envelope`.** One Node invocation per loop iteration instead of `1 + N` (one `--print-pending-leaf-ids` plus one `--print-agent-shim-prompt` per batch id). On a K=20 review (2 batches at the default size of 10), that's 1 envelope call per batch (2 total) versus 1 + 10 = 11 calls per batch (22 total). The orchestrator transcript shrinks accordingly. The envelope's progress fields make user-facing "X of Y specialists complete" reporting cheap: `total_picked` is the STABLE total of dispatch units staged for this state (use as Y); `pending_now` shrinks as outputs land (so X = total_picked - pending_now is work done so far); `remaining_after` is pending count after this batch (0 → final batch).
+**Why prefer `--print-batch-envelope`.** One Node invocation per loop iteration instead of `1 + N` (one `--print-pending-leaf-ids` plus one `--print-agent-shim-prompt` per batch id). On a K=20 review (2 batches at the default size of 10), that's 1 envelope call per batch (2 total) versus 1 + 10 = 11 calls per batch (22 total). The orchestrator transcript shrinks accordingly. The envelope's progress fields make a user-facing "X of Y Agent invocations complete" indicator cheap to render: `total_dispatch_units` is the STABLE total of Agent invocations staged for this state (one per non-sharded leaf, N per sharded leaf — use as Y); `pending_now` shrinks as outputs land (so X = total_dispatch_units - pending_now is work done so far); `remaining_after` is pending count after this batch (0 → final batch). NOTE: `total_dispatch_units` counts Agent invocations (shards), NOT picked leaves. The final report's `summary.specialists_dispatched` counts picked leaves (sharded leaves merge into one row at `--continue` aggregation), so a sharded run will report a smaller specialist count in the report than the dispatch-time `total_dispatch_units` value. Render dispatch-time progress against `total_dispatch_units`; render report-time totals against `specialists_dispatched`.
 
 **Concurrency cap.** Both modes return at most `--batch-size` ids per call (default 10, max 50). The cap is enforced runner-side: the orchestrator cannot dispatch more specialists in one message than the runner returned ids for that call. The default of 10 is the recommended ceiling — large simultaneous Agent dispatches overflow the trace window and make failures hard to attribute. Raise `--batch-size` only with a deliberate reason to widen the pool.
 

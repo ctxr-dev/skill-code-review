@@ -705,12 +705,12 @@ test("--print-batch-envelope: end-to-end CLI contract (single-call batch with sh
   const envelope = JSON.parse(env.stdout);
   assert.deepEqual(envelope.batch, ["env-alpha", "env-beta", "env-gamma"], "batch must list pending ids in picked_leaves order");
   assert.equal(envelope.pending_now, 3, "pending_now counts pending ids only (env-done excluded)");
-  // total_picked is the STABLE count of dispatch units staged for the
+  // total_dispatch_units is the STABLE count of dispatch units staged for the
   // dispatch_specialists state (env-alpha, env-beta, env-gamma,
   // env-done = 4). Unlike pending_now (which shrinks as outputs land),
-  // total_picked is invariant across the loop's lifetime — orchestrators
+  // total_dispatch_units is invariant across the loop's lifetime — orchestrators
   // can use it as the Y in an "X of Y specialists complete" indicator.
-  assert.equal(envelope.total_picked, 4, "total_picked counts ALL staged units (including the already-completed env-done)");
+  assert.equal(envelope.total_dispatch_units, 4, "total_dispatch_units counts ALL staged units (including the already-completed env-done)");
   assert.equal(envelope.remaining_after, 0, "all 3 fit in default batch size 10 → 0 remaining after");
   // shims object has one entry per batch id; each is the canonical
   // shim text the orchestrator would feed to Agent.
@@ -799,9 +799,9 @@ test("--print-batch-envelope: end-to-end CLI contract (single-call batch with sh
   assert.equal(cappedEnvelope.batch.length, 2, "--batch-size 2 caps batch at 2");
   assert.equal(cappedEnvelope.remaining_after, 1, "1 pending leaf remains after a 2-of-3 batch");
   assert.equal(cappedEnvelope.pending_now, 3);
-  // total_picked must match the first envelope's value — STABLE across calls
+  // total_dispatch_units must match the first envelope's value — STABLE across calls
   // is the whole point of distinguishing it from pending_now.
-  assert.equal(cappedEnvelope.total_picked, 4, "total_picked is stable across envelope calls within the same state");
+  assert.equal(cappedEnvelope.total_dispatch_units, 4, "total_dispatch_units is stable across envelope calls within the same state");
 
   // Manifest-state gate: non-dispatch_specialists must hard-fail.
   realManifest.current_state = "scan_project";
@@ -837,24 +837,27 @@ test("--print-batch-envelope: end-to-end CLI contract (single-call batch with sh
   const emptyEnvelope = JSON.parse(empty.stdout);
   assert.deepEqual(emptyEnvelope.batch, [], "empty batch when no pending");
   assert.equal(emptyEnvelope.pending_now, 0);
-  // total_picked stays at 4 even after every leaf is done — the four
+  // total_dispatch_units stays at 4 even after every leaf is done — the four
   // staged units are still counted; pending_now=0 is what tells the
-  // caller everything is complete. Done = total_picked - pending_now = 4.
-  assert.equal(emptyEnvelope.total_picked, 4, "total_picked stays stable after every output is written");
+  // caller everything is complete. Done = total_dispatch_units - pending_now = 4.
+  assert.equal(emptyEnvelope.total_dispatch_units, 4, "total_dispatch_units stays stable after every output is written");
   assert.equal(emptyEnvelope.remaining_after, 0);
   assert.deepEqual(emptyEnvelope.shims, {}, "no shims when no pending ids");
 });
 
-test("--print-batch-envelope: empty picked_leaves[] emits an explicit zero-work envelope", () => {
-  // Distinct zero-work path from the "all outputs already written" case
-  // covered above. When the brief has picked_leaves: [] (the FSM legally
-  // reaches dispatch_specialists with no specialists to run, e.g. when
-  // every relevant leaf was rescued by the coverage gate to a
-  // changed_paths entry but no leaf actually activated), the envelope
-  // must emit a zero-work payload — NOT empty stdout, since
-  // JSON-parsing orchestrators need an explicit signal to terminate
-  // the dispatch loop. This test locks down the explicit JSON envelope
-  // returned by that branch.
+test("--print-batch-envelope: empty picked_leaves[] is an FSM-invariant violation, hard-fails", () => {
+  // The FSM (fsm/code-reviewer.fsm.yaml) declares `picked_leaves is
+  // non-empty` as a precondition for dispatch_specialists. Reaching
+  // this CLI mode with picked_leaves: [] means the brief is
+  // corrupted, out of sync, or the FSM advanced past
+  // dispatch_specialists and the brief on disk is stale. Treating it
+  // as a successful zero-work response would silently skip all
+  // specialist review on a corrupted run; we hard-fail instead so
+  // the orchestrator surfaces the violation and aborts. (The
+  // legitimate "all specialists already ran" case lands in the
+  // pending-list compute path with an empty batch and pending_now=0,
+  // which is covered by the happy-path test above; this is NOT
+  // that case.)
   const baseSha = "9999999999999999999999999999999999999999";
   const headSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const start = spawnSync(
@@ -868,7 +871,7 @@ test("--print-batch-envelope: empty picked_leaves[] emits an explicit zero-work 
   const storageRoot = resolve(REPO_ROOT, settings.storageRoot);
   const runDir = runDirPath(runId, { storageRoot });
   const workersDir = join(runDir, "workers");
-  // Brief with explicitly empty picked_leaves[].
+  // Brief with explicitly empty picked_leaves[] — simulates corruption.
   writeFileSync(join(workersDir, "dispatch_specialists-brief.json"), JSON.stringify({
     run_id: runId,
     state: "dispatch_specialists",
@@ -883,18 +886,25 @@ test("--print-batch-envelope: empty picked_leaves[] emits an explicit zero-work 
     ["scripts/run-review.mjs", "--print-batch-envelope", "--run-id", runId],
     { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
   );
-  assert.equal(env.status, 0, `--print-batch-envelope on empty picked_leaves[] must exit 0; stderr: ${env.stderr}`);
-  // Zero-work envelope shape: every numeric field is 0, batch is [],
-  // shims is {}. JSON-parsing orchestrator can break out of its loop
-  // on `batch.length === 0`.
-  const envelope = JSON.parse(env.stdout);
-  assert.deepEqual(envelope, {
-    batch: [],
-    remaining_after: 0,
-    pending_now: 0,
-    total_picked: 0,
-    shims: {},
-  }, "empty picked_leaves[] envelope must have all-zero counters and empty collections");
+  assert.notEqual(env.status, 0, "empty picked_leaves[] must hard-fail (FSM precondition violation)");
+  const payload = JSON.parse(env.stdout);
+  // Error message names the violation and points at the FSM file so
+  // the orchestrator (and humans debugging) can find the precondition
+  // contract being enforced.
+  assert.match(payload.message, /empty picked_leaves\[\]/);
+  assert.match(payload.message, /precondition/);
+  assert.match(payload.message, /fsm\/code-reviewer\.fsm\.yaml/);
+
+  // --print-pending-leaf-ids on the same corruption: same hard-fail
+  // (cliName attribution differs but the contract is identical).
+  const plain = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-pending-leaf-ids", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.notEqual(plain.status, 0, "--print-pending-leaf-ids on empty picked_leaves[] must hard-fail too");
+  const plainPayload = JSON.parse(plain.stdout);
+  assert.match(plainPayload.message, /empty picked_leaves\[\]/);
 });
 
 test("--print-batch-envelope: degraded staging (gappy shards + unstaged leaves) reports accurate progress fields", () => {
@@ -903,19 +913,19 @@ test("--print-batch-envelope: degraded staging (gappy shards + unstaged leaves) 
   //   1. Gappy shards: prompts at indices 0 and 2 with shard 1
   //      missing. discoverLeafShards normalises to [0, 1, 2] (so the
   //      aggregator can synth a failed row for shard 1), but shard 1
-  //      was never dispatchable. Both pending_now AND total_picked
+  //      was never dispatchable. Both pending_now AND total_dispatch_units
   //      must skip it: only the 2 staged shards count.
   //   2. Unstaged leaf: a picked leaf with no prompts at all (canonical
   //      OR sharded). aggregateSpecialistOutputs will emit a single
   //      failed row for it at --continue, but during dispatch the
   //      orchestrator can't dispatch what was never staged. Both
-  //      pending_now AND total_picked silently skip it (contributing
+  //      pending_now AND total_dispatch_units silently skip it (contributing
   //      0 each) — accounting stays consistent so the X-of-Y formula
   //      never overshoots.
   //
-  // Without this regression test, a future refactor of total_picked
+  // Without this regression test, a future refactor of total_dispatch_units
   // (e.g. switching to the contiguous-range expansion) would let
-  // total_picked drift away from pending_now's accounting and produce
+  // total_dispatch_units drift away from pending_now's accounting and produce
   // an X-of-Y overshoot once pending drops to zero.
   const baseSha = "dddddddddddddddddddddddddddddddddddddddd";
   const headSha = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
@@ -976,17 +986,17 @@ test("--print-batch-envelope: degraded staging (gappy shards + unstaged leaves) 
   );
   // pending_now: 3 dispatchable, no outputs yet → 3.
   assert.equal(envelope.pending_now, 3);
-  // total_picked: same 3, NOT 4 (must not include the gappy shard 1
+  // total_dispatch_units: same 3, NOT 4 (must not include the gappy shard 1
   // synthesised by discoverLeafShards's contiguous-range expansion)
   // and NOT include degraded-unstaged (which has no prompt to
   // dispatch). The X-of-Y progress formula stays consistent:
-  // X = total_picked - pending_now = 0 done now → 0; after all 3
-  // outputs land, pending_now=0, X = 3 done = total_picked. Never
+  // X = total_dispatch_units - pending_now = 0 done now → 0; after all 3
+  // outputs land, pending_now=0, X = 3 done = total_dispatch_units. Never
   // overshoots.
-  assert.equal(envelope.total_picked, 3, "total_picked must match pending_now's accounting (skip un-dispatchable units)");
+  assert.equal(envelope.total_dispatch_units, 3, "total_dispatch_units must match pending_now's accounting (skip un-dispatchable units)");
   assert.equal(envelope.remaining_after, 0);
 
-  // Simulate completion of all 3 dispatchable units. total_picked
+  // Simulate completion of all 3 dispatchable units. total_dispatch_units
   // must STAY 3 (stable across calls); pending_now drops to 0.
   // The output filename embeds the dispatch id verbatim (which may
   // include the `--<shardIdx>` suffix); the JSON `id` field is the
@@ -1007,10 +1017,10 @@ test("--print-batch-envelope: degraded staging (gappy shards + unstaged leaves) 
   const postEnvelope = JSON.parse(post.stdout);
   assert.deepEqual(postEnvelope.batch, [], "all dispatchable units done → empty batch");
   assert.equal(postEnvelope.pending_now, 0);
-  // total_picked is STABLE: still 3, even though pending_now is now 0.
+  // total_dispatch_units is STABLE: still 3, even though pending_now is now 0.
   // Locks down "progress denominator does not drift across calls" —
-  // the whole point of distinguishing total_picked from pending_now.
-  assert.equal(postEnvelope.total_picked, 3, "total_picked is stable across the dispatch_specialists state");
+  // the whole point of distinguishing total_dispatch_units from pending_now.
+  assert.equal(postEnvelope.total_dispatch_units, 3, "total_dispatch_units is stable across the dispatch_specialists state");
 });
 
 test("--print-pending-leaf-ids and --print-batch-envelope: mutually exclusive", () => {

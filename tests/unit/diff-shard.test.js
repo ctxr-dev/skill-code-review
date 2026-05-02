@@ -101,6 +101,30 @@ test("shardFilteredDiff: leading text before first diff --git marker attaches to
   assert.equal(out.map((s) => s.diffText).join(""), text);
 });
 
+test("shardFilteredDiff: default threshold (256KB) packs many small files into a single shard", () => {
+  // Locks down the round-30 behaviour change: the default threshold
+  // bumped from 32KB to 256KB so that a leaf with file_globs="**/*.js"
+  // matching N small changed files is dispatched as ONE Agent
+  // reviewing all N files, not N Agents reviewing one file each.
+  // Modern Claude models comfortably handle 200-400KB of prompt;
+  // sharding now only fires for genuinely huge refactors.
+  //
+  // Ten ~1KB files = ~10KB total, far below the 256KB default. With
+  // the previous 32KB default this would still fit in one shard, but
+  // a real refactor PR with 6 mid-sized files (~5-8KB each) would
+  // straddle 32KB and split. This regression test asserts the new
+  // default packs 10 files into a single shard with default opts.
+  const fileDiffs = [];
+  for (let i = 0; i < 10; i++) {
+    fileDiffs.push(makeFileDiff(`file-${i}.js`, "@@ -1 +1 @@\n-x\n+y"));
+  }
+  const text = fileDiffs.join("");
+  const out = shardFilteredDiff(text); // no opts → default threshold
+  assert.equal(out.length, 1, "default threshold must pack 10 small files into one shard");
+  assert.equal(out[0].files.length, 10);
+  assert.equal(out[0].diffText, text);
+});
+
 test("shardFilteredDiff: env var SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES overrides default", () => {
   const original = process.env.SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES;
   process.env.SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES = "100";

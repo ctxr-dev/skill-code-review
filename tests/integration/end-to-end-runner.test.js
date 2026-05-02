@@ -640,3 +640,140 @@ test("--print-pending-leaf-ids and --print-agent-shim-prompt: end-to-end CLI con
   // signal we leaked the unhandled-error path.
   assert.doesNotMatch(corruptPayload.message, /at\s+\S+:\d+:\d+/);
 });
+
+test("--print-batch-envelope: end-to-end CLI contract (single-call batch with shims + progress)", () => {
+  // The --print-batch-envelope mode collapses N×--print-agent-shim-prompt
+  // calls per batch into one Node process invocation that returns a
+  // JSON envelope with shims for every batch id plus progress
+  // (remaining_after, total_pending). This test verifies:
+  //   - happy path: envelope shape, batch ids match pending list,
+  //     shims exist for every batch id, byte-equal to what
+  //     --print-agent-shim-prompt would emit individually
+  //   - --batch-size cap is honoured
+  //   - empty pending list emits a zero-work envelope (NOT empty stdout)
+  //   - manifest-state gate hard-fails on non-dispatch_specialists
+  //   - progress fields are accurate
+  const baseSha = "7777777777777777777777777777777777777777";
+  const headSha = "8888888888888888888888888888888888888888";
+  const start = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--start", "--base", baseSha, "--head", headSha],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
+  );
+  assert.equal(start.status, 0, `--start exited ${start.status}; stderr: ${start.stderr}`);
+  const runId = JSON.parse(start.stdout.split("\n").filter(Boolean)[0]).run_id;
+
+  const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
+  const storageRoot = resolve(REPO_ROOT, settings.storageRoot);
+  const runDir = runDirPath(runId, { storageRoot });
+  const workersDir = join(runDir, "workers");
+  // Three pending leaves + one already-completed leaf to verify the
+  // envelope only includes pending work.
+  const briefShape = {
+    run_id: runId,
+    state: "dispatch_specialists",
+    inputs: {
+      picked_leaves: [
+        { id: "env-alpha", path: "x/env-alpha.md", justification: "j", dimensions: ["correctness"] },
+        { id: "env-beta", path: "x/env-beta.md", justification: "j", dimensions: ["correctness"] },
+        { id: "env-gamma", path: "x/env-gamma.md", justification: "j", dimensions: ["correctness"] },
+        { id: "env-done", path: "x/env-done.md", justification: "j", dimensions: ["correctness"] },
+      ],
+    },
+  };
+  writeFileSync(join(workersDir, "dispatch_specialists-brief.json"), JSON.stringify(briefShape));
+  writeFileSync(join(workersDir, "dispatch_specialists-prompt-env-alpha.md"), "<staged>\n");
+  writeFileSync(join(workersDir, "dispatch_specialists-prompt-env-beta.md"), "<staged>\n");
+  writeFileSync(join(workersDir, "dispatch_specialists-prompt-env-gamma.md"), "<staged>\n");
+  writeFileSync(join(workersDir, "dispatch_specialists-prompt-env-done.md"), "<staged>\n");
+  writeFileSync(
+    join(workersDir, "dispatch_specialists-output-env-done.json"),
+    JSON.stringify({ id: "env-done", status: "completed", findings: [] }),
+  );
+  const manifestPath = `${runDir}/manifest.json`;
+  const realManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  realManifest.current_state = "dispatch_specialists";
+  writeFileSync(manifestPath, JSON.stringify(realManifest));
+
+  // Happy path: envelope returns batch=3 ids, all pending, shims for each.
+  const env = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-batch-envelope", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(env.status, 0, `--print-batch-envelope exited ${env.status}; stderr: ${env.stderr}`);
+  const envelope = JSON.parse(env.stdout);
+  assert.deepEqual(envelope.batch, ["env-alpha", "env-beta", "env-gamma"], "batch must list pending ids in picked_leaves order");
+  assert.equal(envelope.total_pending, 3, "total_pending counts pending ids only (env-done excluded)");
+  assert.equal(envelope.remaining_after, 0, "all 3 fit in default batch size 10 → 0 remaining after");
+  // shims object has one entry per batch id; each is the canonical
+  // shim text the orchestrator would feed to Agent.
+  assert.deepEqual(Object.keys(envelope.shims).sort(), ["env-alpha", "env-beta", "env-gamma"]);
+  for (const id of envelope.batch) {
+    assert.match(envelope.shims[id], /You are a specialist reviewer/);
+    assert.match(envelope.shims[id], new RegExp(`dispatch_specialists-prompt-${id}\\.md`));
+    assert.match(envelope.shims[id], new RegExp(`dispatch_specialists-output-${id}\\.json`));
+  }
+
+  // Byte-equal check: envelope shim must match what
+  // --print-agent-shim-prompt would emit individually for the same id.
+  // Guarantees orchestrators that mix the two modes always get the
+  // same prompt text.
+  const singleShim = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-agent-shim-prompt", "--run-id", runId, "--leaf-id", "env-alpha"],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(singleShim.status, 0);
+  assert.equal(envelope.shims["env-alpha"], singleShim.stdout, "envelope shim must equal --print-agent-shim-prompt output byte-for-byte");
+
+  // --batch-size cap honoured: with --batch-size 2, batch=2 ids,
+  // remaining_after=1 (3 pending total - 2 returned).
+  const capped = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-batch-envelope", "--run-id", runId, "--batch-size", "2"],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(capped.status, 0);
+  const cappedEnvelope = JSON.parse(capped.stdout);
+  assert.equal(cappedEnvelope.batch.length, 2, "--batch-size 2 caps batch at 2");
+  assert.equal(cappedEnvelope.remaining_after, 1, "1 pending leaf remains after a 2-of-3 batch");
+  assert.equal(cappedEnvelope.total_pending, 3);
+
+  // Manifest-state gate: non-dispatch_specialists must hard-fail.
+  realManifest.current_state = "scan_project";
+  writeFileSync(manifestPath, JSON.stringify(realManifest));
+  const wrongStateEnv = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-batch-envelope", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.notEqual(wrongStateEnv.status, 0, "--print-batch-envelope must hard-fail on non-dispatch_specialists state");
+  const wrongStateEnvPayload = JSON.parse(wrongStateEnv.stdout);
+  assert.match(wrongStateEnvPayload.message, /dispatch_specialists/);
+  assert.match(wrongStateEnvPayload.message, /scan_project/);
+
+  // Empty pending list: write outputs for the 3 remaining, restore
+  // state, expect zero-work envelope (NOT empty stdout — the JSON
+  // envelope is still emitted so a JSON-parsing orchestrator gets an
+  // explicit zero-work signal).
+  realManifest.current_state = "dispatch_specialists";
+  writeFileSync(manifestPath, JSON.stringify(realManifest));
+  for (const id of ["env-alpha", "env-beta", "env-gamma"]) {
+    writeFileSync(
+      join(workersDir, `dispatch_specialists-output-${id}.json`),
+      JSON.stringify({ id, status: "completed", findings: [] }),
+    );
+  }
+  const empty = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-batch-envelope", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(empty.status, 0, "empty pending must exit 0");
+  const emptyEnvelope = JSON.parse(empty.stdout);
+  assert.deepEqual(emptyEnvelope.batch, [], "empty batch when no pending");
+  assert.equal(emptyEnvelope.total_pending, 0);
+  assert.equal(emptyEnvelope.remaining_after, 0);
+  assert.deepEqual(emptyEnvelope.shims, {}, "no shims when no pending ids");
+});

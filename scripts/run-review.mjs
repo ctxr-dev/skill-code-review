@@ -386,8 +386,25 @@ function computeFilteredDiff(baseSha, headSha, fileGlobs) {
 //     the diffText slice for those files. Concatenating shard.diffText
 //     across N shards yields the original diffText byte-for-byte.
 //
-// Threshold default 32KB; overridable via SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES.
-const DEFAULT_SHARD_THRESHOLD = 32 * 1024;
+// Threshold default 256KB; overridable via SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES.
+//
+// Why 256KB: the previous 32KB threshold caused aggressive sharding —
+// a leaf with file_globs="**/*.js" matching 6 changed files would split
+// into 6 shards (one per file), each dispatched to its own Agent.
+// That's 6x the Agent count, 6x the wall-clock cost, and the
+// per-shard specialist loses the cross-file picture that catches
+// duplication / consistency issues. Modern Claude models comfortably
+// handle 200-400KB of prompt (Sonnet 4.6: 200K context, Opus 4.7:
+// up to 1M); 256KB filtered-diff plus the leaf body / project profile
+// / tool results lands well under the budget. Sharding now only
+// fires for genuinely huge refactors (multi-megabyte filtered diffs).
+//
+// Tuning: SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES env var overrides
+// per-run. Set lower (e.g. 65536) for cost-sensitive runs that
+// prefer many cheap Agents over a few expensive ones; set higher
+// (up to 1MB) for Opus 4.7 1M-context runs that want maximum
+// per-Agent context.
+const DEFAULT_SHARD_THRESHOLD = 256 * 1024;
 function getShardThreshold() {
   const raw = process.env.SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES;
   if (typeof raw === "string" && /^\d+$/.test(raw)) {
@@ -2761,20 +2778,21 @@ async function main() {
   // yet exist on disk. Output paths:
   //   <run_dir>/workers/dispatch_specialists-output-<leaf-id>.json
   //   <run_dir>/workers/dispatch_specialists-output-<leaf-id>--<shardIdx>.json
-  if (args["print-pending-leaf-ids"]) {
+  if (args["print-pending-leaf-ids"] || args["print-batch-envelope"]) {
+    const cliName = args["print-pending-leaf-ids"] ? "--print-pending-leaf-ids" : "--print-batch-envelope";
     const runId = args["run-id"];
     if (!runId || typeof runId !== "string" || !isValidRunId(runId)) {
-      fail("--print-pending-leaf-ids requires --run-id <id>");
+      fail(`${cliName} requires --run-id <id>`);
     }
     const batchSizeRaw = args["batch-size"];
     let batchSize = 10;
     if (batchSizeRaw !== undefined) {
       if (typeof batchSizeRaw !== "string" || !/^\d+$/.test(batchSizeRaw)) {
-        fail("--batch-size requires a positive integer");
+        fail(`${cliName}: --batch-size requires a positive integer`);
       }
       batchSize = Number.parseInt(batchSizeRaw, 10);
       if (batchSize < 1 || batchSize > 50) {
-        fail("--batch-size must be between 1 and 50 (default 10)");
+        fail(`${cliName}: --batch-size must be between 1 and 50 (default 10)`);
       }
     }
     // Validate the run is ACTUALLY paused on dispatch_specialists,
@@ -2787,20 +2805,20 @@ async function main() {
     const manifest = readManifest(runId, { storageRoot });
     if (!manifest) {
       fail(
-        `--print-pending-leaf-ids: no manifest found for run-id "${runId}".`,
+        `${cliName}: no manifest found for run-id "${runId}".`,
         { run_id: runId },
       );
     }
     if (manifest.current_state !== "dispatch_specialists") {
       fail(
-        `--print-pending-leaf-ids: run "${runId}" is in state "${manifest.current_state ?? "unknown"}" (status: ${manifest.status ?? "unknown"}); the run must be paused on dispatch_specialists.`,
+        `${cliName}: run "${runId}" is in state "${manifest.current_state ?? "unknown"}" (status: ${manifest.status ?? "unknown"}); the run must be paused on dispatch_specialists.`,
         { run_id: runId, current_state: manifest.current_state ?? null, status: manifest.status ?? null },
       );
     }
     const briefPath = defaultBriefPath(runId, "dispatch_specialists");
     if (!briefPath || !existsSync(briefPath)) {
       fail(
-        `--print-pending-leaf-ids: no dispatch_specialists brief at "${briefPath}". The run is in state dispatch_specialists per the manifest, but the brief file is missing.`,
+        `${cliName}: no dispatch_specialists brief at "${briefPath}". The run is in state dispatch_specialists per the manifest, but the brief file is missing.`,
         { run_id: runId, expected_path: briefPath },
       );
     }
@@ -2809,24 +2827,31 @@ async function main() {
       brief = JSON.parse(readFileSync(briefPath, "utf8"));
     } catch (err) {
       fail(
-        `--print-pending-leaf-ids: brief at "${briefPath}" is unparseable: ${err?.message ?? String(err)}`,
+        `${cliName}: brief at "${briefPath}" is unparseable: ${err?.message ?? String(err)}`,
         { run_id: runId, brief_path: briefPath },
       );
     }
     const pickedLeaves = brief?.inputs?.picked_leaves;
     if (!Array.isArray(pickedLeaves)) {
       fail(
-        `--print-pending-leaf-ids: brief has no picked_leaves[] field (state may have advanced past dispatch_specialists).`,
+        `${cliName}: brief has no picked_leaves[] field (state may have advanced past dispatch_specialists).`,
         { run_id: runId },
       );
     }
     // Empty picked_leaves is NOT an error — it means there's nothing
     // to dispatch (which is a legal state for the FSM to reach when
-    // earlier states determined no specialists apply). The orchestrator
-    // loop's exit condition is "BATCH is empty"; emit nothing and
-    // exit 0 so the loop progresses cleanly. Hard-failing here would
-    // wedge an orchestrator that's correctly observing "no work left".
+    // earlier states determined no specialists apply). For the
+    // plaintext --print-pending-leaf-ids: emit nothing and exit 0.
+    // For --print-batch-envelope: emit `{ batch: [], remaining_after: 0,
+    // total_pending: 0, shims: {} }` so an orchestrator parsing JSON
+    // sees an explicit zero-work signal. Both behaviours let the
+    // orchestrator's loop terminate cleanly.
     if (pickedLeaves.length === 0) {
+      if (args["print-batch-envelope"]) {
+        process.stdout.write(JSON.stringify({
+          batch: [], remaining_after: 0, total_pending: 0, shims: {},
+        }) + "\n");
+      }
       return;
     }
     const pending = [];
@@ -2844,7 +2869,7 @@ async function main() {
         shards = discoverLeafShards(runId, leaf.id);
       } catch (err) {
         fail(
-          `--print-pending-leaf-ids: ${err?.message ?? String(err)}`,
+          `${cliName}: ${err?.message ?? String(err)}`,
           { run_id: runId, leaf_id: leaf.id },
         );
       }
@@ -2878,6 +2903,31 @@ async function main() {
       // never staged.
     }
     const batch = pending.slice(0, batchSize);
+    if (args["print-batch-envelope"]) {
+      // JSON envelope: replaces N×--print-agent-shim-prompt calls per
+      // batch. Single Node process invocation gives the orchestrator
+      // everything it needs to dispatch this batch's Agents AND know
+      // whether to loop again (remaining_after > 0) or exit
+      // (remaining_after === 0). Progress visibility (total_pending)
+      // lets the orchestrator emit user-facing "X of Y specialists
+      // complete" updates without extra CLI calls.
+      const shims = {};
+      for (const id of batch) {
+        const parsed = parseLeafIdAndShardIdx({
+          leafIdArg: id,
+          shardIdxArg: undefined,
+          cliName,
+        });
+        shims[id] = buildShimText(runId, parsed.leafId, parsed.shardIdx, cliName);
+      }
+      process.stdout.write(JSON.stringify({
+        batch,
+        remaining_after: Math.max(0, pending.length - batch.length),
+        total_pending: pending.length,
+        shims,
+      }) + "\n");
+      return;
+    }
     if (batch.length > 0) {
       process.stdout.write(batch.join("\n") + "\n");
     }
@@ -2945,6 +2995,7 @@ async function main() {
       "  run-review.mjs --print-current-state --run-id <id>\n" +
       "  run-review.mjs --print-dispatch-prompt --run-id <id> [--leaf-id <id>] [--shard-idx <N>]\n" +
       "  run-review.mjs --print-pending-leaf-ids --run-id <id> [--batch-size <N>]\n" +
+      "  run-review.mjs --print-batch-envelope --run-id <id> [--batch-size <N>]\n" +
       "  run-review.mjs --print-agent-shim-prompt --run-id <id> --leaf-id <id> [--shard-idx <N>]",
   );
 }
@@ -2952,17 +3003,31 @@ async function main() {
 // Shared body for --print-agent-shim-prompt. Validates inputs, locates
 // the per-leaf prompt + output paths, and emits the canonical shim text.
 function printShimForParsedId(runId, leafId, shardIdx) {
+  process.stdout.write(buildShimText(runId, leafId, shardIdx, "--print-agent-shim-prompt"));
+}
+
+// Shared shim-text builder. Used by --print-agent-shim-prompt (single
+// shim emitted to stdout) and by --print-batch-envelope (multiple
+// shims packed into a JSON envelope, one per batch id). Centralising
+// here keeps the shim text byte-identical across both code paths
+// — orchestrators that mix the two modes always see the same prompt
+// shape, so worker behaviour is independent of which CLI mode the
+// orchestrator chose.
+//
+// `cliName` is the calling CLI's name, used in error messages so a
+// fail() routed through here is attributable to the right mode.
+function buildShimText(runId, leafId, shardIdx, cliName) {
   if (!isValidLeafId(leafId)) {
-    fail(`--print-agent-shim-prompt: invalid --leaf-id "${leafId}" (must be kebab-case ASCII matching ^[a-z0-9]+(-[a-z0-9]+)*$ — lowercase letters and digits, single hyphens between segments, no leading/trailing hyphens, no consecutive hyphens — AND must not end in --<digits>; that suffix is reserved for shard ids).`);
+    fail(`${cliName}: invalid --leaf-id "${leafId}" (must be kebab-case ASCII matching ^[a-z0-9]+(-[a-z0-9]+)*$ — lowercase letters and digits, single hyphens between segments, no leading/trailing hyphens, no consecutive hyphens — AND must not end in --<digits>; that suffix is reserved for shard ids).`);
   }
   if (shardIdx !== null && (!Number.isInteger(shardIdx) || shardIdx < 0)) {
-    fail(`--print-agent-shim-prompt: invalid --shard-idx "${shardIdx}" (must be a non-negative integer).`);
+    fail(`${cliName}: invalid --shard-idx "${shardIdx}" (must be a non-negative integer).`);
   }
   const promptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leafId, shardIdx);
   const outputPath = defaultSpecialistOutputPath(runId, leafId, shardIdx);
   if (!promptPath || !existsSync(promptPath)) {
     fail(
-      `--print-agent-shim-prompt: no prompt file at "${promptPath}". The leaf or shard may not be staged.`,
+      `${cliName}: no prompt file at "${promptPath}". The leaf or shard may not be staged.`,
       { run_id: runId, leaf_id: leafId, shard_idx: shardIdx, expected_path: promptPath },
     );
   }
@@ -2980,7 +3045,7 @@ function printShimForParsedId(runId, leafId, shardIdx) {
     `Repository root: ${REPO_ROOT}`,
     "",
   ];
-  process.stdout.write(lines.join("\n"));
+  return lines.join("\n");
 }
 
 // Gate the auto-run on "this is the entrypoint" so unit tests can import

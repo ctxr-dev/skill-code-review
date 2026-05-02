@@ -88,26 +88,30 @@ Specialist dispatch is a fan-out with three runner-side guarantees that change h
 2. **Per-leaf output files.** Each specialist Agent writes its JSON output to `$RUN_DIR/workers/dispatch_specialists-output-<leaf-id>.json` (or `dispatch_specialists-output-<leaf-id>--<shard-idx>.json` for shards). The runner aggregates all per-leaf outputs into `specialist_outputs[]` on `--continue`. **The orchestrator does not assemble JSON.**
 3. **Concurrency cap of 10.** The runner exposes pending work via `--print-pending-leaf-ids` capped at `--batch-size 10`. The orchestrator dispatches up to 10 Agents in one parallel message, waits for the batch, then asks for the next batch. K=20 → 2 batches; K=30 → 3. **You never have more than 10 specialist Agents in flight.**
 
-The orchestrator's loop:
+The orchestrator's loop, **preferred form** using `--print-batch-envelope` (one Node call per batch returns batch ids, shim prompts, AND progress in a single JSON envelope):
 
 ```bash
 while true; do
-  BATCH=$(node scripts/run-review.mjs --print-pending-leaf-ids --run-id "$RUN_ID")
-  [ -z "$BATCH" ] && break
-  # For each id in $BATCH (newline-separated, ≤10 ids), dispatch ONE
-  # Agent. All Agents in a single orchestrator message run in parallel.
-  # Each Agent's prompt is the tiny (≤200-token) shim from
-  # --print-agent-shim-prompt; the Agent reads the staged dispatch
-  # prompt from disk and writes its JSON output to the per-leaf
-  # output path. Both paths are stated inside the shim text.
-  for ID in $BATCH; do
-    SHIM=$(node scripts/run-review.mjs --print-agent-shim-prompt --run-id "$RUN_ID" --leaf-id "$ID")
+  ENV=$(node scripts/run-review.mjs --print-batch-envelope --run-id "$RUN_ID")
+  # Envelope is JSON: { batch: [...], shims: { id: prompt, ... },
+  #                     remaining_after: N, total_pending: M }
+  # Empty batch [] → exit the loop. (remaining_after === 0 also signals
+  # "this is the final batch" if you want to log progress.)
+  BATCH_LEN=$(echo "$ENV" | jq -r '.batch | length')
+  [ "$BATCH_LEN" -eq 0 ] && break
+
+  # For each id in .batch, dispatch ONE Agent with the matching shim
+  # prompt from .shims. All Agents in a single orchestrator message
+  # run in parallel. The shim prompt is small (≤200 tokens); the
+  # Agent reads the staged dispatch prompt from disk and writes its
+  # JSON output to the per-leaf output path stated inside the shim.
+  for ID in $(echo "$ENV" | jq -r '.batch[]'); do
+    SHIM=$(echo "$ENV" | jq -r --arg id "$ID" '.shims[$id]')
     # ... pass $SHIM as the Agent tool call's `prompt` parameter ...
   done
-  # After all dispatched Agents in the batch complete, loop:
-  # --print-pending-leaf-ids returns ids whose output file doesn't
-  # yet exist. When every leaf has produced an output, BATCH is
-  # empty and the while-loop exits.
+  # After all dispatched Agents in the batch complete, loop. The
+  # next --print-batch-envelope call sees the now-written outputs
+  # and returns the next pending batch (or [] when done).
 done
 
 # --continue triggers the runner-side aggregation. The runner walks
@@ -117,11 +121,26 @@ done
 node scripts/run-review.mjs --continue --run-id "$RUN_ID"
 ```
 
-**Concurrency cap.** `--print-pending-leaf-ids` returns at most 10 ids per call (override with `--batch-size N`, max 50). The cap is enforced runner-side: the orchestrator cannot dispatch more than 10 specialists in one message because it is given at most 10 ids to dispatch.
+**Older `--print-pending-leaf-ids` + per-id `--print-agent-shim-prompt` flow** (still supported, useful when you only want plaintext ids without the JSON envelope):
+
+```bash
+while true; do
+  BATCH=$(node scripts/run-review.mjs --print-pending-leaf-ids --run-id "$RUN_ID")
+  [ -z "$BATCH" ] && break
+  for ID in $BATCH; do
+    SHIM=$(node scripts/run-review.mjs --print-agent-shim-prompt --run-id "$RUN_ID" --leaf-id "$ID")
+    # ... pass $SHIM as the Agent tool call's `prompt` parameter ...
+  done
+done
+```
+
+**Why prefer `--print-batch-envelope`.** One Node invocation per batch instead of `1 + N` (one to list ids, plus one per id to fetch its shim). On a K=20 review that's 2 calls instead of 22 per loop iteration; the orchestrator transcript shrinks accordingly. The envelope's `total_pending` / `remaining_after` fields make progress visible without extra CLI calls.
+
+**Concurrency cap.** Both modes return at most 10 ids per call (override with `--batch-size N`, max 50). The cap is enforced runner-side: the orchestrator cannot dispatch more than 10 specialists in one message because it is given at most 10 ids to dispatch.
 
 **Why specialists write per-leaf instead of returning JSON.** Concurrent K specialists writing into one orchestrator-aggregated heredoc is fragile: a failed Agent loses its slot; JSON-string quoting breaks on multi-line code samples in `description` / `fix`; orchestrator-side aggregation is opaque to audit. Per-leaf files are observable on disk, resilient to orchestrator-side losses, and let the runner aggregate deterministically on `--continue`.
 
-**Diff sharding.** When a leaf's `activation.file_globs[]` matches many changed files (refactor PRs, sweeping API renames), its filtered diff can grow past 32KB and the specialist loses focus. The runner detects this at staging time and splits the diff at file boundaries into shards: `dispatch_specialists-prompt-<leaf-id>--<shard-idx>.md` and matching output files. `--print-pending-leaf-ids` returns `<leaf-id>--<shard-idx>` per shard; each shard's Agent sees only its own subset of files. Per-shard outputs merge into one specialist row in the report. Sharding is automatic — the orchestrator doesn't need to detect or branch on it.
+**Diff sharding.** When a leaf's `activation.file_globs[]` matches many changed files AND the resulting filtered diff exceeds the runner's shard threshold (default 256KB; overridable via `SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES`), the runner splits the diff at file boundaries into shards: `dispatch_specialists-prompt-<leaf-id>--<shard-idx>.md` and matching output files. The default threshold is intentionally large so that most refactor PRs dispatch ONE Agent per leaf reviewing all matching files — the cross-file picture catches duplication / consistency issues that per-file shards would miss. `--print-pending-leaf-ids` and `--print-batch-envelope` return `<leaf-id>--<shard-idx>` per shard when sharding fires; each shard's Agent sees only its own subset of files. Per-shard outputs merge into one specialist row in the report. Sharding is automatic — the orchestrator doesn't need to detect or branch on it.
 
 **No augmentation.** The staged per-leaf prompt is complete. **Do not concatenate, do not add a fresh `git diff`, do not aggregate JSON yourself.** If you find yourself running `git diff` or composing `{ specialist_outputs: [...] }` during a specialist dispatch, you are on the wrong path.
 

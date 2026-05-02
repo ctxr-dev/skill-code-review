@@ -26,12 +26,13 @@
 
 import { readdirSync, lstatSync, realpathSync, existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import matter from "gray-matter";
 
 import { evaluateActivation } from "../lib/activation-gate.mjs";
+import { coerceAbsoluteProjectRoot } from "../lib/project-root.mjs";
 
 const __thisDir = dirname(fileURLToPath(import.meta.url));
 // SKILL_ROOT — where reviewers.wiki/ ships. Always the skill's
@@ -245,23 +246,13 @@ export default async function activateLeaves({ env }) {
   const head = env.head_sha ?? args.head ?? null;
 
   // The wiki walk reads the leaf corpus that SHIPS with the skill,
-  // so SKILL_ROOT is the right cwd. The diff fetch is project-rooted:
-  // run-review.mjs seeds env.args.project_root at --start (the args
-  // bag is the canonical, runner-controlled channel), with SKILL_ROOT
-  // as fallback for tests that drive this handler directly.
-  //
-  // Only env.args.project_root is honoured — NOT env.project_root.
-  // Top-level env fields can be influenced by upstream FSM outputs
-  // (some of which are LLM-produced JSON), so a malicious or buggy
-  // upstream worker could redirect git diff to an arbitrary directory.
-  // The args bag is exclusively populated by the runner's --start /
-  // --continue CLI; there is no path for it to receive LLM input.
-  // (Round-3 Copilot review on PR #101 flagged this directly.)
-  let projectRootForDiff = SKILL_ROOT;
-  const fromArgs = args?.project_root;
-  if (typeof fromArgs === "string" && fromArgs.length > 0 && isAbsolute(fromArgs)) {
-    projectRootForDiff = fromArgs;
-  }
+  // so SKILL_ROOT is the right cwd. The diff fetch is project-rooted
+  // via the shared coerceAbsoluteProjectRoot helper, which enforces
+  // "absolute non-empty string OR fallback" so a top-level
+  // env.project_root (settable from worker outputs) cannot redirect
+  // git diff. (Closes finding #15 from the post-#101 local skill
+  // review and re-applies the round-3 Copilot defense-in-depth fix.)
+  const projectRootForDiff = coerceAbsoluteProjectRoot(args?.project_root, SKILL_ROOT);
   const leaves = enumerateWikiLeavesWithActivation(SKILL_ROOT);
   const diffText = fetchDiffText(base, head, projectRootForDiff);
 

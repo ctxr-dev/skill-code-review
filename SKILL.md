@@ -252,6 +252,7 @@ If your final response does not end with `Manifest: .skill-code-review/<shard>/<
 | tools | silent, interactive, skip | silent | Tool execution mode. silent=use available. skip=no tools. |
 | mode | standard, thorough | standard | Review depth. thorough=max depth, all tools, lower thresholds. |
 | max-reviewers | integer 3–50 | tier-default | Override the per-tier specialist cap (3/8/20/30). |
+| repo-root | absolute path | auto | Project root being reviewed. Auto: walks up from `process.cwd()` to the nearest `.git/`, falling back to the skill's install dir. Pass this when invoking the runner from a directory outside the project (e.g. via a globally-installed skill); the runner uses it for `git diff` cwd, the per-run `<run_dir>/`, and the dispatch-prompt's `Repository root:` line. |
 
 For the canonical specification of each argument and the report shape, see `report-format.md` — but the runner already reads it for you, so you should not need to.
 

@@ -34,7 +34,7 @@ import { dirname, isAbsolute, join, resolve, relative, sep } from "node:path";
 import { tmpdir, platform } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { resolveSettings, runEnv, runDirPath, readLock, readManifest } from "@ctxr/fsm";
+import { loadConfig, runEnv, runDirPath, readLock, readManifest } from "@ctxr/fsm";
 
 import {
   resolveReplayMode,
@@ -74,7 +74,7 @@ export function runTrimValidationGate(runId, outputs, _deps = {}) {
   if (!outputs || !Array.isArray(outputs.picked_leaves)) return { ok: true };
   const resolveStorageRootFn = _deps.resolveStorageRoot ?? resolveStorageRoot;
   const runEnvFn = _deps.runEnv ?? runEnv;
-  const repoRoot = _deps.repoRoot ?? REPO_ROOT;
+  const repoRoot = _deps.repoRoot ?? SKILL_ROOT;
   let env;
   try {
     const storageRoot = resolveStorageRootFn();
@@ -182,7 +182,7 @@ export function enrichBriefWithPromptBody(brief) {
   if (!promptTemplate || typeof promptTemplate !== "string") return brief;
   let bodyPath;
   try {
-    bodyPath = resolve(REPO_ROOT, repoRelativePromptPath(promptTemplate));
+    bodyPath = resolve(SKILL_ROOT, repoRelativePromptPath(promptTemplate));
   } catch {
     return brief;
   }
@@ -217,7 +217,7 @@ export function enrichBriefWithSpecialistBodies(brief) {
   const inputs = brief?.inputs;
   const pickedLeaves = inputs?.picked_leaves;
   if (!Array.isArray(pickedLeaves) || pickedLeaves.length === 0) return brief;
-  const wikiRoot = resolve(REPO_ROOT, "reviewers.wiki");
+  const wikiRoot = resolve(SKILL_ROOT, "reviewers.wiki");
   // Realpath the wiki root once. We require every resolved leaf path
   // to land INSIDE this realpath, so an LLM-supplied `leaf.path` can't
   // walk out via `..` segments or symlinks (defense-in-depth — the
@@ -251,7 +251,7 @@ export function enrichBriefWithSpecialistBodies(brief) {
     // Try wiki-relative first (the canonical shape from tree_descend),
     // then repo-relative as a fallback (some upstream tooling carries the
     // longer prefix). Mirrors verify-coverage.mjs's resolution order.
-    const candidates = [resolve(wikiRoot, leaf.path), resolve(REPO_ROOT, leaf.path)];
+    const candidates = [resolve(wikiRoot, leaf.path), resolve(SKILL_ROOT, leaf.path)];
     for (const candidate of candidates) {
       try {
         // Realpath-then-boundary: if a candidate resolves to a path
@@ -309,20 +309,48 @@ export function enrichBriefWithSpecialistBodies(brief) {
 // once per leaf and embeds the result inline so the staged prompt is
 // ready to paste.
 //
-// Failure modes (all return a labeled placeholder, never throw):
-//   - missing baseSha/headSha (e.g., unit test): placeholder string.
-//   - git spawn failure (binary missing / killed): stderr-or-error label.
-//   - non-zero exit (bad refs, etc.): exit-code label with stderr.
+// Failure modes:
+//   - missing baseSha/headSha (e.g., unit test path) — RETURNS a
+//     labeled placeholder string. This is a legitimate "no work to
+//     do" signal (the caller already knows it didn't pass SHAs) and
+//     the staged prompt downstream is a no-op for a leaf that has
+//     no diff to review.
+//   - everything else (git spawn failure, non-zero exit, signal kill)
+//     — THROWS FilteredDiffError. v2.2.x returned a placeholder for
+//     these too, which the orchestrator silently forwarded to K
+//     specialists. The eval in #100 surfaced the real-world cost
+//     (20 specialists skipped a misconfigured run before the operator
+//     got a clear error). The runner now catches FilteredDiffError
+//     in stagePromptsOrFault and aborts the dispatch with one
+//     structured fault.
 //
-// Empty fileGlobs is NOT a failure mode: we deliberately fall back to
-// the full diff so the rare leaves (~1/476) without globs still get
-// coverage. SKILL.md mentions this fallback explicitly.
-function computeFilteredDiff(baseSha, headSha, fileGlobs) {
+// ENOBUFS (32 MB diff cap exceeded) is a deliberate exception: the
+// staged prompt still ships with a labeled placeholder so the
+// reviewer surfaces the cap clearly rather than aborting the whole
+// run. (Tightening the leaf's activation.file_globs[] is the
+// operator-facing fix.)
+//
+// Empty fileGlobs is NOT a failure mode: we deliberately fall back
+// to the full diff so the rare leaves (~1/476) without globs still
+// get coverage. SKILL.md mentions this fallback explicitly.
+export class FilteredDiffError extends Error {
+  constructor(message, { cause } = {}) {
+    super(message);
+    this.name = "FilteredDiffError";
+    if (cause !== undefined) this.cause = cause;
+  }
+}
+
+function computeFilteredDiff(baseSha, headSha, fileGlobs, { projectRoot: projectRootOverride } = {}) {
   if (!baseSha || !headSha) {
     // Either the caller didn't ship shas (unit test path) OR the
     // runner failed to read them from the manifest. Both end up here
-    // with null shas, so the message is generic — the writeSpecialist
-    // prompt path is best-effort and never throws.
+    // with null shas; we return a labeled placeholder rather than
+    // throw because the caller (writeSpecialistPromptsToDisk) treats
+    // this as a no-op for the leaf — there's no diff to compute.
+    // git-failure cases below DO throw (FilteredDiffError) so the
+    // staging seam can fault-fast on a misconfigured runner instead
+    // of forwarding broken prompts to K specialists.
     return "(diff unavailable: base/head shas unavailable)";
   }
   // `--no-color` strips ANSI escapes a user's local `color.ui=always`
@@ -337,9 +365,13 @@ function computeFilteredDiff(baseSha, headSha, fileGlobs) {
   }
   // No leaf-globs: fall back to the full diff. This keeps coverage for
   // the rare leaves (~1/476 today) that omit file_globs.
+  // cwd is the project root (where the user's git history lives),
+  // not the skill's install dir. v2.2.x hardcoded the skill dir,
+  // which broke every review run from outside the skill's own repo
+  // (#100, eval finding #2).
   const result = spawnSync("git", args, {
     encoding: "utf8",
-    cwd: REPO_ROOT,
+    cwd: projectRootOverride ?? projectRoot(),
     maxBuffer: 32 * 1024 * 1024,
   });
   if (result.error) {
@@ -349,19 +381,26 @@ function computeFilteredDiff(baseSha, headSha, fileGlobs) {
     if (result.error.code === "ENOBUFS") {
       return "(diff unavailable: filtered diff exceeded the 32 MB buffer cap; consider tightening the leaf's activation.file_globs[] to scope the diff)";
     }
-    return `(diff unavailable: git spawn failed: ${result.error.message ?? "unknown"})`;
+    throw new FilteredDiffError(
+      `git spawn failed in "${projectRootOverride ?? projectRoot()}": ${result.error.message ?? "unknown"}`,
+      { cause: result.error },
+    );
   }
   // spawnSync sets `signal` (and leaves `status` null) when the child
   // is killed by a signal — surface that case explicitly so the prompt
   // doesn't read "git diff exited null".
   if (result.signal) {
-    return `(diff unavailable: git diff killed by signal ${result.signal})`;
+    throw new FilteredDiffError(
+      `git diff killed by signal ${result.signal} in "${projectRootOverride ?? projectRoot()}"`,
+    );
   }
   if (result.status !== 0) {
     const stderr = result.stderr?.trim() ?? "";
-    return stderr
-      ? `(diff unavailable: git diff exited ${result.status}: ${stderr})`
-      : `(diff unavailable: git diff exited ${result.status})`;
+    throw new FilteredDiffError(
+      stderr
+        ? `git diff exited ${result.status} in "${projectRootOverride ?? projectRoot()}": ${stderr}`
+        : `git diff exited ${result.status} in "${projectRootOverride ?? projectRoot()}"`,
+    );
   }
   return result.stdout ?? "";
 }
@@ -1038,6 +1077,14 @@ export function writeSpecialistPromptsToDisk(brief) {
     // Pre-compute the per-leaf filtered diff here (the side-effecting
     // call site) and pass it in via opts.filteredDiff so
     // buildDispatchPromptText stays pure.
+    //
+    // FilteredDiffError → fault-fast. Pre-#100 the runner silently
+    // baked the git failure as a "(diff unavailable)" placeholder
+    // and shipped K specialist prompts with it; the operator only
+    // saw the misconfiguration after K Agent dispatches returned
+    // skipped. Now we let the exception escape so the loop's caller
+    // (writeSpecialistPromptsToDisk's call site in handleWorkerStateBrief)
+    // turns it into one structured fault for the run.
     const fileGlobs = Array.isArray(leaf.file_globs) ? leaf.file_globs : [];
     const filteredDiff = computeFilteredDiff(baseSha, headSha, fileGlobs);
     const shards = shardFilteredDiff(filteredDiff);
@@ -1750,7 +1797,7 @@ function hashKeyForBrief(brief, env) {
     // Pass repoRoot so the harness reads the prompt body and includes its
     // SHA in the hash — editing the prose without renaming the file
     // invalidates every recorded fixture for that worker.
-    repoRoot: REPO_ROOT,
+    repoRoot: SKILL_ROOT,
     // PR for #85: the dispatch prompt now embeds the response_schema
     // (so workers don't write blind). Including the schema in the
     // hash means old fixtures get a replay-miss when the schema
@@ -1761,21 +1808,195 @@ function hashKeyForBrief(brief, env) {
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(__dirname, "..");
+// SKILL_ROOT is the install dir of this skill — where the bundled
+// reviewers.wiki/, fsm/, .fsmrc.json, and node_modules/.bin/ live.
+// It is fixed at module load: `resolve(__dirname, "..")` is correct
+// regardless of where the runner is invoked from.
+const SKILL_ROOT = resolve(__dirname, "..");
 const INLINE_STATES_DIR = resolve(__dirname, "inline-states");
 
+// PROJECT_ROOT is the user's project being reviewed — where
+// `git diff base..head` must run, where the run-dir lives, and
+// what the dispatch-prompt's "Repository root:" line names.
+//
+// Resolution order:
+//   1. --repo-root <path> on the runner CLI (explicit).
+//   2. The git toplevel of process.cwd() (walked up from the
+//      directory the user invoked the runner from).
+//   3. SKILL_ROOT (preserves the historical behaviour when the runner
+//      is invoked from inside the skill's own source repo, which is
+//      what every existing test does).
+//
+// The split between SKILL_ROOT and PROJECT_ROOT closes #100 eval
+// finding #2: v2.2.x hardcoded both to the skill dir, which broke
+// every review run from outside the skill's own repo.
+let _projectRootOverride = null;
+// Memoised discovered value so multiple call sites in one process
+// see the same answer (and tests resetting via setProjectRootForTesting
+// can reset it). Declared before setProjectRootForTesting so the reset
+// helper can clear it without a forward reference.
+let _projectRootCached = null;
+// Test-only override. Pass `null` to clear. Path must be absolute —
+// resolve()-ing a relative string would silently anchor to the test
+// runner's cwd, which is process-global and would race with parallel
+// tests. (Round-5 Copilot review on PR #101 flagged the doc/impl
+// mismatch directly.)
+export function setProjectRootForTesting(path) {
+  if (path === null || path === undefined) {
+    _projectRootOverride = null;
+  } else if (typeof path === "string" && path.length > 0 && isAbsolute(path)) {
+    _projectRootOverride = resolve(path);
+  } else {
+    throw new Error(
+      `setProjectRootForTesting: expected absolute path or null, got ${
+        typeof path === "string" ? `"${path}"` : typeof path
+      }`,
+    );
+  }
+  // Invalidate the discovery cache too: a test that first calls
+  // projectRoot() (caching the discovered value) then setProjectRootForTesting(null)
+  // would otherwise keep returning the previously-cached value
+  // forever.
+  _projectRootCached = null;
+}
+function gitToplevelFromCwd(cwd) {
+  // Walk up `cwd` looking for a .git directory or file (worktree marker).
+  // Doing the walk in JS rather than spawning `git rev-parse` keeps the
+  // hot path off a process boundary and avoids the silent "git not
+  // installed" failure mode.
+  let dir = cwd;
+  for (let i = 0; i < 64; i++) {
+    if (existsSync(join(dir, ".git"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+  return null;
+}
+function discoverProjectRoot() {
+  if (_projectRootOverride) return _projectRootOverride;
+  // CLI args are parsed lazily so unit tests don't need to set process.argv.
+  const args = parseArgs(process.argv);
+  const explicit = args["repo-root"] ?? args.repoRoot ?? null;
+  // parseArgs encodes a bare flag (no value) as boolean `true`. Hard-fail
+  // here rather than silently falling through to the cwd-discovery path:
+  // a typo'd `--repo-root` (operator forgot the path) would otherwise
+  // look like it worked while running against the wrong project.
+  // (Round-4 Copilot review on PR #101 flagged this directly.)
+  if (explicit === true) {
+    fail(
+      `--repo-root requires a value (got bare flag). ` +
+      `Pass an absolute path, e.g. --repo-root /path/to/project.`,
+    );
+  }
+  if (explicit !== null && typeof explicit !== "string") {
+    fail(
+      `--repo-root: expected a string path, got ${typeof explicit}. ` +
+      `Pass an absolute path, e.g. --repo-root /path/to/project.`,
+    );
+  }
+  if (typeof explicit === "string" && explicit.length > 0) {
+    // Reject relative paths up front. resolve(relative) silently
+    // anchors to process.cwd(), which would let a typo'd
+    // --repo-root=foo (instead of /foo) be accepted but point at a
+    // surprising location depending on where the runner was invoked.
+    // The doc string and downstream error messages all describe an
+    // absolute path; enforce it here so the contract matches.
+    if (!isAbsolute(explicit)) {
+      fail(
+        `--repo-root requires an absolute path (got "${explicit}"). ` +
+        `Pass the full path to the project being reviewed.`,
+      );
+    }
+    const abs = resolve(explicit);
+    if (!existsSync(abs)) {
+      fail(
+        `--repo-root: path does not exist: "${abs}". Pass an absolute path to the project being reviewed (the directory containing its .git/).`,
+      );
+    }
+    // Validate it actually IS a git repo. Without this check, a
+    // user pointing at a non-git directory gets an opaque "git diff
+    // exited 128" later in the run instead of a clear startup error.
+    if (!existsSync(join(abs, ".git"))) {
+      fail(
+        `--repo-root: "${abs}" is not a git repository (no .git/ entry). ` +
+        `Pass the project's git toplevel.`,
+      );
+    }
+    return abs;
+  }
+  const fromCwd = gitToplevelFromCwd(process.cwd());
+  if (fromCwd) return fromCwd;
+  return SKILL_ROOT;
+}
+function projectRoot() {
+  if (_projectRootOverride !== null) return _projectRootOverride;
+  if (_projectRootCached === null) {
+    _projectRootCached = discoverProjectRoot();
+  }
+  return _projectRootCached;
+}
+
 function resolveStorageRoot() {
-  // @ctxr/fsm exposes resolveSettings(cliArgs, cwd) — cliArgs is the
-  // selector ({fsmName, fsmPath, storageRoot, sessionId}), cwd is the
-  // directory to resolve the .fsmrc.json relative to. resolveSettings
-  // calls loadConfig internally; the caller does NOT pre-load. Returns
-  // are camelCase (storageRoot), not the snake_case form used in
-  // .fsmrc.json on disk. Earlier rounds had this backwards
-  // (loadConfig({cwd: REPO_ROOT}) and resolveSettings(config, {...})),
-  // which was hidden because this function is only on the --continue
-  // path.
-  const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
-  return resolve(REPO_ROOT, settings.storageRoot);
+  // The .fsmrc.json lives in the skill's install dir (it ships with
+  // the skill), so SKILL_ROOT is the right cwd for loadConfig().
+  // We then take the RAW storage_root field (e.g. ".skill-code-review")
+  // and resolve it under PROJECT_ROOT so the run-dir lives WITH the
+  // project being reviewed.
+  //
+  // Why not resolveSettings(): it pre-resolves storageRoot against the
+  // cwd it's given (SKILL_ROOT), returning an absolute path under the
+  // skill's install tree — which is exactly what we want to AVOID.
+  // Reading the raw config field bypasses that resolution and lets us
+  // re-anchor against PROJECT_ROOT here.
+  //
+  // Closes #100, eval finding #2: pre-fix, run-dirs landed in
+  // ~/.claude/skills/.skill-code-review/... when the skill was
+  // installed globally, orphaning per-run state from the project
+  // being reviewed.
+  const cfg = loadConfig(SKILL_ROOT);
+  // Defence-in-depth: a malformed/missing .fsmrc.json could leave
+  // cfg.fsms undefined. Without this guard, .find() throws an opaque
+  // TypeError with no path context. (Round-5 Copilot review.)
+  if (!cfg || !Array.isArray(cfg.fsms)) {
+    fail(
+      `.fsmrc.json at ${SKILL_ROOT} is missing or has no "fsms" array; ` +
+      `the skill's install dir is corrupt. Reinstall the skill.`,
+    );
+  }
+  const entry = cfg.fsms.find((f) => f.name === "code-reviewer");
+  if (!entry) {
+    fail(
+      `code-reviewer entry not found in .fsmrc.json at ${SKILL_ROOT}; ` +
+      `the skill's install dir is missing or corrupt. Reinstall the skill.`,
+    );
+  }
+  const rawStorageRoot = entry.storage_root;
+  if (typeof rawStorageRoot !== "string" || rawStorageRoot.length === 0) {
+    fail(
+      `.fsmrc.json's "storage_root" is missing or empty for the ` +
+      `code-reviewer entry; expected something like ".skill-code-review".`,
+    );
+  }
+  // Defence-in-depth: require storage_root to be a safe relative
+  // path. resolve(projectRoot, "/abs/path") returns "/abs/path",
+  // which would let a malformed/tampered .fsmrc.json escape the
+  // project root and write run artefacts to an arbitrary directory.
+  // ".." segments would do the same. (Round-6 Copilot review on
+  // PR #101.)
+  if (isAbsolute(rawStorageRoot)) {
+    fail(
+      `.fsmrc.json's "storage_root" must be a relative path under the project root; ` +
+      `got absolute path "${rawStorageRoot}". Reinstall the skill or fix the .fsmrc.json.`,
+    );
+  }
+  if (rawStorageRoot.split(/[\\/]/).includes("..")) {
+    fail(
+      `.fsmrc.json's "storage_root" must not contain ".." segments (got "${rawStorageRoot}"). ` +
+      `This would let storage escape the project root. Reinstall the skill or fix the .fsmrc.json.`,
+    );
+  }
+  return resolve(projectRoot(), rawStorageRoot);
 }
 
 export function parseArgs(argv) {
@@ -1904,7 +2125,7 @@ function fail(message, extra = {}) {
 // installs `.cmd` shims under .bin; try the bare name first, then the .cmd
 // fallback, so the lookup is portable.
 function fsmBin(name) {
-  const base = join(REPO_ROOT, "node_modules", ".bin", name);
+  const base = join(SKILL_ROOT, "node_modules", ".bin", name);
   if (existsSync(base)) return base;
   if (platform() === "win32") {
     const cmd = `${base}.cmd`;
@@ -1960,23 +2181,36 @@ export function readSessionIdFromLock(runId) {
 function runFsmNextStart({ baseSha, headSha, argsBag, sessionId }) {
   const argsFile = join(getScratchDir(), "args.json");
   writeFileSync(argsFile, JSON.stringify(argsBag ?? {}));
+  // --storage-root: explicitly anchor the run-dir under PROJECT_ROOT
+  // so per-run state lives WITH the project being reviewed, not under
+  // the skill's install dir. Pre-#100 this was implicit (cwd: SKILL_ROOT
+  // + .fsmrc.json's relative storage_root), which orphaned run-dirs in
+  // ~/.claude/skills/ when the runner was invoked from a different repo.
+  const storageRoot = resolveStorageRoot();
   const args = [
     "--new-run",
     "--repo",
-    "skill-code-review",
+    projectRoot(),
     "--base-sha",
     baseSha,
     "--head-sha",
     headSha,
     "--args-file",
     argsFile,
+    "--storage-root",
+    storageRoot,
   ];
   if (sessionId) {
     args.push("--session-id", sessionId);
   }
+  // cwd is SKILL_ROOT (not PROJECT_ROOT) because @ctxr/fsm reads
+  // .fsmrc.json from cwd and that config ships with the skill. With
+  // --storage-root supplied explicitly above, fsm-next ignores the
+  // .fsmrc.json's storage_root field and writes to PROJECT_ROOT
+  // instead — exactly the layering we want.
   const result = spawnSync(fsmBin("fsm-next"), args, {
     encoding: "utf8",
-    cwd: REPO_ROOT,
+    cwd: SKILL_ROOT,
   });
   return parseFsmCliResult(result, "fsm-next --new-run");
 }
@@ -1992,13 +2226,21 @@ function runFsmCommit({ runId, outputs, sessionId }) {
   const outputsFile = join(getScratchDir(), `outputs-${safeRunId}-${Date.now()}.json`);
   writeFileSync(outputsFile, JSON.stringify(outputs ?? {}));
   try {
-    const args = ["--run-id", runId, "--outputs-file", outputsFile];
+    // Same SKILL_ROOT cwd / explicit --storage-root rationale as
+    // runFsmNextStart above: ensures fsm-commit reads/writes the run
+    // state in the same project-rooted location fsm-next initialised.
+    const storageRoot = resolveStorageRoot();
+    const args = [
+      "--run-id", runId,
+      "--outputs-file", outputsFile,
+      "--storage-root", storageRoot,
+    ];
     if (sessionId) {
       args.push("--session-id", sessionId);
     }
     const result = spawnSync(fsmBin("fsm-commit"), args, {
       encoding: "utf8",
-      cwd: REPO_ROOT,
+      cwd: SKILL_ROOT,
     });
     return parseFsmCliResult(result, "fsm-commit");
   } finally {
@@ -2144,6 +2386,11 @@ export function handleWorkerStateBrief(brief, runId, opts = {}, _deps = {}) {
   const stashPendingBriefFn = _deps.stashPendingBrief ?? stashPendingBrief;
   const runDirPathFn = _deps.runDirPath ?? runDirPath;
   const fixturesRoot = _deps.fixturesRoot ?? FIXTURES_ROOT;
+  // Injected so the FilteredDiffError fault path is unit-testable
+  // without staging a real manifest+SHAs (#100 eval finding #2).
+  const writeSpecialistPromptsToDiskFn = _deps.writeSpecialistPromptsToDisk ?? writeSpecialistPromptsToDisk;
+  const writeDispatchPromptToDiskFn = _deps.writeDispatchPromptToDisk ?? writeDispatchPromptToDisk;
+  const writeBriefToDiskFn = _deps.writeBriefToDisk ?? writeBriefToDisk;
 
   // Live mode (the default) skips the env+hash+stash work entirely. The
   // hash key and stash only matter for replay/record; running them on
@@ -2161,12 +2408,12 @@ export function handleWorkerStateBrief(brief, runId, opts = {}, _deps = {}) {
     // pipes through a summarizer, etc.) becomes recoverable via --resume,
     // and the orchestrator dispatches workers without ever composing
     // prompts itself or touching /tmp.
-    writeBriefToDisk(brief);
-    if (brief.state === "dispatch_specialists") {
-      writeSpecialistPromptsToDisk(brief);
-    } else {
-      writeDispatchPromptToDisk(brief);
-    }
+    const liveStaged = stagePromptsOrFault(brief, runId, {
+      writeBriefToDisk: writeBriefToDiskFn,
+      writeSpecialistPromptsToDisk: writeSpecialistPromptsToDiskFn,
+      writeDispatchPromptToDisk: writeDispatchPromptToDiskFn,
+    });
+    if (liveStaged.kind === "fault") return liveStaged;
     return {
       kind: "pause",
       payload: { status: "awaiting_worker", run_id: runId, brief },
@@ -2288,17 +2535,74 @@ export function handleWorkerStateBrief(brief, runId, opts = {}, _deps = {}) {
   // Persist the brief to <run_dir>/workers/<state>-brief.json AND the
   // dispatch prompt(s) before returning. Same reasoning as the
   // live-mode branch above; disk artefacts are canonical regardless of
-  // replay mode.
-  writeBriefToDisk(brief);
-  if (brief.state === "dispatch_specialists") {
-    writeSpecialistPromptsToDisk(brief);
-  } else {
-    writeDispatchPromptToDisk(brief);
-  }
+  // replay mode. Same FilteredDiffError fault-fast as live-mode too —
+  // record/replay must fail closed identically (Copilot review on #101
+  // pointed at the live-only catch as a consistency gap).
+  // The injected writer fns flow through here too so unit tests and
+  // callers can swap staging functions in record/replay mode (round-2
+  // Copilot review on #101 flagged the empty {} as inconsistent with
+  // the live branch).
+  const recordStaged = stagePromptsOrFault(brief, runId, {
+    writeBriefToDisk: writeBriefToDiskFn,
+    writeSpecialistPromptsToDisk: writeSpecialistPromptsToDiskFn,
+    writeDispatchPromptToDisk: writeDispatchPromptToDiskFn,
+  });
+  if (recordStaged.kind === "fault") return recordStaged;
   return {
     kind: "pause",
     payload: { status: "awaiting_worker", run_id: runId, brief },
   };
+}
+
+// Single seam for "write the brief + dispatch prompts to disk, and
+// convert FilteredDiffError to a structured fault". Centralised here
+// so live, record, and replay modes all fail closed identically;
+// Copilot's review on #101 flagged the original live-only catch as a
+// consistency gap.
+//
+// Returns one of:
+//   { kind: "ok" }                       — staging succeeded, caller may pause
+//   { kind: "fault", payload: {...} }    — caller must return this immediately
+//
+// Non-FilteredDiffError exceptions still propagate (they signal real
+// programming bugs the operator should see as a stack trace, not a
+// soft fault).
+function stagePromptsOrFault(brief, runId, _deps = {}) {
+  const writeBriefToDiskFn = _deps.writeBriefToDisk ?? writeBriefToDisk;
+  const writeSpecialistPromptsToDiskFn =
+    _deps.writeSpecialistPromptsToDisk ?? writeSpecialistPromptsToDisk;
+  const writeDispatchPromptToDiskFn =
+    _deps.writeDispatchPromptToDisk ?? writeDispatchPromptToDisk;
+  writeBriefToDiskFn(brief);
+  if (brief.state === "dispatch_specialists") {
+    try {
+      writeSpecialistPromptsToDiskFn(brief);
+    } catch (err) {
+      if (err instanceof FilteredDiffError) {
+        return {
+          kind: "fault",
+          payload: {
+            status: "fault",
+            run_id: runId,
+            fault: {
+              state: brief.state,
+              reason:
+                `FilteredDiffError: ${err.message}. ` +
+                `Likely causes: (1) the runner is computing diffs in the wrong directory ` +
+                `(pass --repo-root <path> to the project under review, or run from ` +
+                `inside it); (2) the base/head SHAs are not reachable in that directory ` +
+                `(check that the project's git history contains them; you may need to ` +
+                `'git fetch' first).`,
+            },
+          },
+        };
+      }
+      throw err;
+    }
+  } else {
+    writeDispatchPromptToDiskFn(brief);
+  }
+  return { kind: "ok" };
 }
 
 // Drive the loop from a starting brief: walk inline states, pause on workers,
@@ -2416,6 +2720,13 @@ async function main() {
       // mid-pipeline.
       validateArgsBag(argsBag);
     }
+    // Seed project_root into the args bag so inline-state handlers
+    // (activate-leaves.mjs in particular) can fetch the diff from the
+    // correct directory. Without this, activate-leaves falls back to
+    // SKILL_ROOT — fine for the in-skill test path, broken everywhere
+    // else. The args bag carries through to env.args via @ctxr/fsm,
+    // and from there to every inline handler. Closes #100.
+    argsBag.project_root = projectRoot();
     // Generate a session-id once per --start invocation and thread it
     // through every fsm-next / fsm-commit subprocess in this process. The
     // lock that fsm-next writes outlives the runner subprocess by 1 hour;
@@ -3296,7 +3607,7 @@ function buildShimText(runId, leafId, shardIdx, cliName) {
     "",
     "Do NOT return JSON inline; the runner aggregates from this file path on --continue.",
     FORBIDDEN_PATHS_NOTICE_SHIM,
-    `Repository root: ${REPO_ROOT}`,
+    `Repository root: ${projectRoot()}`,
     "",
   ];
   return lines.join("\n");

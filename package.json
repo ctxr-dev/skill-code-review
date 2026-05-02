@@ -1,6 +1,6 @@
 {
   "name": "@ctxr/skill-code-review",
-  "version": "2.2.2",
+  "version": "2.3.0",
   "description": "Claude Code skill — wiki-organised corpus of ~476 specialist reviewer leaves selected by semantic tree descent against the diff, aggregated into an 8-gate GO/NO-GO release verdict.",
   "type": "module",
   "license": "MIT",
@@ -58,10 +58,10 @@
     "prepublishOnly": "npm run validate:fsm && npm run lint && npm test"
   },
   "dependencies": {
-    "@ctxr/fsm": "git+https://github.com/ctxr-dev/fsm.git#a4368c867f23d0bf6d61c58a0fb36e0dab4f11bd"
+    "@ctxr/fsm": "git+https://github.com/ctxr-dev/fsm.git#a4368c867f23d0bf6d61c58a0fb36e0dab4f11bd",
+    "gray-matter": "^4.0.3"
   },
   "devDependencies": {
-    "gray-matter": "^4.0.3",
     "husky": "^9.1.0",
     "markdownlint-cli2": "^0.14.0"
   }

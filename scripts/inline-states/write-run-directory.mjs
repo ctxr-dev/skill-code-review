@@ -20,11 +20,11 @@
 // pure.
 
 import { writeFileSync, readdirSync, lstatSync, realpathSync, existsSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  resolveSettings,
+  loadConfig,
   runDirPath,
   readManifest,
   writeManifest,
@@ -32,14 +32,53 @@ import {
 
 import { renderReportMarkdown, renderReportJson } from "../lib/report-renderer.mjs";
 
-function resolveStorageRoot(repoRoot) {
-  // @ctxr/fsm exposes resolveSettings(cliArgs, cwd) — cliArgs is the
-  // selector ({fsmName, fsmPath, ...}), cwd resolves .fsmrc.json.
-  // resolveSettings calls loadConfig internally; the caller must NOT
-  // pre-load. Returns are camelCase (storageRoot), not the snake_case
-  // form used in .fsmrc.json on disk.
-  const settings = resolveSettings({ fsmName: "code-reviewer" }, repoRoot);
-  return resolve(repoRoot, settings.storageRoot);
+// Mirror the SKILL_ROOT vs PROJECT_ROOT split run-review.mjs uses.
+// The .fsmrc.json ships with the skill (SKILL_ROOT-relative), but
+// the resolved storage path must live with the project being reviewed
+// (PROJECT_ROOT-relative). Pre-#100 this used a single repoRoot for
+// both, which orphaned report.md / manifest.json under the skill's
+// install dir when the runner was invoked from a different repo.
+//
+// Copilot review on PR #101 specifically called out this drift:
+// run-review.mjs's resolveStorageRoot was project-rooted, but
+// write-run-directory.mjs's still resolved against repoRoot (=
+// SKILL_ROOT), so Step 10 wrote artefacts to the wrong tree.
+function resolveStorageRoot(skillRoot, projectRoot) {
+  const cfg = loadConfig(skillRoot);
+  // Defence-in-depth: a malformed/missing .fsmrc.json could leave
+  // cfg.fsms undefined. Without this guard, .find() throws an opaque
+  // TypeError with no path context. (Round-5 Copilot review on PR #101.)
+  if (!cfg || !Array.isArray(cfg.fsms)) {
+    throw new Error(
+      `.fsmrc.json at ${skillRoot} is missing or has no "fsms" array; ` +
+      `the skill's install dir is corrupt. Reinstall the skill.`,
+    );
+  }
+  const entry = cfg.fsms.find((f) => f.name === "code-reviewer");
+  if (!entry || typeof entry.storage_root !== "string" || entry.storage_root.length === 0) {
+    throw new Error(
+      `code-reviewer entry's "storage_root" is missing or empty in .fsmrc.json at ${skillRoot}; ` +
+      `the skill's install dir is corrupt. Reinstall the skill.`,
+    );
+  }
+  // Defence-in-depth: require storage_root to be a safe relative
+  // path. resolve(projectRoot, "/abs/path") returns "/abs/path",
+  // letting a malformed/tampered .fsmrc.json escape the project
+  // root. ".." segments would do the same. (Round-6 Copilot review
+  // on PR #101.)
+  if (isAbsolute(entry.storage_root)) {
+    throw new Error(
+      `.fsmrc.json's "storage_root" must be a relative path under the project root; ` +
+      `got absolute path "${entry.storage_root}". Reinstall the skill or fix the .fsmrc.json.`,
+    );
+  }
+  if (entry.storage_root.split(/[\\/]/).includes("..")) {
+    throw new Error(
+      `.fsmrc.json's "storage_root" must not contain ".." segments (got "${entry.storage_root}"). ` +
+      `This would let storage escape the project root. Reinstall the skill or fix the .fsmrc.json.`,
+    );
+  }
+  return resolve(projectRoot, entry.storage_root);
 }
 
 const METHODOLOGY_PRINCIPLES = ["SRP", "OCP", "LSP", "ISP", "DIP", "DRY", "KISS", "YAGNI"];
@@ -341,8 +380,24 @@ export function buildReportPayload(runId, env) {
 // Returns the run-dir path that was materialised.
 export function writeRunArtefacts(runId, env) {
   const __dirname = dirname(fileURLToPath(import.meta.url));
-  const repoRoot = resolve(__dirname, "..", "..");
-  const storageRoot = resolveStorageRoot(repoRoot);
+  const skillRoot = resolve(__dirname, "..", "..");
+  // The runner seeds env.args.project_root at --start. The args bag is
+  // the canonical, runner-controlled channel — exclusively populated
+  // by the --start CLI, never by upstream worker outputs. Top-level
+  // env fields (like env.project_root) can be set by upstream FSM
+  // outputs (some of which are LLM-produced JSON), so honouring them
+  // here would let an untrusted value redirect where report.md /
+  // manifest.json are written. We accept ONLY env.args.project_root,
+  // and require it to be an absolute path; anything else falls back
+  // to skillRoot (the in-skill test case where SKILL_ROOT ===
+  // PROJECT_ROOT). Round-3 Copilot review on PR #101 flagged this
+  // directly.
+  let projectRoot = skillRoot;
+  const fromArgs = env?.args?.project_root;
+  if (typeof fromArgs === "string" && fromArgs.length > 0 && isAbsolute(fromArgs)) {
+    projectRoot = fromArgs;
+  }
+  const storageRoot = resolveStorageRoot(skillRoot, projectRoot);
   const dir = runDirPath(runId, { storageRoot });
 
   const reportPayload = buildReportPayload(runId, env);

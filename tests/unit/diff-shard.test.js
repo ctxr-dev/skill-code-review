@@ -1,10 +1,12 @@
 // diff-shard.test.js — unit tests for the shardFilteredDiff helper.
 //
 // Sharding kicks in when one leaf's pre-computed filtered diff exceeds
-// SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES (default 32KB). The runner stages
-// one prompt per shard so the dispatched specialist sees a focused
-// per-file slice rather than a multi-hundred-KB blob. These tests lock
-// down the partitioning contract: split on `^diff --git a/<path>` markers,
+// SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES (default 256KB; the env var
+// overrides per-run for cost-sensitive batches that prefer many cheap
+// Agents over a few expensive ones). The runner stages one prompt per
+// shard so the dispatched specialist sees a focused per-file slice
+// rather than a multi-hundred-KB blob. These tests lock down the
+// partitioning contract: split on `^diff --git a/<path>` markers,
 // never split inside a file, byte-equal concatenation across shards,
 // trivial passthrough below threshold.
 

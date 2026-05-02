@@ -897,6 +897,119 @@ test("--print-batch-envelope: empty picked_leaves[] emits an explicit zero-work 
   }, "empty picked_leaves[] envelope must have all-zero counters and empty collections");
 });
 
+test("--print-batch-envelope: degraded staging (gappy shards + unstaged leaves) reports accurate progress fields", () => {
+  // Locks down progress-field accounting for the two failure modes
+  // discoverLeafShards explicitly handles:
+  //   1. Gappy shards: prompts at indices 0 and 2 with shard 1
+  //      missing. discoverLeafShards normalises to [0, 1, 2] (so the
+  //      aggregator can synth a failed row for shard 1), but shard 1
+  //      was never dispatchable. Both pending_now AND total_picked
+  //      must skip it: only the 2 staged shards count.
+  //   2. Unstaged leaf: a picked leaf with no prompts at all (canonical
+  //      OR sharded). aggregateSpecialistOutputs will emit a single
+  //      failed row for it at --continue, but during dispatch the
+  //      orchestrator can't dispatch what was never staged. Both
+  //      pending_now AND total_picked silently skip it (contributing
+  //      0 each) — accounting stays consistent so the X-of-Y formula
+  //      never overshoots.
+  //
+  // Without this regression test, a future refactor of total_picked
+  // (e.g. switching to the contiguous-range expansion) would let
+  // total_picked drift away from pending_now's accounting and produce
+  // an X-of-Y overshoot once pending drops to zero.
+  const baseSha = "dddddddddddddddddddddddddddddddddddddddd";
+  const headSha = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+  const start = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--start", "--base", baseSha, "--head", headSha],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
+  );
+  assert.equal(start.status, 0);
+  const runId = JSON.parse(start.stdout.split("\n").filter(Boolean)[0]).run_id;
+  const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
+  const storageRoot = resolve(REPO_ROOT, settings.storageRoot);
+  const runDir = runDirPath(runId, { storageRoot });
+  const workersDir = join(runDir, "workers");
+  // Three picked leaves:
+  //   - degraded-gappy: prompts at shards 0 and 2 (gap at 1)
+  //   - degraded-unstaged: NO prompt at all (canonical or sharded)
+  //   - degraded-clean: canonical prompt staged normally
+  writeFileSync(join(workersDir, "dispatch_specialists-brief.json"), JSON.stringify({
+    run_id: runId,
+    state: "dispatch_specialists",
+    inputs: {
+      picked_leaves: [
+        { id: "degraded-gappy", path: "x/degraded-gappy.md", justification: "j", dimensions: ["correctness"] },
+        { id: "degraded-unstaged", path: "x/degraded-unstaged.md", justification: "j", dimensions: ["correctness"] },
+        { id: "degraded-clean", path: "x/degraded-clean.md", justification: "j", dimensions: ["correctness"] },
+      ],
+    },
+  }));
+  writeFileSync(join(workersDir, "dispatch_specialists-prompt-degraded-gappy--0.md"), "<staged shard 0>\n");
+  writeFileSync(join(workersDir, "dispatch_specialists-prompt-degraded-gappy--2.md"), "<staged shard 2>\n");
+  // shard 1 deliberately missing for degraded-gappy.
+  // No prompt at all for degraded-unstaged.
+  writeFileSync(join(workersDir, "dispatch_specialists-prompt-degraded-clean.md"), "<staged>\n");
+  const manifestPath = `${runDir}/manifest.json`;
+  const realManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  realManifest.current_state = "dispatch_specialists";
+  writeFileSync(manifestPath, JSON.stringify(realManifest));
+
+  const env = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-batch-envelope", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(env.status, 0, `degraded-staging envelope exited ${env.status}; stderr: ${env.stderr}`);
+  const envelope = JSON.parse(env.stdout);
+
+  // batch contains only the dispatchable units:
+  //   - degraded-gappy--0 (staged)
+  //   - degraded-gappy--2 (staged)
+  //   - degraded-clean (staged, non-sharded)
+  // degraded-gappy--1 is skipped (no prompt → can't dispatch)
+  // degraded-unstaged is skipped (no prompt at all)
+  assert.deepEqual(
+    envelope.batch.sort(),
+    ["degraded-clean", "degraded-gappy--0", "degraded-gappy--2"].sort(),
+    "batch must list ONLY shards/leaves with staged prompts",
+  );
+  // pending_now: 3 dispatchable, no outputs yet → 3.
+  assert.equal(envelope.pending_now, 3);
+  // total_picked: same 3, NOT 4 (must not include the gappy shard 1
+  // synthesised by discoverLeafShards's contiguous-range expansion)
+  // and NOT include degraded-unstaged (which has no prompt to
+  // dispatch). The X-of-Y progress formula stays consistent:
+  // X = total_picked - pending_now = 0 done now → 0; after all 3
+  // outputs land, pending_now=0, X = 3 done = total_picked. Never
+  // overshoots.
+  assert.equal(envelope.total_picked, 3, "total_picked must match pending_now's accounting (skip un-dispatchable units)");
+  assert.equal(envelope.remaining_after, 0);
+
+  // Simulate completion of all 3 dispatchable units. total_picked
+  // must STAY 3 (stable across calls); pending_now drops to 0.
+  for (const id of envelope.batch) {
+    const safe = id.replace(/--/g, "--");
+    writeFileSync(
+      join(workersDir, `dispatch_specialists-output-${safe}.json`),
+      JSON.stringify({ id: safe.split("--")[0], status: "completed", findings: [] }),
+    );
+  }
+  const post = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-batch-envelope", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(post.status, 0);
+  const postEnvelope = JSON.parse(post.stdout);
+  assert.deepEqual(postEnvelope.batch, [], "all dispatchable units done → empty batch");
+  assert.equal(postEnvelope.pending_now, 0);
+  // total_picked is STABLE: still 3, even though pending_now is now 0.
+  // Locks down "progress denominator does not drift across calls" —
+  // the whole point of distinguishing total_picked from pending_now.
+  assert.equal(postEnvelope.total_picked, 3, "total_picked is stable across the dispatch_specialists state");
+});
+
 test("--print-pending-leaf-ids and --print-batch-envelope: mutually exclusive", () => {
   // Passing both flags together is a misuse: the envelope branch wins
   // silently but error attribution would point at --print-pending-leaf-ids

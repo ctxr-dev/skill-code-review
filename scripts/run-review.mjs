@@ -1205,9 +1205,12 @@ export function discoverLeafShards(runId, leafId) {
   // shards when shard 1's files were never reviewed.
   const max = shards[shards.length - 1];
   // Hard cap on the contiguous range we'll allocate. A legitimate
-  // staging pass with the default 32KB threshold would hit ~100-200
-  // shards on a multi-megabyte filtered diff in the absolute worst
-  // case; 1024 leaves comfortable headroom. Anything beyond
+  // staging pass with the default 256KB threshold would hit ~10-30
+  // shards even on a multi-megabyte filtered diff (the worst real
+  // case); under explicit lower thresholds (e.g. cost-sensitive runs
+  // setting SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES=32768) the same
+  // worst-case diff might hit ~100-200 shards. 1024 leaves comfortable
+  // headroom for any legitimate threshold. Anything beyond
   // SHARD_INDEX_MAX is treated as workers/ corruption (manual edit,
   // cosmic ray, or buggy external tooling) rather than a legitimate
   // run, and we hard-fail instead of allocating an enormous array
@@ -1227,9 +1230,12 @@ export function discoverLeafShards(runId, leafId) {
 
 // Hard cap on shard indices the runner accepts during discovery.
 // Justified at the call site (discoverLeafShards): the default
-// 32KB threshold yields ~100-200 shards on the largest legitimate
-// filtered diffs; 1024 is a comfortable safety margin that surfaces
-// corrupted workers/ state as a hard failure rather than an OOM.
+// 256KB threshold yields at most ~10-30 shards on the largest
+// legitimate filtered diffs (the worst real case); even under
+// explicit lower thresholds (e.g. SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES=32768)
+// the same diff would hit at most ~100-200 shards. 1024 is a
+// comfortable safety margin that surfaces corrupted workers/ state
+// as a hard failure rather than an OOM.
 const SHARD_INDEX_MAX = 1024;
 
 // Aggregate per-leaf (and per-shard) specialist outputs into the canonical
@@ -2942,19 +2948,55 @@ async function main() {
       // (which shrinks as outputs land), total_picked is invariant
       // across the dispatch_specialists state's lifetime — orchestrators
       // can use it as the stable Y in an "X of Y specialists complete"
-      // progress indicator (X = total_picked - pending_now). discoverLeafShards
-      // throws on the both-shapes corruption case; the same per-leaf
-      // try/catch above already routed those errors through fail() and
-      // exited, so by the time we reach this loop discovery succeeds
-      // for every leaf. We re-discover here (cheaply, against the
-      // cached workers/ listing) rather than threading state out of
-      // the earlier loop.
+      // progress indicator (X = total_picked - pending_now). The
+      // accounting MUST match the pending_now computation above —
+      // counting only dispatch units the orchestrator actually has a
+      // prompt for. discoverLeafShards normalises gappy shard layouts
+      // (e.g. prompts at indices 0 and 2 with shard 1 missing) to a
+      // contiguous [0..max] range so the aggregator can synthesise a
+      // failed row for the missing shard, but the orchestrator can't
+      // DISPATCH a shard it has no prompt for. Counting `shards.length`
+      // here would inflate total_picked by the gap-count and produce
+      // an apparent "X of Y" overshoot when pending drops to zero
+      // before the gap is observed. Instead, match the
+      // pending-list filter and count only shard indices whose prompt
+      // file exists on disk.
+      //
+      // discoverLeafShards throws on the both-shapes corruption case;
+      // the same per-leaf try/catch above already routed those errors
+      // through fail() and exited, so by the time we reach this loop
+      // discovery succeeds for every leaf. We re-discover here
+      // (cheaply, against the cached workers/ listing) rather than
+      // threading state out of the earlier loop.
       let totalPicked = 0;
       for (const leaf of pickedLeaves) {
         if (!leaf || typeof leaf.id !== "string") continue;
         const shards = discoverLeafShards(runId, leaf.id);
-        if (shards === null) totalPicked += 1;
-        else totalPicked += shards.length;
+        if (shards === null) {
+          // Non-sharded leaf: 1 unit if its canonical prompt exists.
+          // discoverLeafShards returning null implies the canonical
+          // prompt exists (that's the gate condition), so this is
+          // always 1 here — but the explicit check matches the
+          // pending-list filter shape and survives any future
+          // discovery refactor.
+          const promptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leaf.id);
+          if (promptPath && existsSync(promptPath)) totalPicked += 1;
+        } else {
+          // Sharded leaf: only count shards whose prompt was actually
+          // staged. Gappy layouts (prompt at 0, 2 with 1 missing)
+          // contribute 2, not 3.
+          for (const shardIdx of shards) {
+            const promptPath = defaultDispatchPromptPath(runId, "dispatch_specialists", leaf.id, shardIdx);
+            if (promptPath && existsSync(promptPath)) totalPicked += 1;
+          }
+        }
+        // shards === [] (no prompts staged at all for this leaf)
+        // contributes 0 — same as pending_now's silent skip. The
+        // aggregator will emit a single failed row for the leaf at
+        // --continue time; that row appears in specialist_outputs[]
+        // in the final report but is intentionally NOT counted in
+        // dispatch progress (the orchestrator never had a prompt to
+        // dispatch).
       }
       process.stdout.write(JSON.stringify({
         batch,

@@ -134,7 +134,7 @@ while true; do
 done
 ```
 
-**Why prefer `--print-batch-envelope`.** One Node invocation per batch instead of `1 + N` (one to list ids, plus one per id to fetch its shim). On a K=20 review that's 2 calls instead of 22 per loop iteration; the orchestrator transcript shrinks accordingly. The envelope's `total_pending` / `remaining_after` fields make progress visible without extra CLI calls.
+**Why prefer `--print-batch-envelope`.** One Node invocation per loop iteration instead of `1 + N` (one `--print-pending-leaf-ids` plus one `--print-agent-shim-prompt` per batch id). On a K=20 review (2 batches at the default size of 10), that's 1 envelope call per batch (2 total) versus 1 + 10 = 11 calls per batch (22 total). The orchestrator transcript shrinks accordingly. The envelope's `total_pending` / `remaining_after` fields make progress visible without extra CLI calls.
 
 **Concurrency cap.** Both modes return at most 10 ids per call (override with `--batch-size N`, max 50). The cap is enforced runner-side: the orchestrator cannot dispatch more than 10 specialists in one message because it is given at most 10 ids to dispatch.
 

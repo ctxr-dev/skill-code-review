@@ -727,6 +727,60 @@ test("--print-batch-envelope: end-to-end CLI contract (single-call batch with sh
   assert.equal(singleShim.status, 0);
   assert.equal(envelope.shims["env-alpha"], singleShim.stdout, "envelope shim must equal --print-agent-shim-prompt output byte-for-byte");
 
+  // Sharded ids: --print-batch-envelope must round-trip `<leaf>--<idx>`
+  // ids correctly through parseLeafIdAndShardIdx and buildShimText so
+  // sharded leaves work end-to-end. Plant a sharded leaf with two
+  // shard prompts and a fresh brief; the envelope must list both
+  // shard ids in `batch[]`, emit a per-shard shim each, and the shim
+  // text must point at the shard-suffixed prompt + output paths.
+  // Without this case a regression in the envelope's shard-id parsing
+  // path would slip through the plain-leaf-id happy path above.
+  const shardedBrief = {
+    run_id: runId,
+    state: "dispatch_specialists",
+    inputs: {
+      picked_leaves: [
+        { id: "env-shard", path: "x/env-shard.md", justification: "j", dimensions: ["correctness"] },
+      ],
+    },
+  };
+  writeFileSync(join(workersDir, "dispatch_specialists-brief.json"), JSON.stringify(shardedBrief));
+  // Stage two sharded prompts (shard 0 and shard 1), no canonical prompt.
+  rmSync(join(workersDir, "dispatch_specialists-prompt-env-shard.md"), { force: true });
+  writeFileSync(join(workersDir, "dispatch_specialists-prompt-env-shard--0.md"), "<staged shard 0>\n");
+  writeFileSync(join(workersDir, "dispatch_specialists-prompt-env-shard--1.md"), "<staged shard 1>\n");
+  const shardedEnv = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-batch-envelope", "--run-id", runId],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(shardedEnv.status, 0, `sharded envelope exited ${shardedEnv.status}; stderr: ${shardedEnv.stderr}`);
+  const shardedEnvelope = JSON.parse(shardedEnv.stdout);
+  assert.deepEqual(shardedEnvelope.batch, ["env-shard--0", "env-shard--1"], "envelope batch must list shard-suffixed ids");
+  // Each sharded shim has its own per-shard prompt + output path.
+  assert.match(shardedEnvelope.shims["env-shard--0"], /dispatch_specialists-prompt-env-shard--0\.md/);
+  assert.match(shardedEnvelope.shims["env-shard--0"], /dispatch_specialists-output-env-shard--0\.json/);
+  assert.match(shardedEnvelope.shims["env-shard--1"], /dispatch_specialists-prompt-env-shard--1\.md/);
+  assert.match(shardedEnvelope.shims["env-shard--1"], /dispatch_specialists-output-env-shard--1\.json/);
+  // Byte-equal check on the sharded path: envelope shim must equal
+  // --print-agent-shim-prompt's output for the same shard id.
+  const shardSingleShim = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--print-agent-shim-prompt", "--run-id", runId, "--leaf-id", "env-shard--0"],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 5_000 },
+  );
+  assert.equal(shardSingleShim.status, 0);
+  assert.equal(shardedEnvelope.shims["env-shard--0"], shardSingleShim.stdout,
+    "sharded envelope shim must equal --print-agent-shim-prompt output byte-for-byte");
+
+  // Restore the original brief + canonical prompt for the rest of
+  // the test (the --batch-size cap and zero-work checks below assume
+  // the env-alpha/beta/gamma layout).
+  writeFileSync(join(workersDir, "dispatch_specialists-brief.json"), JSON.stringify(briefShape));
+  rmSync(join(workersDir, "dispatch_specialists-prompt-env-shard--0.md"), { force: true });
+  rmSync(join(workersDir, "dispatch_specialists-prompt-env-shard--1.md"), { force: true });
+  writeFileSync(join(workersDir, "dispatch_specialists-prompt-env-alpha.md"), "<staged>\n");
+
   // --batch-size cap honoured: with --batch-size 2, batch=2 ids,
   // remaining_after=1 (3 pending total - 2 returned).
   const capped = spawnSync(

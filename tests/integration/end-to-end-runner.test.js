@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 
 import { resolveSettings, runDirPath } from "@ctxr/fsm";
 import { validateRun } from "../../scripts/assert-fresh-run.mjs";
+import { assertForbiddenPathsContract } from "../_helpers/forbidden-paths.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -550,8 +551,7 @@ test("--print-pending-leaf-ids and --print-agent-shim-prompt: end-to-end CLI con
   // /tmp/tree-descend/build.js etc.). The shim prompt is the
   // ONLY thing the dispatched Agent reads inline; the prohibition
   // must be in the shim, not just in the on-disk per-leaf prompt.
-  assert.match(shim.stdout, /FORBIDDEN PATHS/);
-  assert.match(shim.stdout, /NEVER write to \/tmp/);
+  assertForbiddenPathsContract(shim.stdout);
   // Shim is small — under 1500 chars (plenty under the documented 200-token bound).
   assert.ok(shim.stdout.length < 1500, `shim should be small; got ${shim.stdout.length} chars`);
 
@@ -1204,6 +1204,33 @@ test("--print-pending-leaf-ids and --print-batch-envelope: mutually exclusive", 
   assert.match(payload.message, /mutually exclusive/);
 });
 
+// Bound for spawned-runner integration tests. The `--continue`
+// round-trip spawns a Node process plus an internal fsm-commit child;
+// 30s was tight under CI load and could SIGTERM before the runner
+// produced its structured error JSON, masking the real failure. 120s
+// gives comfortable headroom; the tests don't measure wall-clock so
+// the upper bound is purely a safety net.
+const CONTINUE_TEST_TIMEOUT_MS = 120_000;
+
+// The integration tests in this file derive their storageRoot from the
+// repo's .fsmrc.json and create per-test run-dirs under it. The cleanup
+// hook (t.after rmSync runDir) keeps the storageRoot tidy across
+// invocations, but the tests are NOT safe under
+// `node --test --test-concurrency=N` (N > 1): two parallel processes
+// could mint the same yyyymmdd-hhmmss-<pid-derived-suffix> run-id if
+// they cross a second boundary at the same instant. This file
+// implicitly assumes node:test's default file-serial execution; if
+// the project ever moves to test-concurrency > 1, switch the run-id
+// suffix to a per-test-process counter or sub-second timestamp.
+
+// Sentinel year for runtime-unique-but-deterministic test run-ids
+// that must NOT collide with real run-dirs. Year 2099 is far enough
+// out that no real run-dir can land here. Defined as a single named
+// constant so the date prefix has one update site (the previous
+// inline literal "20991231-235959-" was duplicated between code and
+// the explanatory comment, drift surface noted by review).
+const SENTINEL_RUN_ID_PREFIX = "20991231-235959-";
+
 // Shared setup helper for --continue hard-fail tests that need a real
 // run with a fabricated dispatch_specialists state. Returns the run-id
 // + run paths and registers an after-hook to clean up the run-dir,
@@ -1214,7 +1241,7 @@ function makeFreshRunForContinueTest(t, baseSha, headSha) {
   const start = spawnSync(
     process.execPath,
     ["scripts/run-review.mjs", "--start", "--base", baseSha, "--head", headSha],
-    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: CONTINUE_TEST_TIMEOUT_MS },
   );
   assert.equal(start.status, 0, `--start exited ${start.status}; stderr: ${start.stderr}`);
   const runId = JSON.parse(start.stdout.split("\n").filter(Boolean)[0]).run_id;
@@ -1235,14 +1262,25 @@ function makeFreshRunForContinueTest(t, baseSha, headSha) {
 // shared spawn-and-assert scaffolding) and the round-1 negative-
 // assertions finding (every hard-fail test now consistently asserts
 // no stack-frame leak and no misleading-fallthrough leak).
-function assertContinueHardFails(runId, extraArgs, { messageRegex, extraAssertions }) {
+function assertContinueHardFails(runId, extraContinueArgs, { messageRegex, extraAssertions }) {
   const cont = spawnSync(
     process.execPath,
-    ["scripts/run-review.mjs", "--continue", "--run-id", runId, ...extraArgs],
-    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
+    ["scripts/run-review.mjs", "--continue", "--run-id", runId, ...extraContinueArgs],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: CONTINUE_TEST_TIMEOUT_MS },
   );
-  assert.notEqual(cont.status, 0, `--continue ${extraArgs.join(" ")} must hard-fail; stdout=${cont.stdout}`);
-  const payload = JSON.parse(cont.stdout);
+  assert.notEqual(cont.status, 0, `--continue ${extraContinueArgs.join(" ")} must hard-fail; stdout=${cont.stdout}`);
+  // Guard the JSON.parse — under SIGTERM (timeout breach) or a runner
+  // crash we'd see non-JSON stdout, and a bare JSON.parse throw would
+  // hide the real failure mode. Re-throw with stdout + stderr in the
+  // failure message so CI logs surface the actual problem.
+  let payload;
+  try {
+    payload = JSON.parse(cont.stdout);
+  } catch (err) {
+    assert.fail(
+      `--continue ${extraContinueArgs.join(" ")}: expected structured JSON on stdout, got JSON.parse error "${err.message}".\nstdout: ${cont.stdout}\nstderr: ${cont.stderr}`,
+    );
+  }
   assert.match(payload.message, messageRegex);
   // The two negative assertions every hard-fail test must lock down:
   // no stack-frame leak (we'd be in fail()-the-stack territory) and
@@ -1264,20 +1302,30 @@ function assertContinueHardFails(runId, extraArgs, { messageRegex, extraAssertio
 // makes that coupling explicit + greppable.
 function setManifestCurrentState(manifestPath, state) {
   const realManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  // Fail-fast precondition: the manifest must be a non-null object.
+  // A surprising shape here (string, array, null) signals a corrupted
+  // run-dir; surface it immediately rather than silently mutating an
+  // unexpected value.
+  assert.ok(
+    realManifest && typeof realManifest === "object" && !Array.isArray(realManifest),
+    `manifest at ${manifestPath} is not an object; cannot set current_state on shape ${typeof realManifest}`,
+  );
   realManifest.current_state = state;
   writeFileSync(manifestPath, JSON.stringify(realManifest));
 }
 
-// Generates a runtime-unique sentinel run-id whose corresponding
-// manifest is guaranteed not to exist on disk. The previous hardcoded
-// "20991231-235959-deadbe0" risked a real-future collision in 2099
-// AND failed to assert the precondition; this helper builds an id
-// that still matches the canonical regex, varies per test invocation
-// (random 7-hex tail), and asserts nonexistence so the test fails
-// fast and informatively if the sentinel ever collides.
+// Generates a deterministic-but-process-unique sentinel run-id whose
+// corresponding manifest is guaranteed not to exist on disk. Earlier
+// versions used randomBytes for the suffix, which made test failures
+// non-reproducible (the random value vanished after the run); this
+// version derives the suffix from process.pid (hex-padded to the
+// canonical 7 chars) so a failing test can be replayed under the same
+// pid by re-running without --test-concurrency. Asserts nonexistence
+// before returning so the test fails fast if the sentinel ever
+// collides with a real run-dir.
 function freshNonexistentRunId() {
-  const hex = randomBytes(4).toString("hex").slice(0, 7);
-  const runId = `20991231-235959-${hex}`;
+  const suffix = process.pid.toString(16).padStart(7, "0").slice(-7);
+  const runId = `${SENTINEL_RUN_ID_PREFIX}${suffix}`;
   const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
   const storageRoot = resolve(REPO_ROOT, settings.storageRoot);
   const manifestPath = join(runDirPath(runId, { storageRoot }), "manifest.json");
@@ -1287,6 +1335,7 @@ function freshNonexistentRunId() {
   );
   return runId;
 }
+
 
 test("--continue: dispatch_specialists brief unparseable JSON hard-fails with structured error (no silent swallow)", (t) => {
   // Closes the silent-swallow review finding: the previous

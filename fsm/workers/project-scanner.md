@@ -56,7 +56,6 @@ Fields:
 - Do NOT review code. You produce a profile only.
 - Do NOT fetch URLs or hit network beyond local git / filesystem reads.
 - Run reads in parallel where possible (one Bash call with `&&`-chained commands is fine; multiple Bash tool invocations in one message is fine).
-- The runner injects a `--- FORBIDDEN PATHS ---` section into the dispatch prompt at staging time naming the single allowed write target (your output JSON path) and forbidding `/tmp/*` writes. That section is the single source of truth — read it for the full rationale.
 - Return ONLY the JSON object. No commentary, no surrounding markdown fences in the response body.
 
 ## Validation will reject

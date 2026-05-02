@@ -62,7 +62,6 @@ Fields:
 - Allowed reads: the root `reviewers.wiki/index.md` and every retained subcategory `index.md`.
 - Do NOT read leaf `.md` files (frontmatter or body) — `activated_leaves[]` already gives you everything you need to assemble the output.
 - **Do NOT call `evaluateActivation()` or re-implement activation logic.** The runner already did that. If you find yourself reading a leaf's `activation:` block, stop — that signals you've drifted from the contract.
-- The runner injects a `--- FORBIDDEN PATHS ---` section into the dispatch prompt at staging time naming the single allowed write target (your output JSON path) and forbidding `/tmp/*` writes. That section is the single source of truth — read it for the full rationale.
 - Return ONLY the JSON object.
 
 ## Validation will reject

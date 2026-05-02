@@ -426,7 +426,7 @@ const DEFAULT_SHARD_THRESHOLD = 256 * 1024;
 // byte-identical across every emission site — drift between copies
 // silently weakens the contract for whichever worker has the stale
 // copy.
-const FORBIDDEN_PATHS_NOTICE =
+export const FORBIDDEN_PATHS_NOTICE_FULL =
   "NEVER write to /tmp/* or any path outside the run-dir. This includes " +
   "scratch files (build.js, leaves.json, ad-hoc node -e scripts, etc.). " +
   "/tmp is mode 1777 (world-readable on every Unix), shared across " +
@@ -435,11 +435,15 @@ const FORBIDDEN_PATHS_NOTICE =
   "need scratch space, use the same workers/ directory that holds your " +
   "dispatch prompt.";
 
-// Compact one-liner derived from FORBIDDEN_PATHS_NOTICE for the shim
+// Compact one-liner derived from FORBIDDEN_PATHS_NOTICE_FULL for the shim
 // prompt — the shim has a documented ~200-token bound, so it gets a
 // short-form pointer that names the rule and the canonical location of
 // the full rationale (the on-disk dispatch prompt the shim references).
-const FORBIDDEN_PATHS_NOTICE_SHORT =
+// Both constants are exported so tests can assert they share the
+// load-bearing tokens (NEVER write to /tmp, only allowed write target
+// is the output path) — guards against silent semantic drift between
+// the long and short forms.
+export const FORBIDDEN_PATHS_NOTICE_SHIM =
   "FORBIDDEN PATHS: NEVER write to /tmp/* or any path outside the run-dir. " +
   "The ONLY allowed write target is the output path above. " +
   "/tmp is shared across concurrent sessions and forbidden by skill contract.";
@@ -918,7 +922,7 @@ export function buildDispatchPromptText(brief, opts = {}) {
       "",
       "Do NOT return JSON to the orchestrator inline; the runner reads from the path above on --continue and aggregates all per-leaf outputs into specialist_outputs[]. Concurrent specialists writing to the same path would clobber each other; the per-leaf path is unique.",
       "",
-      `FORBIDDEN PATHS: ${FORBIDDEN_PATHS_NOTICE}`,
+      `FORBIDDEN PATHS: ${FORBIDDEN_PATHS_NOTICE_FULL}`,
       "",
       `(For audit context: the runner's aggregate output is written to ${outputsPath}.)`,
       "",
@@ -964,7 +968,7 @@ export function buildDispatchPromptText(brief, opts = {}) {
   lines.push(outputsPath);
   lines.push("");
   lines.push("--- FORBIDDEN PATHS ---");
-  lines.push(FORBIDDEN_PATHS_NOTICE);
+  lines.push(FORBIDDEN_PATHS_NOTICE_FULL);
   lines.push("");
   return lines.join("\n");
 }
@@ -2518,8 +2522,14 @@ async function main() {
           // file not found" — surface the real corruption with the
           // brief path and parse error so the operator can fix the
           // root cause.
+          //
+          // No optional chaining on err here: JSON.parse only throws
+          // SyntaxError (always with a `.message`), so a falsy err
+          // would itself be a regression we'd want to surface as a
+          // TypeError rather than silently render "unparseable: null"
+          // / "unparseable: undefined" downstream.
           fail(
-            `--continue: brief at "${briefPath}" is unparseable: ${err?.message ?? String(err)}`,
+            `--continue: brief at "${briefPath}" is unparseable: ${err.message}`,
             { run_id: runId, brief_path: briefPath, current_state: currentState },
           );
         }
@@ -3255,7 +3265,7 @@ function buildShimText(runId, leafId, shardIdx, cliName) {
     "Include `skip_reason: \"<one sentence>\"` when status == \"skipped\" (FSM schema requires it then) OR when status == \"failed\" (encouraged for actionable diagnostics).",
     "",
     "Do NOT return JSON inline; the runner aggregates from this file path on --continue.",
-    FORBIDDEN_PATHS_NOTICE_SHORT,
+    FORBIDDEN_PATHS_NOTICE_SHIM,
     `Repository root: ${REPO_ROOT}`,
     "",
   ];

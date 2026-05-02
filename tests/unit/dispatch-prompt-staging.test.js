@@ -15,7 +15,13 @@ import {
   buildDispatchPromptText,
   writeDispatchPromptToDisk,
   writeSpecialistPromptsToDisk,
+  FORBIDDEN_PATHS_NOTICE_FULL,
+  FORBIDDEN_PATHS_NOTICE_SHIM,
 } from "../../scripts/run-review.mjs";
+import {
+  assertForbiddenPathsContract,
+  assertSectionOrder,
+} from "../_helpers/forbidden-paths.mjs";
 
 test("defaultDispatchPromptPath: returns null on missing run_id or state", () => {
   assert.equal(defaultDispatchPromptPath(null, "scan_project"), null);
@@ -124,31 +130,9 @@ test("buildDispatchPromptText: standard worker — embeds prompt_body, INPUTS, O
   // dispatch prompt MUST carry the prohibition AFTER the OUTPUTS
   // PATH section so a worker reading top-down sees the allowed
   // write target first, then the prohibition referencing it.
-  assertForbiddenPathsAfterOutputs(text);
+  assertForbiddenPathsContract(text);
+  assertSectionOrder(text, "--- OUTPUTS PATH ---", "--- FORBIDDEN PATHS ---");
 });
-
-// Shared assertion helper for the FORBIDDEN PATHS contract check.
-// Closes the round-1 review's "assertion pair duplicated" finding
-// AND the round-1 "presence but not placement" finding: every
-// invocation now also asserts the section appears AFTER OUTPUTS PATH
-// so a structural regression scrambling section order would fail.
-function assertForbiddenPathsAfterOutputs(text) {
-  assert.match(text, /--- FORBIDDEN PATHS ---/);
-  assert.match(text, /NEVER write to \/tmp/);
-  // Section ordering: FORBIDDEN PATHS must come AFTER OUTPUTS PATH
-  // so the dispatch prompt reads (in order): worker body, INPUTS,
-  // RESPONSE SCHEMA, OUTPUTS PATH, FORBIDDEN PATHS. A reordering
-  // regression would silently re-introduce ambiguity about which
-  // "output path" the prohibition refers to.
-  const outputsPathIdx = text.indexOf("--- OUTPUTS PATH ---");
-  const forbiddenPathsIdx = text.indexOf("--- FORBIDDEN PATHS ---");
-  assert.ok(outputsPathIdx >= 0, "expected OUTPUTS PATH section");
-  assert.ok(forbiddenPathsIdx >= 0, "expected FORBIDDEN PATHS section");
-  assert.ok(
-    forbiddenPathsIdx > outputsPathIdx,
-    `FORBIDDEN PATHS must come after OUTPUTS PATH; got OUTPUTS@${outputsPathIdx} FORBIDDEN@${forbiddenPathsIdx}`,
-  );
-}
 
 test("buildDispatchPromptText: standard worker — embeds RESPONSE SCHEMA when brief carries one (#85)", () => {
   // Regression: previously the prompt's tail said "matching the
@@ -275,14 +259,8 @@ test("buildDispatchPromptText: per-specialist (no opts.filteredDiff) — emits F
   // section (one block, not a separate `--- FORBIDDEN PATHS ---`
   // header) — assert presence + that it appears AFTER the
   // RESPONSE CONTRACT marker so structural regressions surface.
-  assert.match(text, /FORBIDDEN PATHS/);
-  assert.match(text, /NEVER write to \/tmp/);
-  const responseContractIdx = text.indexOf("--- RESPONSE CONTRACT ---");
-  const forbiddenPathsIdx = text.indexOf("FORBIDDEN PATHS");
-  assert.ok(responseContractIdx >= 0, "expected RESPONSE CONTRACT section");
-  assert.ok(forbiddenPathsIdx > responseContractIdx,
-    `FORBIDDEN PATHS must come after RESPONSE CONTRACT; got RC@${responseContractIdx} FP@${forbiddenPathsIdx}`,
-  );
+  assertForbiddenPathsContract(text);
+  assertSectionOrder(text, "--- RESPONSE CONTRACT ---", "FORBIDDEN PATHS");
 });
 
 test("defaultDispatchPromptPath: rejects unsafe state segments (path traversal guard on state)", () => {
@@ -561,4 +539,37 @@ test("writeSpecialistPromptsToDisk: single-shard output keeps the canonical non-
   } finally {
     rmSync(runDir, { recursive: true, force: true });
   }
+});
+
+test("FORBIDDEN_PATHS_NOTICE_FULL and FORBIDDEN_PATHS_NOTICE_SHIM share load-bearing tokens (no silent drift)", () => {
+  // The two constants serve different audiences (full rationale for
+  // the dispatch prompt, compact pointer for the ~200-token shim) but
+  // must agree on the load-bearing rule clauses. A divergent edit
+  // (e.g. someone updates the full rationale to allow a new scratch
+  // dir but forgets the shim) would silently weaken the contract for
+  // dispatched specialist Agents — the shim is what they read inline.
+  // This test guards against drift on the rule wording without
+  // demanding mechanical derivation of one form from the other.
+  const loadBearingTokens = [
+    "NEVER write to /tmp",
+    // Both forms must name the canonical write target as the output path.
+    "ONLY allowed write target is the output path",
+  ];
+  for (const token of loadBearingTokens) {
+    assert.ok(
+      FORBIDDEN_PATHS_NOTICE_FULL.includes(token),
+      `FORBIDDEN_PATHS_NOTICE_FULL is missing load-bearing token: "${token}"`,
+    );
+    assert.ok(
+      FORBIDDEN_PATHS_NOTICE_SHIM.includes(token),
+      `FORBIDDEN_PATHS_NOTICE_SHIM is missing load-bearing token: "${token}"`,
+    );
+  }
+  // The shim must be SHORTER than the full notice (it lives inside a
+  // documented ~200-token bound). If the shim grows past the full
+  // form, somebody has the audiences inverted.
+  assert.ok(
+    FORBIDDEN_PATHS_NOTICE_SHIM.length < FORBIDDEN_PATHS_NOTICE_FULL.length,
+    `shim notice (${FORBIDDEN_PATHS_NOTICE_SHIM.length} chars) must be shorter than full notice (${FORBIDDEN_PATHS_NOTICE_FULL.length} chars)`,
+  );
 });

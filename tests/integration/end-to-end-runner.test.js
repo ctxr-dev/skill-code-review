@@ -988,11 +988,14 @@ test("--print-batch-envelope: degraded staging (gappy shards + unstaged leaves) 
 
   // Simulate completion of all 3 dispatchable units. total_picked
   // must STAY 3 (stable across calls); pending_now drops to 0.
+  // The output filename embeds the dispatch id verbatim (which may
+  // include the `--<shardIdx>` suffix); the JSON `id` field is the
+  // bare leaf id (the part before `--`, if a shard suffix is present).
   for (const id of envelope.batch) {
-    const safe = id.replace(/--/g, "--");
+    const leafId = id.includes("--") ? id.slice(0, id.indexOf("--")) : id;
     writeFileSync(
-      join(workersDir, `dispatch_specialists-output-${safe}.json`),
-      JSON.stringify({ id: safe.split("--")[0], status: "completed", findings: [] }),
+      join(workersDir, `dispatch_specialists-output-${id}.json`),
+      JSON.stringify({ id: leafId, status: "completed", findings: [] }),
     );
   }
   const post = spawnSync(

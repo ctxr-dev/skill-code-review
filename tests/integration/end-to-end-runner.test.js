@@ -14,8 +14,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -1254,14 +1253,33 @@ function makeFreshRunForContinueTest(t, baseSha, headSha) {
   return { runId, runDir, workersDir, manifestPath };
 }
 
+// Pure parse helper used by assertContinueHardFails. Splits "spawn +
+// stdout/stderr capture" from "parse the stdout as structured JSON" so
+// the parsed result can be bound with `const` at the call site (no
+// `let payload; try { ... }` shape) and so a non-JSON stdout surfaces
+// as a single deterministic failure message naming the diagnostic
+// channel — review round 5's "let payload could be const" +
+// "assertions inside conditional branch" findings.
+function parseStdoutOrFail(stdout, stderr, label) {
+  try {
+    return JSON.parse(stdout);
+  } catch (err) {
+    assert.fail(
+      `${label}: expected structured JSON on stdout, got JSON.parse error "${err.message}".\nstdout: ${stdout}\nstderr: ${stderr}`,
+    );
+  }
+}
+
 // Shared assertion helper: spawn `--continue ...` (with optional extra
 // args), assert hard-fail (non-zero exit, parseable stdout JSON, no
 // leaked stack-frame paths, no misleading "outputs file not found"
 // fallthrough), then run the caller's regex against payload.message.
-// Closes the round-1 DRY finding (two new --continue hard-fail tests
-// shared spawn-and-assert scaffolding) and the round-1 negative-
-// assertions finding (every hard-fail test now consistently asserts
-// no stack-frame leak and no misleading-fallthrough leak).
+//
+// `extraContinueArgs` is a flat string[] of CLI tokens appended after
+// `--continue --run-id <id>`. Pass [] for the implicit-outputs-file
+// path; pass `["--outputs-file", "/path"]` to exercise the explicit
+// branch. Each element is fed to spawnSync's argv verbatim — no
+// shell quoting required.
 function assertContinueHardFails(runId, extraContinueArgs, { messageRegex, extraAssertions }) {
   const cont = spawnSync(
     process.execPath,
@@ -1269,18 +1287,11 @@ function assertContinueHardFails(runId, extraContinueArgs, { messageRegex, extra
     { encoding: "utf8", cwd: REPO_ROOT, timeout: CONTINUE_TEST_TIMEOUT_MS },
   );
   assert.notEqual(cont.status, 0, `--continue ${extraContinueArgs.join(" ")} must hard-fail; stdout=${cont.stdout}`);
-  // Guard the JSON.parse — under SIGTERM (timeout breach) or a runner
-  // crash we'd see non-JSON stdout, and a bare JSON.parse throw would
-  // hide the real failure mode. Re-throw with stdout + stderr in the
-  // failure message so CI logs surface the actual problem.
-  let payload;
-  try {
-    payload = JSON.parse(cont.stdout);
-  } catch (err) {
-    assert.fail(
-      `--continue ${extraContinueArgs.join(" ")}: expected structured JSON on stdout, got JSON.parse error "${err.message}".\nstdout: ${cont.stdout}\nstderr: ${cont.stderr}`,
-    );
-  }
+  const payload = parseStdoutOrFail(
+    cont.stdout,
+    cont.stderr,
+    `--continue ${extraContinueArgs.join(" ")}`,
+  );
   assert.match(payload.message, messageRegex);
   // The two negative assertions every hard-fail test must lock down:
   // no stack-frame leak (we'd be in fail()-the-stack territory) and
@@ -1299,7 +1310,9 @@ function assertContinueHardFails(runId, extraContinueArgs, { messageRegex, extra
 // shape, which is acceptable here because that shape is part of the
 // runner's public on-disk contract (assert-fresh-run.mjs and the FSM
 // engine both depend on `current_state`). Centralising the mutation
-// makes that coupling explicit + greppable.
+// makes that coupling explicit + greppable. Round-5 review flagged
+// the in-place mutation here; switched to spread to produce a fresh
+// object before write-back.
 function setManifestCurrentState(manifestPath, state) {
   const realManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   // Fail-fast precondition: the manifest must be a non-null object.
@@ -1310,22 +1323,45 @@ function setManifestCurrentState(manifestPath, state) {
     realManifest && typeof realManifest === "object" && !Array.isArray(realManifest),
     `manifest at ${manifestPath} is not an object; cannot set current_state on shape ${typeof realManifest}`,
   );
-  realManifest.current_state = state;
-  writeFileSync(manifestPath, JSON.stringify(realManifest));
+  writeFileSync(manifestPath, JSON.stringify({ ...realManifest, current_state: state }));
 }
 
-// Generates a deterministic-but-process-unique sentinel run-id whose
-// corresponding manifest is guaranteed not to exist on disk. Earlier
-// versions used randomBytes for the suffix, which made test failures
-// non-reproducible (the random value vanished after the run); this
-// version derives the suffix from process.pid (hex-padded to the
-// canonical 7 chars) so a failing test can be replayed under the same
-// pid by re-running without --test-concurrency. Asserts nonexistence
-// before returning so the test fails fast if the sentinel ever
-// collides with a real run-dir.
+// Manifest-state stripping helper, used to exercise the "manifest
+// exists but lacks current_state" branch. Round-5 review flagged the
+// previous in-place `delete realManifest.current_state` as a mutability
+// smell; rest-destructuring produces a stripped copy without
+// touching the parsed object.
+function stripManifestCurrentState(manifestPath) {
+  const realManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  assert.ok(
+    realManifest && typeof realManifest === "object" && !Array.isArray(realManifest),
+    `manifest at ${manifestPath} is not an object; cannot strip current_state`,
+  );
+  // eslint-disable-next-line no-unused-vars
+  const { current_state: _stripped, ...rest } = realManifest;
+  writeFileSync(manifestPath, JSON.stringify(rest));
+}
+
+// Generates a sentinel run-id whose corresponding manifest is
+// guaranteed not to exist on disk. Suffix is derived from BOTH
+// process.pid (process-unique) AND a per-call counter (call-unique
+// within a process), so concurrent test files with the same pid AND
+// repeated calls within one file both stay collision-free.
+// Round-5 review flagged the pid-only version as fragile under any
+// future --test-concurrency > 1 enablement.
+//
+// Asserts nonexistence before returning so the test fails fast if
+// the sentinel ever collides with a real run-dir.
+let _sentinelCallCounter = 0;
 function freshNonexistentRunId() {
-  const suffix = process.pid.toString(16).padStart(7, "0").slice(-7);
-  const runId = `${SENTINEL_RUN_ID_PREFIX}${suffix}`;
+  _sentinelCallCounter += 1;
+  // 7 hex chars total: 4 from pid + 3 from call counter, both
+  // wrapped to fit in their fields. Uniqueness held against
+  // 65536 × 4096 = 256M (pid, counter) pairs per process, more
+  // than enough for any conceivable test invocation pattern.
+  const pidNibbles = (process.pid & 0xFFFF).toString(16).padStart(4, "0");
+  const counterNibbles = (_sentinelCallCounter & 0xFFF).toString(16).padStart(3, "0");
+  const runId = `${SENTINEL_RUN_ID_PREFIX}${pidNibbles}${counterNibbles}`;
   const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
   const storageRoot = resolve(REPO_ROOT, settings.storageRoot);
   const manifestPath = join(runDirPath(runId, { storageRoot }), "manifest.json");
@@ -1337,7 +1373,7 @@ function freshNonexistentRunId() {
 }
 
 
-test("--continue: dispatch_specialists brief unparseable JSON hard-fails with structured error (no silent swallow)", (t) => {
+test("--continue: dispatch_specialists brief unparseable JSON hard-fails with structured error", (t) => {
   // Closes the silent-swallow review finding: the previous
   // `try { JSON.parse(...) } catch { brief = null; }` masked
   // brief corruption and let --continue fall through to a
@@ -1416,15 +1452,60 @@ test("--continue --outputs-file <path>: explicit-path branch hard-fails when man
     "1111111111111111111111111111111111111111",
     "2222222222222222222222222222222222222222",
   );
-  const realManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-  delete realManifest.current_state;
-  writeFileSync(manifestPath, JSON.stringify(realManifest));
+  stripManifestCurrentState(manifestPath);
 
   // Act + Assert: hard-fail naming the manifest-corrupted condition.
   assertContinueHardFails(runId, ["--outputs-file", "/nonexistent/x.json"], {
     messageRegex: /manifest has no current_state/,
     extraAssertions: (payload) => {
       assert.ok(payload.message.includes(runId), "error must name the run-id");
+    },
+  });
+});
+
+test("--continue: manifest path is a directory (not a file) — runner exits within timeout, not via SIGTERM", (t) => {
+  // Closes the round-5 review's "no dependency-down / negative path"
+  // finding: the existing hard-fail tests cover the structured-error
+  // contract for parseable-but-corrupt inputs (unparseable brief,
+  // missing manifest, missing current_state). They do NOT cover a
+  // hostile filesystem state where manifest.json is unreadable as a
+  // file at all. Without this regression, a hang in manifest-read
+  // would surface only as the 120s timeout SIGTERM — masking the
+  // real failure mode.
+  //
+  // Portable hostile shape: replace manifest.json with a DIRECTORY of
+  // the same name. readFileSync on a directory throws EISDIR on every
+  // POSIX system (including the runner's Node child); chmod-based
+  // tests would flake in CI containers.
+
+  // Arrange: fresh run, then replace the manifest file with a
+  // directory of the same name.
+  const { runId, manifestPath } = makeFreshRunForContinueTest(
+    t,
+    "3333333333333333333333333333333333333333",
+    "4444444444444444444444444444444444444444",
+  );
+  rmSync(manifestPath, { force: true });
+  mkdirSync(manifestPath, { recursive: true });
+
+  // Act + Assert: --continue must produce a structured error within
+  // CONTINUE_TEST_TIMEOUT_MS (no SIGTERM masking). assertContinueHardFails
+  // already enforces parseable JSON on stdout — under SIGTERM stdout
+  // would be empty/truncated and parseStdoutOrFail would assert.fail
+  // with the diagnostic, so this test inherits the timeout-masking
+  // negative assertion automatically.
+  //
+  // We don't pin the exact error message wording (the runner's
+  // EISDIR / ENOTFILE / "is a directory" surfaces vary by Node
+  // version); we only require: non-zero exit, JSON-parseable
+  // stdout, and SOME message that mentions the run-id or the
+  // manifest path so the operator can diagnose.
+  assertContinueHardFails(runId, [], {
+    messageRegex: /(manifest|directory|EISDIR|ENOTFILE|run-id)/i,
+    extraAssertions: (payload) => {
+      assert.ok(typeof payload.message === "string" && payload.message.length > 0,
+        "fail() payload must carry a non-empty message",
+      );
     },
   });
 });

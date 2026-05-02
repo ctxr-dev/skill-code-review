@@ -306,6 +306,76 @@ test("handleWorkerStateBrief: record mode honors injected writeSpecialistPrompts
     "record mode must use the injected writeSpecialistPromptsToDisk");
 });
 
+// Round-3 Copilot review on #101 (defense-in-depth): top-level env
+// fields are derived from FSM state/outputs (some LLM-produced),
+// so env.project_root must NOT be honoured as a source for git diff
+// cwd / storage_root. Only env.args.project_root is trustworthy
+// (runner-seeded at --start, never written by workers). The relative
+// path / non-absolute-string check guards against a malformed seed
+// being silently used too.
+test("writeRunArtefacts: ignores env.project_root (only env.args.project_root is trusted)", async () => {
+  const { writeRunArtefacts } = await import(
+    "../../scripts/inline-states/write-run-directory.mjs"
+  );
+  const malicious = mkdtempSync(join(tmpdir(), "malicious-toplevel-"));
+  try {
+    // Top-level env.project_root MUST be ignored. If it weren't,
+    // writeRunArtefacts would target malicious/.skill-code-review/...
+    // and the resulting fault path would mention `malicious`.
+    const env = {
+      verdict: "GO",
+      project_root: malicious,           // top-level (untrusted)
+      args: {},                          // no args.project_root → fall back to skillRoot
+      changed_paths: [],
+      project_profile: { languages: ["javascript"] },
+      tier: "lite",
+    };
+    let observedError = null;
+    try {
+      writeRunArtefacts("20260502-fake-002", env);
+    } catch (err) {
+      observedError = err;
+    }
+    if (observedError) {
+      const msg = String(observedError.message ?? observedError);
+      assert.ok(
+        !msg.includes(malicious),
+        `top-level env.project_root MUST NOT influence storage path; ` +
+        `got error mentioning untrusted path "${malicious}": ${msg}`,
+      );
+    }
+  } finally {
+    rmSync(malicious, { recursive: true, force: true });
+  }
+});
+
+test("writeRunArtefacts: rejects relative env.args.project_root (must be absolute)", async () => {
+  const { writeRunArtefacts } = await import(
+    "../../scripts/inline-states/write-run-directory.mjs"
+  );
+  const env = {
+    verdict: "GO",
+    args: { project_root: "relative/path" }, // not absolute → must fall back to skillRoot
+    changed_paths: [],
+    project_profile: { languages: ["javascript"] },
+    tier: "lite",
+  };
+  let observedError = null;
+  try {
+    writeRunArtefacts("20260502-fake-003", env);
+  } catch (err) {
+    observedError = err;
+  }
+  if (observedError) {
+    const msg = String(observedError.message ?? observedError);
+    assert.ok(
+      !msg.includes("relative/path"),
+      `relative env.args.project_root MUST NOT influence storage path; ` +
+      `got error mentioning "${msg}"`,
+    );
+  }
+});
+
 // Copilot-review #101 finding #2: write-run-directory.mjs's
 // resolveStorageRoot was anchored at SKILL_ROOT, drifting from
 // run-review.mjs's PROJECT_ROOT-anchored storage. With the fix,

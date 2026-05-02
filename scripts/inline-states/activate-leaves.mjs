@@ -26,7 +26,7 @@
 
 import { readdirSync, lstatSync, realpathSync, existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import matter from "gray-matter";
@@ -246,12 +246,22 @@ export default async function activateLeaves({ env }) {
 
   // The wiki walk reads the leaf corpus that SHIPS with the skill,
   // so SKILL_ROOT is the right cwd. The diff fetch is project-rooted:
-  // env.project_root is seeded by run-review.mjs's --start path
-  // (args bag), with engine fields as the canonical source. Falling
-  // back to SKILL_ROOT is preserved for tests that drive this handler
-  // directly without seeding project_root — those tests assume the
-  // skill's own repo is the diff target.
-  const projectRootForDiff = env.project_root ?? args.project_root ?? SKILL_ROOT;
+  // run-review.mjs seeds env.args.project_root at --start (the args
+  // bag is the canonical, runner-controlled channel), with SKILL_ROOT
+  // as fallback for tests that drive this handler directly.
+  //
+  // Only env.args.project_root is honoured — NOT env.project_root.
+  // Top-level env fields can be influenced by upstream FSM outputs
+  // (some of which are LLM-produced JSON), so a malicious or buggy
+  // upstream worker could redirect git diff to an arbitrary directory.
+  // The args bag is exclusively populated by the runner's --start /
+  // --continue CLI; there is no path for it to receive LLM input.
+  // (Round-3 Copilot review on PR #101 flagged this directly.)
+  let projectRootForDiff = SKILL_ROOT;
+  const fromArgs = args?.project_root;
+  if (typeof fromArgs === "string" && fromArgs.length > 0 && isAbsolute(fromArgs)) {
+    projectRootForDiff = fromArgs;
+  }
   const leaves = enumerateWikiLeavesWithActivation(SKILL_ROOT);
   const diffText = fetchDiffText(base, head, projectRootForDiff);
 

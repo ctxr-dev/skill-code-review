@@ -20,7 +20,7 @@
 // pure.
 
 import { writeFileSync, readdirSync, lstatSync, realpathSync, existsSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -355,12 +355,22 @@ export function buildReportPayload(runId, env) {
 export function writeRunArtefacts(runId, env) {
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const skillRoot = resolve(__dirname, "..", "..");
-  // The runner seeds env.args.project_root at --start. Fall back to
-  // skillRoot for tests / direct calls that don't seed it (the in-repo
-  // case where SKILL_ROOT === PROJECT_ROOT). args is the FSM run env's
-  // canonical key (env.args), not env.project_root — the latter would
-  // require @ctxr/fsm to surface seeded args at the top level too.
-  const projectRoot = env?.args?.project_root ?? env?.project_root ?? skillRoot;
+  // The runner seeds env.args.project_root at --start. The args bag is
+  // the canonical, runner-controlled channel — exclusively populated
+  // by the --start CLI, never by upstream worker outputs. Top-level
+  // env fields (like env.project_root) can be set by upstream FSM
+  // outputs (some of which are LLM-produced JSON), so honouring them
+  // here would let an untrusted value redirect where report.md /
+  // manifest.json are written. We accept ONLY env.args.project_root,
+  // and require it to be an absolute path; anything else falls back
+  // to skillRoot (the in-skill test case where SKILL_ROOT ===
+  // PROJECT_ROOT). Round-3 Copilot review on PR #101 flagged this
+  // directly.
+  let projectRoot = skillRoot;
+  const fromArgs = env?.args?.project_root;
+  if (typeof fromArgs === "string" && fromArgs.length > 0 && isAbsolute(fromArgs)) {
+    projectRoot = fromArgs;
+  }
   const storageRoot = resolveStorageRoot(skillRoot, projectRoot);
   const dir = runDirPath(runId, { storageRoot });
 

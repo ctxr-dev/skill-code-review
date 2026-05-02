@@ -309,23 +309,30 @@ export function enrichBriefWithSpecialistBodies(brief) {
 // once per leaf and embeds the result inline so the staged prompt is
 // ready to paste.
 //
-// Failure modes (all return a labeled placeholder, never throw):
-//   - missing baseSha/headSha (e.g., unit test): placeholder string.
-//   - git spawn failure (binary missing / killed): stderr-or-error label.
-//   - non-zero exit (bad refs, etc.): exit-code label with stderr.
+// Failure modes:
+//   - missing baseSha/headSha (e.g., unit test path) — RETURNS a
+//     labeled placeholder string. This is a legitimate "no work to
+//     do" signal (the caller already knows it didn't pass SHAs) and
+//     the staged prompt downstream is a no-op for a leaf that has
+//     no diff to review.
+//   - everything else (git spawn failure, non-zero exit, signal kill)
+//     — THROWS FilteredDiffError. v2.2.x returned a placeholder for
+//     these too, which the orchestrator silently forwarded to K
+//     specialists. The eval in #100 surfaced the real-world cost
+//     (20 specialists skipped a misconfigured run before the operator
+//     got a clear error). The runner now catches FilteredDiffError
+//     in stagePromptsOrFault and aborts the dispatch with one
+//     structured fault.
 //
-// Empty fileGlobs is NOT a failure mode: we deliberately fall back to
-// the full diff so the rare leaves (~1/476) without globs still get
-// coverage. SKILL.md mentions this fallback explicitly.
-// Marker class for git-diff failures that should fault-fast at staging
-// time instead of being silently embedded as a placeholder in K
-// specialist prompts. The v2.2.x behaviour returned the placeholder
-// text, which the orchestrator then forwarded to every dispatched
-// specialist; the eval in #100 surfaced the real-world cost
-// (20 specialists skipped a misconfigured run before the operator got
-// a single clear error). The runner now checks for this class in
-// writeSpecialistPromptsToDisk and aborts the dispatch with one
-// structured fault.
+// ENOBUFS (32 MB diff cap exceeded) is a deliberate exception: the
+// staged prompt still ships with a labeled placeholder so the
+// reviewer surfaces the cap clearly rather than aborting the whole
+// run. (Tightening the leaf's activation.file_globs[] is the
+// operator-facing fix.)
+//
+// Empty fileGlobs is NOT a failure mode: we deliberately fall back
+// to the full diff so the rare leaves (~1/476) without globs still
+// get coverage. SKILL.md mentions this fallback explicitly.
 export class FilteredDiffError extends Error {
   constructor(message, { cause } = {}) {
     super(message);
@@ -338,8 +345,12 @@ function computeFilteredDiff(baseSha, headSha, fileGlobs, { projectRoot: project
   if (!baseSha || !headSha) {
     // Either the caller didn't ship shas (unit test path) OR the
     // runner failed to read them from the manifest. Both end up here
-    // with null shas, so the message is generic — the writeSpecialist
-    // prompt path is best-effort and never throws.
+    // with null shas; we return a labeled placeholder rather than
+    // throw because the caller (writeSpecialistPromptsToDisk) treats
+    // this as a no-op for the leaf — there's no diff to compute.
+    // git-failure cases below DO throw (FilteredDiffError) so the
+    // staging seam can fault-fast on a misconfigured runner instead
+    // of forwarding broken prompts to K specialists.
     return "(diff unavailable: base/head shas unavailable)";
   }
   // `--no-color` strips ANSI escapes a user's local `color.ui=always`
@@ -1852,6 +1863,23 @@ function discoverProjectRoot() {
   // CLI args are parsed lazily so unit tests don't need to set process.argv.
   const args = parseArgs(process.argv);
   const explicit = args["repo-root"] ?? args.repoRoot ?? null;
+  // parseArgs encodes a bare flag (no value) as boolean `true`. Hard-fail
+  // here rather than silently falling through to the cwd-discovery path:
+  // a typo'd `--repo-root` (operator forgot the path) would otherwise
+  // look like it worked while running against the wrong project.
+  // (Round-4 Copilot review on PR #101 flagged this directly.)
+  if (explicit === true) {
+    fail(
+      `--repo-root requires a value (got bare flag). ` +
+      `Pass an absolute path, e.g. --repo-root /path/to/project.`,
+    );
+  }
+  if (explicit !== null && typeof explicit !== "string") {
+    fail(
+      `--repo-root: expected a string path, got ${typeof explicit}. ` +
+      `Pass an absolute path, e.g. --repo-root /path/to/project.`,
+    );
+  }
   if (typeof explicit === "string" && explicit.length > 0) {
     // Reject relative paths up front. resolve(relative) silently
     // anchors to process.cwd(), which would let a typo'd

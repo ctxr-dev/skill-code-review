@@ -88,6 +88,30 @@ test("--repo-root: missing path fails up front with a clear error", () => {
   assert.match(allOutput, /does not exist/);
 });
 
+// Round-4 Copilot review on #101: parseArgs encodes a bare `--repo-root`
+// (no value) as boolean `true`. Pre-fix, discoverProjectRoot silently
+// fell through to cwd-discovery, so a typo'd invocation looked like it
+// worked but ran against the wrong project. Now hard-fails up front.
+test("--repo-root: bare flag (no value) is rejected up front", () => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      RUNNER_PATH,
+      "--start",
+      "--base", "0000000000000000000000000000000000000001",
+      "--head", "0000000000000000000000000000000000000002",
+      "--repo-root",  // intentionally no value
+    ],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
+  );
+  assert.notEqual(result.status, 0, "bare --repo-root must fail");
+  const allOutput = `${result.stdout}\n${result.stderr}`;
+  assert.match(allOutput, /--repo-root/);
+  // Match either the bare-flag-specific error or the path-not-existent
+  // error (depending on parseArgs interpretation order).
+  assert.match(allOutput, /requires a value|bare flag|absolute|does not exist/);
+});
+
 // Copilot-review #101 finding: relative paths were silently accepted
 // by `resolve()`, leaving the operator with a confusing later git
 // diff failure. The contract says "absolute path"; enforce it.

@@ -76,10 +76,12 @@ For the full diff, see the linked PR and tag on GitHub.
 ### Changed
 
 - **`scripts/inline-states/activate-leaves.mjs` uses
-  `env.project_root`.** The runner seeds `project_root` into the
-  args bag at `--start`, so the activation gate's `git diff` cwd
-  matches the project being reviewed (not the skill's install
-  dir). Wiki enumeration still reads from `SKILL_ROOT/reviewers.wiki/`.
+  `env.args.project_root`.** The runner seeds `project_root` into
+  the args bag at `--start`. The activation gate's `git diff` cwd
+  honours **only** that runner-controlled channel (top-level
+  `env.project_root` is explicitly ignored — it can be set by
+  upstream worker outputs and would be a path-redirection vector).
+  Wiki enumeration still reads from `SKILL_ROOT/reviewers.wiki/`.
 - **`scripts/inline-states/write-run-directory.mjs` follows the same
   PROJECT_ROOT-anchored storage as `run-review.mjs`.** Pre-fix,
   Step 10 (`writeRunArtefacts`) computed `storage_root` relative to
@@ -91,10 +93,12 @@ For the full diff, see the linked PR and tag on GitHub.
   relative paths and non-git directories up front so a typo'd flag
   fails at startup instead of producing an opaque downstream
   `git diff exited 128`.
-- **FilteredDiffError fault-fast in record/replay modes too.**
-  Centralised the staging + fault conversion in
-  `stagePromptsOrFault()`; live, record, and replay modes now fail
-  closed identically when `computeFilteredDiff` throws.
+- **FilteredDiffError fault-fast unified across staging modes.**
+  Both modes that stage prompts on pause (live and record) now go
+  through the centralised `stagePromptsOrFault()` seam and convert
+  `FilteredDiffError` to a structured `{status: "fault"}` payload
+  identically. (Replay mode auto-commits a recorded fixture without
+  staging, so the seam doesn't apply there.)
 - **`setProjectRootForTesting(null)` clears the memoized discovery
   cache.** Pre-fix, a test that read `projectRoot()` then reset the
   override would silently keep the cached value forever; the reset

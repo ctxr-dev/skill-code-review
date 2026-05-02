@@ -2856,9 +2856,9 @@ async function main() {
     // earlier states determined no specialists apply). For the
     // plaintext --print-pending-leaf-ids: emit nothing and exit 0.
     // For --print-batch-envelope: emit `{ batch: [], remaining_after: 0,
-    // total_pending: 0, shims: {} }` so an orchestrator parsing JSON
-    // sees an explicit zero-work signal. Both behaviours let the
-    // orchestrator's loop terminate cleanly.
+    // pending_now: 0, total_picked: 0, shims: {} }` so an orchestrator
+    // parsing JSON sees an explicit zero-work signal. Both behaviours
+    // let the orchestrator's loop terminate cleanly.
     if (pickedLeaves.length === 0) {
       if (args["print-batch-envelope"]) {
         process.stdout.write(JSON.stringify({
@@ -2921,9 +2921,12 @@ async function main() {
       // batch. Single Node process invocation gives the orchestrator
       // everything it needs to dispatch this batch's Agents AND know
       // whether to loop again (remaining_after > 0) or exit
-      // (remaining_after === 0). Progress visibility (total_pending)
-      // lets the orchestrator emit user-facing "X of Y specialists
-      // complete" updates without extra CLI calls.
+      // (remaining_after === 0). Progress visibility via pending_now
+      // (transient — shrinks as outputs land) and total_picked
+      // (stable across calls within this state — the Y in an "X of Y
+      // specialists complete" indicator, where X = total_picked -
+      // pending_now) lets the orchestrator emit user-facing progress
+      // without extra CLI calls.
       const shims = {};
       for (const id of batch) {
         const parsed = parseLeafIdAndShardIdx({

@@ -34,7 +34,7 @@ import { dirname, isAbsolute, join, resolve, relative, sep } from "node:path";
 import { tmpdir, platform } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { loadConfig, resolveSettings, runEnv, runDirPath, readLock, readManifest } from "@ctxr/fsm";
+import { loadConfig, runEnv, runDirPath, readLock, readManifest } from "@ctxr/fsm";
 
 import {
   resolveReplayMode,
@@ -1836,8 +1836,23 @@ let _projectRootOverride = null;
 // can reset it). Declared before setProjectRootForTesting so the reset
 // helper can clear it without a forward reference.
 let _projectRootCached = null;
+// Test-only override. Pass `null` to clear. Path must be absolute —
+// resolve()-ing a relative string would silently anchor to the test
+// runner's cwd, which is process-global and would race with parallel
+// tests. (Round-5 Copilot review on PR #101 flagged the doc/impl
+// mismatch directly.)
 export function setProjectRootForTesting(path) {
-  _projectRootOverride = path ? resolve(path) : null;
+  if (path === null || path === undefined) {
+    _projectRootOverride = null;
+  } else if (typeof path === "string" && path.length > 0 && isAbsolute(path)) {
+    _projectRootOverride = resolve(path);
+  } else {
+    throw new Error(
+      `setProjectRootForTesting: expected absolute path or null, got ${
+        typeof path === "string" ? `"${path}"` : typeof path
+      }`,
+    );
+  }
   // Invalidate the discovery cache too: a test that first calls
   // projectRoot() (caching the discovered value) then setProjectRootForTesting(null)
   // would otherwise keep returning the previously-cached value
@@ -1940,6 +1955,15 @@ function resolveStorageRoot() {
   // installed globally, orphaning per-run state from the project
   // being reviewed.
   const cfg = loadConfig(SKILL_ROOT);
+  // Defence-in-depth: a malformed/missing .fsmrc.json could leave
+  // cfg.fsms undefined. Without this guard, .find() throws an opaque
+  // TypeError with no path context. (Round-5 Copilot review.)
+  if (!cfg || !Array.isArray(cfg.fsms)) {
+    fail(
+      `.fsmrc.json at ${SKILL_ROOT} is missing or has no "fsms" array; ` +
+      `the skill's install dir is corrupt. Reinstall the skill.`,
+    );
+  }
   const entry = cfg.fsms.find((f) => f.name === "code-reviewer");
   if (!entry) {
     fail(

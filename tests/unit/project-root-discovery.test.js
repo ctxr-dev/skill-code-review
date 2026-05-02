@@ -64,6 +64,23 @@ test("setProjectRootForTesting accepts an absolute path and clears with null", (
   }
 });
 
+// Round-5 Copilot review on #101: doc string says "absolute path",
+// but pre-fix the helper accepted any truthy string and resolve()'d
+// it (silently anchoring relative paths to the test runner's cwd).
+// The fix throws on non-absolute / non-string input so the contract
+// matches the docs.
+test("setProjectRootForTesting throws on relative paths", () => {
+  assert.throws(
+    () => setProjectRootForTesting("relative/path"),
+    /absolute path/,
+  );
+});
+
+test("setProjectRootForTesting throws on non-string input", () => {
+  assert.throws(() => setProjectRootForTesting(42), /absolute path or null/);
+  assert.throws(() => setProjectRootForTesting({}), /absolute path or null/);
+});
+
 // The --repo-root flag is the explicit user override. We exercise it
 // via a subprocess so the behaviour reflects what an end-user would
 // see: unknown SHAs in a fake repo should produce a structured fault

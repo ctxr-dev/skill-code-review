@@ -45,6 +45,15 @@ import { renderReportMarkdown, renderReportJson } from "../lib/report-renderer.m
 // SKILL_ROOT), so Step 10 wrote artefacts to the wrong tree.
 function resolveStorageRoot(skillRoot, projectRoot) {
   const cfg = loadConfig(skillRoot);
+  // Defence-in-depth: a malformed/missing .fsmrc.json could leave
+  // cfg.fsms undefined. Without this guard, .find() throws an opaque
+  // TypeError with no path context. (Round-5 Copilot review on PR #101.)
+  if (!cfg || !Array.isArray(cfg.fsms)) {
+    throw new Error(
+      `.fsmrc.json at ${skillRoot} is missing or has no "fsms" array; ` +
+      `the skill's install dir is corrupt. Reinstall the skill.`,
+    );
+  }
   const entry = cfg.fsms.find((f) => f.name === "code-reviewer");
   if (!entry || typeof entry.storage_root !== "string" || entry.storage_root.length === 0) {
     throw new Error(

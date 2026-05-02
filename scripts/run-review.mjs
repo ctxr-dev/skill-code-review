@@ -2468,7 +2468,15 @@ export function handleWorkerStateBrief(brief, runId, opts = {}, _deps = {}) {
   // replay mode. Same FilteredDiffError fault-fast as live-mode too —
   // record/replay must fail closed identically (Copilot review on #101
   // pointed at the live-only catch as a consistency gap).
-  const recordStaged = stagePromptsOrFault(brief, runId, {});
+  // The injected writer fns flow through here too so unit tests and
+  // callers can swap staging functions in record/replay mode (round-2
+  // Copilot review on #101 flagged the empty {} as inconsistent with
+  // the live branch).
+  const recordStaged = stagePromptsOrFault(brief, runId, {
+    writeBriefToDisk: writeBriefToDiskFn,
+    writeSpecialistPromptsToDisk: writeSpecialistPromptsToDiskFn,
+    writeDispatchPromptToDisk: writeDispatchPromptToDiskFn,
+  });
   if (recordStaged.kind === "fault") return recordStaged;
   return {
     kind: "pause",

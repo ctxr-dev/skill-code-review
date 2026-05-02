@@ -263,6 +263,49 @@ test("handleWorkerStateBrief: non-specialist states pause as before", () => {
   assert.equal(result.payload.status, "awaiting_worker");
 });
 
+// Round-2 Copilot review on #101: the new stagePromptsOrFault seam
+// in the live-mode branch passes injected writer fns from _deps, but
+// the record/replay branch was originally calling it with `{}`,
+// silently dropping the same overrides. The fix threads them in both
+// branches; this test pins the behavioural contract for record mode.
+//
+// We exercise the path indirectly: handleWorkerStateBrief's record
+// mode requires real fsm-engine state (resolveStorageRoot, runEnv,
+// hashKeyForBrief, runDirPath, stashPendingBrief), so we mock all of
+// them to no-ops and assert the injected writeSpecialistPromptsToDisk
+// is actually invoked.
+test("handleWorkerStateBrief: record mode honors injected writeSpecialistPromptsToDisk", () => {
+  let injectedSpecialistCalled = false;
+  const brief = {
+    has_worker: true,
+    run_id: "20260502-recmode-tst",
+    state: "dispatch_specialists",
+    inputs: { picked_leaves: [{ id: "lang-javascript", path: "x.md" }] },
+  };
+  const result = handleWorkerStateBrief(
+    brief,
+    brief.run_id,
+    { replayMode: "record" },
+    {
+      // FSM engine no-ops for the record-mode path.
+      resolveStorageRoot: () => "/no-where",
+      runEnv: () => ({}),
+      hashKeyForBrief: () => "deadbeef",
+      runDirPath: () => "/no-where",
+      stashPendingBrief: () => {},
+      // Writer overrides — the contract under test.
+      writeBriefToDisk: () => {},
+      writeDispatchPromptToDisk: () => {},
+      writeSpecialistPromptsToDisk: () => {
+        injectedSpecialistCalled = true;
+      },
+    },
+  );
+  assert.equal(result.kind, "pause");
+  assert.equal(injectedSpecialistCalled, true,
+    "record mode must use the injected writeSpecialistPromptsToDisk");
+});
+
 // Copilot-review #101 finding #2: write-run-directory.mjs's
 // resolveStorageRoot was anchored at SKILL_ROOT, drifting from
 // run-review.mjs's PROJECT_ROOT-anchored storage. With the fix,

@@ -1820,8 +1820,18 @@ const INLINE_STATES_DIR = resolve(__dirname, "inline-states");
 // finding #2: v2.2.x hardcoded both to the skill dir, which broke
 // every review run from outside the skill's own repo.
 let _projectRootOverride = null;
+// Memoised discovered value so multiple call sites in one process
+// see the same answer (and tests resetting via setProjectRootForTesting
+// can reset it). Declared before setProjectRootForTesting so the reset
+// helper can clear it without a forward reference.
+let _projectRootCached = null;
 export function setProjectRootForTesting(path) {
   _projectRootOverride = path ? resolve(path) : null;
+  // Invalidate the discovery cache too: a test that first calls
+  // projectRoot() (caching the discovered value) then setProjectRootForTesting(null)
+  // would otherwise keep returning the previously-cached value
+  // forever.
+  _projectRootCached = null;
 }
 function gitToplevelFromCwd(cwd) {
   // Walk up `cwd` looking for a .git directory or file (worktree marker).
@@ -1843,10 +1853,31 @@ function discoverProjectRoot() {
   const args = parseArgs(process.argv);
   const explicit = args["repo-root"] ?? args.repoRoot ?? null;
   if (typeof explicit === "string" && explicit.length > 0) {
+    // Reject relative paths up front. resolve(relative) silently
+    // anchors to process.cwd(), which would let a typo'd
+    // --repo-root=foo (instead of /foo) be accepted but point at a
+    // surprising location depending on where the runner was invoked.
+    // The doc string and downstream error messages all describe an
+    // absolute path; enforce it here so the contract matches.
+    if (!isAbsolute(explicit)) {
+      fail(
+        `--repo-root requires an absolute path (got "${explicit}"). ` +
+        `Pass the full path to the project being reviewed.`,
+      );
+    }
     const abs = resolve(explicit);
     if (!existsSync(abs)) {
       fail(
         `--repo-root: path does not exist: "${abs}". Pass an absolute path to the project being reviewed (the directory containing its .git/).`,
+      );
+    }
+    // Validate it actually IS a git repo. Without this check, a
+    // user pointing at a non-git directory gets an opaque "git diff
+    // exited 128" later in the run instead of a clear startup error.
+    if (!existsSync(join(abs, ".git"))) {
+      fail(
+        `--repo-root: "${abs}" is not a git repository (no .git/ entry). ` +
+        `Pass the project's git toplevel.`,
       );
     }
     return abs;
@@ -1855,9 +1886,6 @@ function discoverProjectRoot() {
   if (fromCwd) return fromCwd;
   return SKILL_ROOT;
 }
-// Memoised so multiple call sites in one process see the same value
-// (and tests resetting via setProjectRootForTesting can reset it).
-let _projectRootCached = null;
 function projectRoot() {
   if (_projectRootOverride !== null) return _projectRootOverride;
   if (_projectRootCached === null) {
@@ -2310,41 +2338,12 @@ export function handleWorkerStateBrief(brief, runId, opts = {}, _deps = {}) {
     // pipes through a summarizer, etc.) becomes recoverable via --resume,
     // and the orchestrator dispatches workers without ever composing
     // prompts itself or touching /tmp.
-    writeBriefToDiskFn(brief);
-    if (brief.state === "dispatch_specialists") {
-      try {
-        writeSpecialistPromptsToDiskFn(brief);
-      } catch (err) {
-        if (err instanceof FilteredDiffError) {
-          // Surface as a structured fault BEFORE the orchestrator
-          // dispatches K specialists with broken diffs. v2.2.x silently
-          // shipped "(diff unavailable: ...)" placeholders into every
-          // per-leaf prompt; operators only learned of the misconfig
-          // after K Agent dispatches returned skipped. Closes #100
-          // eval finding #2.
-          return {
-            kind: "fault",
-            payload: {
-              status: "fault",
-              run_id: runId,
-              fault: {
-                state: brief.state,
-                reason:
-                  `FilteredDiffError: ${err.message}. ` +
-                  `Likely causes: (1) the runner is computing diffs in the wrong directory ` +
-                  `(pass --repo-root <path> to the project under review, or run from ` +
-                  `inside it); (2) the base/head SHAs are not reachable in that directory ` +
-                  `(check that the project's git history contains them; you may need to ` +
-                  `'git fetch' first).`,
-              },
-            },
-          };
-        }
-        throw err;
-      }
-    } else {
-      writeDispatchPromptToDiskFn(brief);
-    }
+    const liveStaged = stagePromptsOrFault(brief, runId, {
+      writeBriefToDisk: writeBriefToDiskFn,
+      writeSpecialistPromptsToDisk: writeSpecialistPromptsToDiskFn,
+      writeDispatchPromptToDisk: writeDispatchPromptToDiskFn,
+    });
+    if (liveStaged.kind === "fault") return liveStaged;
     return {
       kind: "pause",
       payload: { status: "awaiting_worker", run_id: runId, brief },
@@ -2466,17 +2465,66 @@ export function handleWorkerStateBrief(brief, runId, opts = {}, _deps = {}) {
   // Persist the brief to <run_dir>/workers/<state>-brief.json AND the
   // dispatch prompt(s) before returning. Same reasoning as the
   // live-mode branch above; disk artefacts are canonical regardless of
-  // replay mode.
-  writeBriefToDisk(brief);
-  if (brief.state === "dispatch_specialists") {
-    writeSpecialistPromptsToDisk(brief);
-  } else {
-    writeDispatchPromptToDisk(brief);
-  }
+  // replay mode. Same FilteredDiffError fault-fast as live-mode too —
+  // record/replay must fail closed identically (Copilot review on #101
+  // pointed at the live-only catch as a consistency gap).
+  const recordStaged = stagePromptsOrFault(brief, runId, {});
+  if (recordStaged.kind === "fault") return recordStaged;
   return {
     kind: "pause",
     payload: { status: "awaiting_worker", run_id: runId, brief },
   };
+}
+
+// Single seam for "write the brief + dispatch prompts to disk, and
+// convert FilteredDiffError to a structured fault". Centralised here
+// so live, record, and replay modes all fail closed identically;
+// Copilot's review on #101 flagged the original live-only catch as a
+// consistency gap.
+//
+// Returns one of:
+//   { kind: "ok" }                       — staging succeeded, caller may pause
+//   { kind: "fault", payload: {...} }    — caller must return this immediately
+//
+// Non-FilteredDiffError exceptions still propagate (they signal real
+// programming bugs the operator should see as a stack trace, not a
+// soft fault).
+function stagePromptsOrFault(brief, runId, _deps = {}) {
+  const writeBriefToDiskFn = _deps.writeBriefToDisk ?? writeBriefToDisk;
+  const writeSpecialistPromptsToDiskFn =
+    _deps.writeSpecialistPromptsToDisk ?? writeSpecialistPromptsToDisk;
+  const writeDispatchPromptToDiskFn =
+    _deps.writeDispatchPromptToDisk ?? writeDispatchPromptToDisk;
+  writeBriefToDiskFn(brief);
+  if (brief.state === "dispatch_specialists") {
+    try {
+      writeSpecialistPromptsToDiskFn(brief);
+    } catch (err) {
+      if (err instanceof FilteredDiffError) {
+        return {
+          kind: "fault",
+          payload: {
+            status: "fault",
+            run_id: runId,
+            fault: {
+              state: brief.state,
+              reason:
+                `FilteredDiffError: ${err.message}. ` +
+                `Likely causes: (1) the runner is computing diffs in the wrong directory ` +
+                `(pass --repo-root <path> to the project under review, or run from ` +
+                `inside it); (2) the base/head SHAs are not reachable in that directory ` +
+                `(check that the project's git history contains them; you may need to ` +
+                `'git fetch' first).`,
+            },
+          },
+        };
+      }
+      throw err;
+    }
+  } else {
+    writeDispatchPromptToDiskFn(brief);
+  }
+  return { kind: "ok" };
 }
 
 // Drive the loop from a starting brief: walk inline states, pause on workers,

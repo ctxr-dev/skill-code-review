@@ -80,6 +80,25 @@ For the full diff, see the linked PR and tag on GitHub.
   args bag at `--start`, so the activation gate's `git diff` cwd
   matches the project being reviewed (not the skill's install
   dir). Wiki enumeration still reads from `SKILL_ROOT/reviewers.wiki/`.
+- **`scripts/inline-states/write-run-directory.mjs` follows the same
+  PROJECT_ROOT-anchored storage as `run-review.mjs`.** Pre-fix,
+  Step 10 (`writeRunArtefacts`) computed `storage_root` relative to
+  `SKILL_ROOT` while the runner's `runFsmNextStart` used a
+  PROJECT_ROOT-anchored `--storage-root`, so `report.md` /
+  `manifest.json` would have landed under the skill's install tree
+  on a fresh project run. Now resolves through `env.args.project_root`.
+- **`--repo-root` validates absolute path + git toplevel.** Reject
+  relative paths and non-git directories up front so a typo'd flag
+  fails at startup instead of producing an opaque downstream
+  `git diff exited 128`.
+- **FilteredDiffError fault-fast in record/replay modes too.**
+  Centralised the staging + fault conversion in
+  `stagePromptsOrFault()`; live, record, and replay modes now fail
+  closed identically when `computeFilteredDiff` throws.
+- **`setProjectRootForTesting(null)` clears the memoized discovery
+  cache.** Pre-fix, a test that read `projectRoot()` then reset the
+  override would silently keep the cached value forever; the reset
+  helper now invalidates the cache too.
 - **Hardened `--continue` error handling for `dispatch_specialists`.**
   Replaced the silent `try { JSON.parse(brief) } catch { brief = null }`
   swallow with a structured `fail()` that names the brief path and the

@@ -24,7 +24,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  resolveSettings,
+  loadConfig,
   runDirPath,
   readManifest,
   writeManifest,
@@ -32,14 +32,27 @@ import {
 
 import { renderReportMarkdown, renderReportJson } from "../lib/report-renderer.mjs";
 
-function resolveStorageRoot(repoRoot) {
-  // @ctxr/fsm exposes resolveSettings(cliArgs, cwd) — cliArgs is the
-  // selector ({fsmName, fsmPath, ...}), cwd resolves .fsmrc.json.
-  // resolveSettings calls loadConfig internally; the caller must NOT
-  // pre-load. Returns are camelCase (storageRoot), not the snake_case
-  // form used in .fsmrc.json on disk.
-  const settings = resolveSettings({ fsmName: "code-reviewer" }, repoRoot);
-  return resolve(repoRoot, settings.storageRoot);
+// Mirror the SKILL_ROOT vs PROJECT_ROOT split run-review.mjs uses.
+// The .fsmrc.json ships with the skill (SKILL_ROOT-relative), but
+// the resolved storage path must live with the project being reviewed
+// (PROJECT_ROOT-relative). Pre-#100 this used a single repoRoot for
+// both, which orphaned report.md / manifest.json under the skill's
+// install dir when the runner was invoked from a different repo.
+//
+// Copilot review on PR #101 specifically called out this drift:
+// run-review.mjs's resolveStorageRoot was project-rooted, but
+// write-run-directory.mjs's still resolved against repoRoot (=
+// SKILL_ROOT), so Step 10 wrote artefacts to the wrong tree.
+function resolveStorageRoot(skillRoot, projectRoot) {
+  const cfg = loadConfig(skillRoot);
+  const entry = cfg.fsms.find((f) => f.name === "code-reviewer");
+  if (!entry || typeof entry.storage_root !== "string" || entry.storage_root.length === 0) {
+    throw new Error(
+      `code-reviewer entry's "storage_root" is missing or empty in .fsmrc.json at ${skillRoot}; ` +
+      `the skill's install dir is corrupt. Reinstall the skill.`,
+    );
+  }
+  return resolve(projectRoot, entry.storage_root);
 }
 
 const METHODOLOGY_PRINCIPLES = ["SRP", "OCP", "LSP", "ISP", "DIP", "DRY", "KISS", "YAGNI"];
@@ -341,8 +354,14 @@ export function buildReportPayload(runId, env) {
 // Returns the run-dir path that was materialised.
 export function writeRunArtefacts(runId, env) {
   const __dirname = dirname(fileURLToPath(import.meta.url));
-  const repoRoot = resolve(__dirname, "..", "..");
-  const storageRoot = resolveStorageRoot(repoRoot);
+  const skillRoot = resolve(__dirname, "..", "..");
+  // The runner seeds env.args.project_root at --start. Fall back to
+  // skillRoot for tests / direct calls that don't seed it (the in-repo
+  // case where SKILL_ROOT === PROJECT_ROOT). args is the FSM run env's
+  // canonical key (env.args), not env.project_root — the latter would
+  // require @ctxr/fsm to surface seeded args at the top level too.
+  const projectRoot = env?.args?.project_root ?? env?.project_root ?? skillRoot;
+  const storageRoot = resolveStorageRoot(skillRoot, projectRoot);
   const dir = runDirPath(runId, { storageRoot });
 
   const reportPayload = buildReportPayload(runId, env);

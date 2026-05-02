@@ -14,6 +14,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1344,24 +1345,30 @@ function stripManifestCurrentState(manifestPath) {
 
 // Generates a sentinel run-id whose corresponding manifest is
 // guaranteed not to exist on disk. Suffix is derived from BOTH
-// process.pid (process-unique) AND a per-call counter (call-unique
-// within a process), so concurrent test files with the same pid AND
-// repeated calls within one file both stay collision-free.
+// process.pid (process-unique) AND a stable hash of t.name
+// (test-unique within a process), so concurrent test files with the
+// same pid AND multiple sentinel-using tests within one file both
+// stay collision-free without any module-level mutable state.
 // Round-5 review flagged the pid-only version as fragile under any
-// future --test-concurrency > 1 enablement.
+// future --test-concurrency > 1 enablement; round-6 review flagged
+// a previous mutable-counter version as cross-test coupling.
 //
 // Asserts nonexistence before returning so the test fails fast if
 // the sentinel ever collides with a real run-dir.
-let _sentinelCallCounter = 0;
-function freshNonexistentRunId() {
-  _sentinelCallCounter += 1;
-  // 7 hex chars total: 4 from pid + 3 from call counter, both
-  // wrapped to fit in their fields. Uniqueness held against
-  // 65536 × 4096 = 256M (pid, counter) pairs per process, more
-  // than enough for any conceivable test invocation pattern.
+function freshNonexistentRunId(t) {
+  assert.ok(
+    t && typeof t.name === "string" && t.name.length > 0,
+    "freshNonexistentRunId requires the test context (t) for stable per-test suffix derivation",
+  );
+  // 7 hex chars total: 4 from pid + 3 from a stable hash of t.name.
+  // Reproducible across runs of the same test, unique across tests
+  // and processes. No module-level mutable state.
   const pidNibbles = (process.pid & 0xFFFF).toString(16).padStart(4, "0");
-  const counterNibbles = (_sentinelCallCounter & 0xFFF).toString(16).padStart(3, "0");
-  const runId = `${SENTINEL_RUN_ID_PREFIX}${pidNibbles}${counterNibbles}`;
+  const nameNibbles = createHash("sha256")
+    .update(t.name)
+    .digest("hex")
+    .slice(0, 3);
+  const runId = `${SENTINEL_RUN_ID_PREFIX}${pidNibbles}${nameNibbles}`;
   const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
   const storageRoot = resolve(REPO_ROOT, settings.storageRoot);
   const manifestPath = join(runDirPath(runId, { storageRoot }), "manifest.json");
@@ -1415,7 +1422,7 @@ test("--continue: dispatch_specialists brief unparseable JSON hard-fails with st
   });
 });
 
-test("--continue --outputs-file <path>: explicit-path branch hard-fails on missing manifest (no silent null)", () => {
+test("--continue --outputs-file <path>: explicit-path branch hard-fails on missing manifest (no silent null)", (t) => {
   // Closes the silent-degradation review finding: the explicit
   // --outputs-file branch previously did `manifest?.current_state ??
   // null`, which collapsed missing-manifest into the same path as
@@ -1426,7 +1433,7 @@ test("--continue --outputs-file <path>: explicit-path branch hard-fails on missi
 
   // Arrange: a sentinel run-id that passes the validator regex but
   // has no manifest on disk (asserted by freshNonexistentRunId).
-  const fakeRunId = freshNonexistentRunId();
+  const fakeRunId = freshNonexistentRunId(t);
 
   // Act + Assert: hard-fail with "no manifest found" + run-id.
   assertContinueHardFails(fakeRunId, ["--outputs-file", "/nonexistent/x.json"], {
@@ -1498,14 +1505,52 @@ test("--continue: manifest path is a directory (not a file) — runner exits wit
   // We don't pin the exact error message wording (the runner's
   // EISDIR / ENOTFILE / "is a directory" surfaces vary by Node
   // version); we only require: non-zero exit, JSON-parseable
-  // stdout, and SOME message that mentions the run-id or the
-  // manifest path so the operator can diagnose.
+  // stdout, and SOME EISDIR/manifest-shape token so the regression
+  // is genuinely scoped to "runner couldn't read manifest as a
+  // file". Excludes "run-id" — that token leaks into virtually
+  // every fail() the runner emits and would weaken the regression
+  // intent (any unrelated fail-fast path could match).
+  //
+  // The structured payload's run_id field is pinned in
+  // extraAssertions instead, locking down that the
+  // manifest-corruption fail() carries the operator-actionable
+  // run-id (matches the contract on the parallel hard-fail tests
+  // above).
   assertContinueHardFails(runId, [], {
-    messageRegex: /(manifest|directory|EISDIR|ENOTFILE|run-id)/i,
+    messageRegex: /(manifest|directory|EISDIR|ENOTFILE)/i,
     extraAssertions: (payload) => {
-      assert.ok(typeof payload.message === "string" && payload.message.length > 0,
-        "fail() payload must carry a non-empty message",
-      );
+      assert.equal(payload.run_id, runId, "structured error must carry the run-id");
+    },
+  });
+});
+
+test("--continue --outputs-file <path>: manifest path is a directory — explicit-path branch also hard-fails (no SIGTERM)", (t) => {
+  // Parallel regression to the implicit-branch test above: the
+  // explicit --outputs-file branch routes through the same
+  // safeReadManifest() helper at scripts/run-review.mjs, so the
+  // EISDIR-as-directory hostile shape must surface as a structured
+  // fail() through this code path too. Without this, a future
+  // refactor that splits the two branches' manifest reads could
+  // silently regress one of them and the test suite would only
+  // catch it via the implicit branch.
+
+  // Arrange: fresh run, then replace the manifest file with a
+  // directory of the same name.
+  const { runId, manifestPath } = makeFreshRunForContinueTest(
+    t,
+    "7777777777777777777777777777777777777777",
+    "8888888888888888888888888888888888888888",
+  );
+  rmSync(manifestPath, { force: true });
+  mkdirSync(manifestPath, { recursive: true });
+
+  // Act + Assert: --continue --outputs-file <path> must produce a
+  // structured EISDIR/manifest-shape error, not a SIGTERM. Same
+  // contract as the implicit-branch test.
+  assertContinueHardFails(runId, ["--outputs-file", "/nonexistent/x.json"], {
+    messageRegex: /(manifest|directory|EISDIR|ENOTFILE)/i,
+    extraAssertions: (payload) => {
+      assert.equal(payload.run_id, runId, "structured error must carry the run-id");
     },
   });
 });

@@ -34,7 +34,11 @@ import matter from "gray-matter";
 import { evaluateActivation } from "../lib/activation-gate.mjs";
 
 const __thisDir = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(__thisDir, "..", "..");
+// SKILL_ROOT — where reviewers.wiki/ ships. Always the skill's
+// install dir; never the project being reviewed. (Pre-#100 this
+// was named REPO_ROOT and was used for BOTH the wiki walk and the
+// git-diff cwd, which conflated two distinct concepts.)
+const SKILL_ROOT = resolve(__thisDir, "..", "..");
 
 // Cache: avoid re-walking the wiki on repeat invocations within one
 // process (tests, multi-run harnesses). Keyed by realpath of the wiki
@@ -240,8 +244,16 @@ export default async function activateLeaves({ env }) {
   const base = env.base_sha ?? args.base ?? null;
   const head = env.head_sha ?? args.head ?? null;
 
-  const leaves = enumerateWikiLeavesWithActivation(REPO_ROOT);
-  const diffText = fetchDiffText(base, head, REPO_ROOT);
+  // The wiki walk reads the leaf corpus that SHIPS with the skill,
+  // so SKILL_ROOT is the right cwd. The diff fetch is project-rooted:
+  // env.project_root is seeded by run-review.mjs's --start path
+  // (args bag), with engine fields as the canonical source. Falling
+  // back to SKILL_ROOT is preserved for tests that drive this handler
+  // directly without seeding project_root — those tests assume the
+  // skill's own repo is the diff target.
+  const projectRootForDiff = env.project_root ?? args.project_root ?? SKILL_ROOT;
+  const leaves = enumerateWikiLeavesWithActivation(SKILL_ROOT);
+  const diffText = fetchDiffText(base, head, projectRootForDiff);
 
   const { activated, descent_signals } = evaluateActivation({
     leaves,

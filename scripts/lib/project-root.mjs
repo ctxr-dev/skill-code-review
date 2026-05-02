@@ -17,13 +17,16 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 export const FSM_NAME = "code-reviewer";
 
 // Hard cap on the parent-directory walk in gitToplevelFromCwd.
-// 64 is well above any realistic filesystem depth (filesystems
-// typically cap component count at ~1024 but project trees rarely
-// exceed 20 levels). The cap protects against pathological mount
-// points / cyclic symlinks that the dirname(dir) === dir terminator
-// would otherwise loop on. Named so the walk's exit conditions are
-// explicit (cap, not magic).
-export const MAX_GIT_TOPLEVEL_WALK_DEPTH = 64;
+// Set well above any realistic project layout to make the cap
+// purely a safety net against pathological mount points or symlink
+// cycles, NOT a soft limit on supported repo nesting. Pre-fix the
+// cap was 64 — Copilot round-2 review on PR #103 flagged that as
+// potentially misclassifying valid deep nestings (e.g. node_modules
+// inside a workspace inside a monorepo). 256 is well past anything
+// real (filesystems typically support ~1024 path components,
+// project trees rarely exceed 30) while still bounding pathological
+// shapes.
+export const MAX_GIT_TOPLEVEL_WALK_DEPTH = 256;
 
 // Validate the raw storage_root field from .fsmrc.json. Reused by
 // both run-review.mjs's resolveStorageRoot and

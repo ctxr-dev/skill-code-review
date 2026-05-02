@@ -86,6 +86,17 @@ function consumeValue(argv, i, flag) {
 // NaN are always false, effectively disabling the freshness gate.
 // Closes finding #19 from the v2.4 round-3 review.
 function parseNumericValue(rawValue, flag) {
+  // Number("") and Number("   ") both return 0 — silently
+  // accepting a typo would set the freshness threshold to zero,
+  // turning every run into a "stale" failure with a confusing
+  // error later. Reject empty / whitespace-only strings up front.
+  // (Closes round-2 Copilot finding on PR #103.)
+  if (typeof rawValue !== "string" || rawValue.trim().length === 0) {
+    throw new Error(
+      `${flag}: expected a non-empty value, got "${rawValue}". ` +
+      `Use ${flag} <integer-seconds>.`,
+    );
+  }
   const numericValue = Number(rawValue);
   if (!Number.isFinite(numericValue)) {
     throw new Error(

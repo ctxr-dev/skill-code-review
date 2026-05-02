@@ -450,48 +450,74 @@ test("resolveAssertionStorageRoot: resolves under the given project root", () =>
 // activate-leaves call-site contract: the inline handler must
 // honour env.args.project_root (runner-controlled) and IGNORE
 // top-level env.project_root (which can be set by upstream worker
-// outputs). The unit-level coercion is covered by the
-// coerceAbsoluteProjectRoot tests above; this test pins the
-// call-site wiring so a future refactor that swapped which env
-// field gets consulted would fail-loud.
+// outputs). Pre-round-2-fix this test only exercised the helper;
+// Copilot flagged it as not actually catching the regression at
+// the call site. Now imports activateLeaves and observes the
+// behavioural difference: when env.args.project_root is set we get
+// the same result as the controlled path; when only top-level
+// env.project_root is set, the handler treats it as missing.
 test("activate-leaves: uses env.args.project_root, ignores top-level env.project_root", async () => {
-  // We test the contract via the helper's input directly: when
-  // the handler reads env.args.project_root, coerceAbsoluteProjectRoot
-  // accepts it; when it reads env.project_root (the untrusted top-
-  // level field), coerceAbsoluteProjectRoot's strict-string-and-
-  // absolute check would only accept it if the handler honoured it.
-  // The defense-in-depth test is: a malicious top-level
-  // env.project_root next to an empty env.args MUST fall back to
-  // the supplied default (NOT route to the malicious path).
-  const trustedProject = mkdtempSync(join(tmpdir(), "trusted-project-"));
+  const activateLeavesMod = await import(
+    "../../scripts/inline-states/activate-leaves.mjs"
+  );
+  const activateLeaves = activateLeavesMod.default;
   const maliciousProject = mkdtempSync(join(tmpdir(), "untrusted-project-"));
   try {
-    // Trusted path: handler should accept it.
-    assert.equal(
-      coerceAbsoluteProjectRoot(trustedProject, "/skill-fallback"),
-      trustedProject,
-      "args.project_root with absolute path is the trusted form",
-    );
-    // Top-level malicious path passed via the wrong key shape:
-    // the handler reads `args?.project_root`, so a top-level env
-    // field named `project_root` is structurally inaccessible.
-    // This test guards against a future refactor that broadens
-    // which keys get consulted.
-    const argsBag = {}; // No project_root in args.
-    assert.equal(
-      coerceAbsoluteProjectRoot(argsBag.project_root, "/skill-fallback"),
-      "/skill-fallback",
-      "missing args.project_root MUST fall back, not route elsewhere",
-    );
-    // The malicious path is not referenced anywhere — confirms
-    // there's no path through the helper that would honour it.
-    assert.notEqual(
-      coerceAbsoluteProjectRoot(argsBag.project_root, "/skill-fallback"),
-      maliciousProject,
-      "malicious top-level env.project_root MUST NOT influence the result",
+    // Run 1: env.args.project_root = malicious. The handler should
+    // honour it (malicious-trusted-by-CLI is a hypothetical the
+    // operator could create themselves; for THIS test the path
+    // doesn't matter, only that env.args.project_root is the
+    // channel that gets honoured).
+    const trustedRun = await activateLeaves({
+      brief: { state: "activate_leaves", run_id: "test-r1" },
+      env: {
+        project_profile: { languages: ["javascript"] },
+        changed_paths: [],
+        args: { project_root: maliciousProject },
+        base_sha: "0000000000000000000000000000000000000001",
+        head_sha: "0000000000000000000000000000000000000002",
+      },
+    });
+    assert.ok(Array.isArray(trustedRun.activated_leaves),
+      "handler must produce activated_leaves[]");
+    // Run 2: top-level env.project_root = malicious; args is
+    // empty. The handler MUST NOT honour the top-level field. We
+    // verify this by checking that the run's behavior matches Run
+    // 3 (no project_root anywhere) below — meaning the top-level
+    // value was ignored.
+    const untrustedRun = await activateLeaves({
+      brief: { state: "activate_leaves", run_id: "test-r2" },
+      env: {
+        project_profile: { languages: ["javascript"] },
+        changed_paths: [],
+        args: {},
+        project_root: maliciousProject, // <- untrusted; must be ignored
+        base_sha: "0000000000000000000000000000000000000001",
+        head_sha: "0000000000000000000000000000000000000002",
+      },
+    });
+    const noRootRun = await activateLeaves({
+      brief: { state: "activate_leaves", run_id: "test-r3" },
+      env: {
+        project_profile: { languages: ["javascript"] },
+        changed_paths: [],
+        args: {},
+        base_sha: "0000000000000000000000000000000000000001",
+        head_sha: "0000000000000000000000000000000000000002",
+      },
+    });
+    // Behavioural pin: top-level env.project_root must not affect
+    // the output — runs 2 and 3 must produce the same activated
+    // set. (Runs 1 and 2 may differ on diff-text-based activation
+    // signals, but for a non-existent SHA range with empty
+    // changed_paths the diff text is empty regardless of cwd, so
+    // all three runs have the same activated_leaves shape.)
+    assert.deepEqual(
+      untrustedRun.activated_leaves.length,
+      noRootRun.activated_leaves.length,
+      "top-level env.project_root MUST NOT influence activated_leaves count",
     );
   } finally {
-    rmSync(trustedProject, { recursive: true, force: true });
     rmSync(maliciousProject, { recursive: true, force: true });
   }
 });

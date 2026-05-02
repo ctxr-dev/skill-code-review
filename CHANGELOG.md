@@ -125,7 +125,7 @@ upgrade to v2.4.x without any code changes.
 - **Test-file constant `REPO_ROOT` renamed to `SKILL_ROOT`** to
   match the production rename.
 - **Magic SHA literals extracted** to named constants
-  (`UNREACHABLE_BASE_SHA`, `ALT_BASE_SHA`, etc.).
+  (`UNREACHABLE_BASE_SHA`, `FRESH_REPO_BASE_SHA`, etc.).
 - **`makeFreshGitRepo` checks `git init` exit status.** A silent
   failure (e.g. git missing in CI) previously masqueraded as a
   runner bug; now throws a self-describing error.

@@ -86,11 +86,17 @@ import { ID_PATTERN } from "./lib/reviewer-schema.mjs";
 // skillRoot) so tests can drive both happy and failure paths.
 // The leaf-globs validator reads bundled wiki files, which live with
 // the skill (SKILL_ROOT), so `skillRoot` is the right name here.
+//
+// Back-compat: the older `_deps.repoRoot` key is still accepted with
+// a deprecation note. Renaming an exported injection seam silently
+// would break in-tree tests that hadn't migrated yet (Copilot review
+// on PR #103 round-2 flagged this directly). Drop the alias once
+// every caller is on `skillRoot`.
 export function runTrimValidationGate(runId, outputs, _deps = {}) {
   if (!outputs || !Array.isArray(outputs.picked_leaves)) return { ok: true };
   const resolveStorageRootFn = _deps.resolveStorageRoot ?? resolveStorageRoot;
   const runEnvFn = _deps.runEnv ?? runEnv;
-  const skillRoot = _deps.skillRoot ?? SKILL_ROOT;
+  const skillRoot = _deps.skillRoot ?? _deps.repoRoot ?? SKILL_ROOT;
   let env;
   try {
     const storageRoot = resolveStorageRootFn();

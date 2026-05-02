@@ -15,7 +15,13 @@ import {
   buildDispatchPromptText,
   writeDispatchPromptToDisk,
   writeSpecialistPromptsToDisk,
+  FORBIDDEN_PATHS_NOTICE_FULL,
+  FORBIDDEN_PATHS_NOTICE_SHIM,
 } from "../../scripts/run-review.mjs";
+import {
+  assertForbiddenPathsContract,
+  assertSectionOrder,
+} from "../_helpers/forbidden-paths.mjs";
 
 test("defaultDispatchPromptPath: returns null on missing run_id or state", () => {
   assert.equal(defaultDispatchPromptPath(null, "scan_project"), null);
@@ -117,6 +123,15 @@ test("buildDispatchPromptText: standard worker — embeds prompt_body, INPUTS, O
   assert.match(text, /args = \{[\s\S]*"foo"[\s\S]*"bar"/);
   assert.match(text, /--- OUTPUTS PATH ---/);
   assert.match(text, /\/run\/dir\/workers\/scan_project-output\.json/);
+  // FORBIDDEN PATHS guidance: dispatched workers must not write to
+  // /tmp/* or anywhere outside the run-dir. Real-world regression —
+  // tree-descender and other workers have been observed writing
+  // scratch files like /tmp/tree-descend/build.js. The shipped
+  // dispatch prompt MUST carry the prohibition AFTER the OUTPUTS
+  // PATH section so a worker reading top-down sees the allowed
+  // write target first, then the prohibition referencing it.
+  assertForbiddenPathsContract(text);
+  assertSectionOrder(text, "--- OUTPUTS PATH ---", "--- FORBIDDEN PATHS ---");
 });
 
 test("buildDispatchPromptText: standard worker — embeds RESPONSE SCHEMA when brief carries one (#85)", () => {
@@ -238,6 +253,14 @@ test("buildDispatchPromptText: per-specialist (no opts.filteredDiff) — emits F
   );
   assert.match(text, /Do NOT return JSON to the orchestrator inline/);
   assert.match(text, /aggregates all per-leaf outputs into specialist_outputs/);
+  // FORBIDDEN PATHS guidance: dispatched specialist Agents must not
+  // write to /tmp/* or anywhere outside the run-dir. The
+  // per-specialist prompt embeds it INSIDE the RESPONSE CONTRACT
+  // section (one block, not a separate `--- FORBIDDEN PATHS ---`
+  // header) — assert presence + that it appears AFTER the
+  // RESPONSE CONTRACT marker so structural regressions surface.
+  assertForbiddenPathsContract(text);
+  assertSectionOrder(text, "--- RESPONSE CONTRACT ---", "FORBIDDEN PATHS");
 });
 
 test("defaultDispatchPromptPath: rejects unsafe state segments (path traversal guard on state)", () => {
@@ -516,4 +539,37 @@ test("writeSpecialistPromptsToDisk: single-shard output keeps the canonical non-
   } finally {
     rmSync(runDir, { recursive: true, force: true });
   }
+});
+
+test("FORBIDDEN_PATHS_NOTICE_FULL and FORBIDDEN_PATHS_NOTICE_SHIM share load-bearing tokens (no silent drift)", () => {
+  // The two constants serve different audiences (full rationale for
+  // the dispatch prompt, compact pointer for the ~200-token shim) but
+  // must agree on the load-bearing rule clauses. A divergent edit
+  // (e.g. someone updates the full rationale to allow a new scratch
+  // dir but forgets the shim) would silently weaken the contract for
+  // dispatched specialist Agents — the shim is what they read inline.
+  // This test guards against drift on the rule wording without
+  // demanding mechanical derivation of one form from the other.
+  const loadBearingTokens = [
+    "NEVER write to /tmp",
+    // Both forms must name the canonical write target as the output path.
+    "ONLY allowed write target is the output path",
+  ];
+  for (const token of loadBearingTokens) {
+    assert.ok(
+      FORBIDDEN_PATHS_NOTICE_FULL.includes(token),
+      `FORBIDDEN_PATHS_NOTICE_FULL is missing load-bearing token: "${token}"`,
+    );
+    assert.ok(
+      FORBIDDEN_PATHS_NOTICE_SHIM.includes(token),
+      `FORBIDDEN_PATHS_NOTICE_SHIM is missing load-bearing token: "${token}"`,
+    );
+  }
+  // The shim must be SHORTER than the full notice (it lives inside a
+  // documented ~200-token bound). If the shim grows past the full
+  // form, somebody has the audiences inverted.
+  assert.ok(
+    FORBIDDEN_PATHS_NOTICE_SHIM.length < FORBIDDEN_PATHS_NOTICE_FULL.length,
+    `shim notice (${FORBIDDEN_PATHS_NOTICE_SHIM.length} chars) must be shorter than full notice (${FORBIDDEN_PATHS_NOTICE_FULL.length} chars)`,
+  );
 });

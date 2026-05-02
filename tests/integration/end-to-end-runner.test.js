@@ -14,12 +14,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { resolveSettings, runDirPath } from "@ctxr/fsm";
 import { validateRun } from "../../scripts/assert-fresh-run.mjs";
+import { assertForbiddenPathsContract } from "../_helpers/forbidden-paths.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -544,6 +546,12 @@ test("--print-pending-leaf-ids and --print-agent-shim-prompt: end-to-end CLI con
   assert.match(shim.stdout, /You are a specialist reviewer/);
   assert.match(shim.stdout, /dispatch_specialists-prompt-cli-alpha\.md/);
   assert.match(shim.stdout, /dispatch_specialists-output-cli-alpha\.json/);
+  // FORBIDDEN PATHS: dispatched specialist Agents must not write to
+  // /tmp/* (real-world regression — observed Agents creating
+  // /tmp/tree-descend/build.js etc.). The shim prompt is the
+  // ONLY thing the dispatched Agent reads inline; the prohibition
+  // must be in the shim, not just in the on-disk per-leaf prompt.
+  assertForbiddenPathsContract(shim.stdout);
   // Shim is small — under 1500 chars (plenty under the documented 200-token bound).
   assert.ok(shim.stdout.length < 1500, `shim should be small; got ${shim.stdout.length} chars`);
 
@@ -1194,4 +1202,229 @@ test("--print-pending-leaf-ids and --print-batch-envelope: mutually exclusive", 
   assert.notEqual(both.status, 0, "passing both flags must hard-fail");
   const payload = JSON.parse(both.stdout);
   assert.match(payload.message, /mutually exclusive/);
+});
+
+// Bound for spawned-runner integration tests. The `--continue`
+// round-trip spawns a Node process plus an internal fsm-commit child;
+// 30s was tight under CI load and could SIGTERM before the runner
+// produced its structured error JSON, masking the real failure. 120s
+// gives comfortable headroom; the tests don't measure wall-clock so
+// the upper bound is purely a safety net.
+const CONTINUE_TEST_TIMEOUT_MS = 120_000;
+
+// The integration tests in this file derive their storageRoot from the
+// repo's .fsmrc.json and create per-test run-dirs under it. The cleanup
+// hook (t.after rmSync runDir) keeps the storageRoot tidy across
+// invocations, but the tests are NOT safe under
+// `node --test --test-concurrency=N` (N > 1): two parallel processes
+// could mint the same yyyymmdd-hhmmss-<pid-derived-suffix> run-id if
+// they cross a second boundary at the same instant. This file
+// implicitly assumes node:test's default file-serial execution; if
+// the project ever moves to test-concurrency > 1, switch the run-id
+// suffix to a per-test-process counter or sub-second timestamp.
+
+// Sentinel year for runtime-unique-but-deterministic test run-ids
+// that must NOT collide with real run-dirs. Year 2099 is far enough
+// out that no real run-dir can land here. Defined as a single named
+// constant so the date prefix has one update site (the previous
+// inline literal "20991231-235959-" was duplicated between code and
+// the explanatory comment, drift surface noted by review).
+const SENTINEL_RUN_ID_PREFIX = "20991231-235959-";
+
+// Shared setup helper for --continue hard-fail tests that need a real
+// run with a fabricated dispatch_specialists state. Returns the run-id
+// + run paths and registers an after-hook to clean up the run-dir,
+// addressing the round-1 review's teardown finding (filesystem
+// artifacts otherwise accumulate under .skill-code-review/ across
+// CI runs).
+function makeFreshRunForContinueTest(t, baseSha, headSha) {
+  const start = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--start", "--base", baseSha, "--head", headSha],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: CONTINUE_TEST_TIMEOUT_MS },
+  );
+  assert.equal(start.status, 0, `--start exited ${start.status}; stderr: ${start.stderr}`);
+  const runId = JSON.parse(start.stdout.split("\n").filter(Boolean)[0]).run_id;
+  const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
+  const storageRoot = resolve(REPO_ROOT, settings.storageRoot);
+  const runDir = runDirPath(runId, { storageRoot });
+  const workersDir = join(runDir, "workers");
+  const manifestPath = `${runDir}/manifest.json`;
+  t.after(() => rmSync(runDir, { recursive: true, force: true }));
+  return { runId, runDir, workersDir, manifestPath };
+}
+
+// Shared assertion helper: spawn `--continue ...` (with optional extra
+// args), assert hard-fail (non-zero exit, parseable stdout JSON, no
+// leaked stack-frame paths, no misleading "outputs file not found"
+// fallthrough), then run the caller's regex against payload.message.
+// Closes the round-1 DRY finding (two new --continue hard-fail tests
+// shared spawn-and-assert scaffolding) and the round-1 negative-
+// assertions finding (every hard-fail test now consistently asserts
+// no stack-frame leak and no misleading-fallthrough leak).
+function assertContinueHardFails(runId, extraContinueArgs, { messageRegex, extraAssertions }) {
+  const cont = spawnSync(
+    process.execPath,
+    ["scripts/run-review.mjs", "--continue", "--run-id", runId, ...extraContinueArgs],
+    { encoding: "utf8", cwd: REPO_ROOT, timeout: CONTINUE_TEST_TIMEOUT_MS },
+  );
+  assert.notEqual(cont.status, 0, `--continue ${extraContinueArgs.join(" ")} must hard-fail; stdout=${cont.stdout}`);
+  // Guard the JSON.parse — under SIGTERM (timeout breach) or a runner
+  // crash we'd see non-JSON stdout, and a bare JSON.parse throw would
+  // hide the real failure mode. Re-throw with stdout + stderr in the
+  // failure message so CI logs surface the actual problem.
+  let payload;
+  try {
+    payload = JSON.parse(cont.stdout);
+  } catch (err) {
+    assert.fail(
+      `--continue ${extraContinueArgs.join(" ")}: expected structured JSON on stdout, got JSON.parse error "${err.message}".\nstdout: ${cont.stdout}\nstderr: ${cont.stderr}`,
+    );
+  }
+  assert.match(payload.message, messageRegex);
+  // The two negative assertions every hard-fail test must lock down:
+  // no stack-frame leak (we'd be in fail()-the-stack territory) and
+  // no misleading fallthrough to "outputs file not found" (the
+  // pre-fix bug).
+  assert.doesNotMatch(payload.message, /outputs file not found/);
+  assert.doesNotMatch(payload.message, /at\s+\S+:\d+:\d+/);
+  if (typeof extraAssertions === "function") extraAssertions(payload);
+  return payload;
+}
+
+// Manifest-state mutation helper for tests that need to drive the FSM
+// into a specific state without actually running upstream workers.
+// The synchronous read-modify-write is intentional integration-test
+// surgery — round-1 review noted this couples the test to manifest
+// shape, which is acceptable here because that shape is part of the
+// runner's public on-disk contract (assert-fresh-run.mjs and the FSM
+// engine both depend on `current_state`). Centralising the mutation
+// makes that coupling explicit + greppable.
+function setManifestCurrentState(manifestPath, state) {
+  const realManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  // Fail-fast precondition: the manifest must be a non-null object.
+  // A surprising shape here (string, array, null) signals a corrupted
+  // run-dir; surface it immediately rather than silently mutating an
+  // unexpected value.
+  assert.ok(
+    realManifest && typeof realManifest === "object" && !Array.isArray(realManifest),
+    `manifest at ${manifestPath} is not an object; cannot set current_state on shape ${typeof realManifest}`,
+  );
+  realManifest.current_state = state;
+  writeFileSync(manifestPath, JSON.stringify(realManifest));
+}
+
+// Generates a deterministic-but-process-unique sentinel run-id whose
+// corresponding manifest is guaranteed not to exist on disk. Earlier
+// versions used randomBytes for the suffix, which made test failures
+// non-reproducible (the random value vanished after the run); this
+// version derives the suffix from process.pid (hex-padded to the
+// canonical 7 chars) so a failing test can be replayed under the same
+// pid by re-running without --test-concurrency. Asserts nonexistence
+// before returning so the test fails fast if the sentinel ever
+// collides with a real run-dir.
+function freshNonexistentRunId() {
+  const suffix = process.pid.toString(16).padStart(7, "0").slice(-7);
+  const runId = `${SENTINEL_RUN_ID_PREFIX}${suffix}`;
+  const settings = resolveSettings({ fsmName: "code-reviewer" }, REPO_ROOT);
+  const storageRoot = resolve(REPO_ROOT, settings.storageRoot);
+  const manifestPath = join(runDirPath(runId, { storageRoot }), "manifest.json");
+  assert.ok(
+    !existsSync(manifestPath),
+    `sentinel run-id ${runId} unexpectedly has an on-disk manifest at ${manifestPath}`,
+  );
+  return runId;
+}
+
+
+test("--continue: dispatch_specialists brief unparseable JSON hard-fails with structured error (no silent swallow)", (t) => {
+  // Closes the silent-swallow review finding: the previous
+  // `try { JSON.parse(...) } catch { brief = null; }` masked
+  // brief corruption and let --continue fall through to a
+  // misleading "outputs file not found" error. The fix routes
+  // parse errors through fail() with the brief path and parse
+  // message — same contract as --print-batch-envelope /
+  // --print-pending-leaf-ids on the same brief.
+
+  // Arrange: fresh run, planted unparseable brief, manifest mutated
+  // to claim dispatch_specialists state so --continue reaches the
+  // brief read.
+  const { runId, workersDir, manifestPath } = makeFreshRunForContinueTest(
+    t,
+    "0123456789abcdef0123456789abcdef01234567",
+    "fedcba9876543210fedcba9876543210fedcba98",
+  );
+  const briefPath = join(workersDir, "dispatch_specialists-brief.json");
+  writeFileSync(briefPath, "{ this is not json }");
+  setManifestCurrentState(manifestPath, "dispatch_specialists");
+
+  // Act + Assert: --continue must hard-fail with a structured error
+  // naming the brief path and parse failure. Lock the structured
+  // payload's run_id and brief_path fields too (round-1 finding:
+  // negative assertions on error message could be tightened).
+  assertContinueHardFails(runId, [], {
+    messageRegex: /brief at .* is unparseable/,
+    extraAssertions: (payload) => {
+      assert.ok(
+        payload.message.includes("dispatch_specialists-brief.json"),
+        "error must point at the brief path",
+      );
+      assert.equal(payload.run_id, runId);
+      assert.ok(
+        typeof payload.brief_path === "string"
+          && payload.brief_path.endsWith("dispatch_specialists-brief.json"),
+        "structured payload must carry brief_path",
+      );
+    },
+  });
+});
+
+test("--continue --outputs-file <path>: explicit-path branch hard-fails on missing manifest (no silent null)", () => {
+  // Closes the silent-degradation review finding: the explicit
+  // --outputs-file branch previously did `manifest?.current_state ??
+  // null`, which collapsed missing-manifest into the same path as
+  // missing-current_state and silently degraded into the generic
+  // "outputs file not found" error. Now mirrors the implicit branch's
+  // hard-fail: missing manifest → `--continue: no manifest found` with
+  // a clear message naming the run-id.
+
+  // Arrange: a sentinel run-id that passes the validator regex but
+  // has no manifest on disk (asserted by freshNonexistentRunId).
+  const fakeRunId = freshNonexistentRunId();
+
+  // Act + Assert: hard-fail with "no manifest found" + run-id.
+  assertContinueHardFails(fakeRunId, ["--outputs-file", "/nonexistent/x.json"], {
+    messageRegex: /no manifest found/,
+    extraAssertions: (payload) => {
+      assert.ok(payload.message.includes(fakeRunId), "error must name the run-id");
+    },
+  });
+});
+
+test("--continue --outputs-file <path>: explicit-path branch hard-fails when manifest exists but lacks current_state", (t) => {
+  // Closes the round-1 coverage gap: the new
+  // `if (!currentState) fail("manifest has no current_state ...")`
+  // branch in the explicit --outputs-file path was added without a
+  // dedicated regression test. This test plants a manifest that
+  // exists but has its current_state stripped, exercises the
+  // explicit-path --continue, and asserts the targeted
+  // "manifest has no current_state" error.
+
+  // Arrange: fresh run, then strip current_state from the manifest.
+  const { runId, manifestPath } = makeFreshRunForContinueTest(
+    t,
+    "1111111111111111111111111111111111111111",
+    "2222222222222222222222222222222222222222",
+  );
+  const realManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  delete realManifest.current_state;
+  writeFileSync(manifestPath, JSON.stringify(realManifest));
+
+  // Act + Assert: hard-fail naming the manifest-corrupted condition.
+  assertContinueHardFails(runId, ["--outputs-file", "/nonexistent/x.json"], {
+    messageRegex: /manifest has no current_state/,
+    extraAssertions: (payload) => {
+      assert.ok(payload.message.includes(runId), "error must name the run-id");
+    },
+  });
 });

@@ -56,7 +56,7 @@ Fields:
 - Do NOT review code. You produce a profile only.
 - Do NOT fetch URLs or hit network beyond local git / filesystem reads.
 - Run reads in parallel where possible (one Bash call with `&&`-chained commands is fine; multiple Bash tool invocations in one message is fine).
-- **NEVER write to `/tmp` or any path outside the run-dir.** This includes scratch files (`/tmp/scan/`, `/tmp/profile.json`, ad-hoc `node -e` build scripts, etc.). `/tmp` is mode 1777 (world-readable on every Unix), shared across concurrent sessions, and collides under parallel development. The single allowed write target is your output JSON path stated in the dispatch prompt's response contract.
+- The runner injects a `--- FORBIDDEN PATHS ---` section into the dispatch prompt at staging time naming the single allowed write target (your output JSON path) and forbidding `/tmp/*` writes. That section is the single source of truth — read it for the full rationale.
 - Return ONLY the JSON object. No commentary, no surrounding markdown fences in the response body.
 
 ## Validation will reject

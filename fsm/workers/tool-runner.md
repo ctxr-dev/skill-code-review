@@ -55,7 +55,7 @@ Fields:
 - Read leaf frontmatter only. Body is off-limits.
 - Do not install tools without explicit user approval (`tools=interactive` mode and a TTY).
 - Honour `args.tools=skip` — return an empty `tool_results` array.
-- **NEVER write to `/tmp` or any path outside the run-dir.** Tool stdout/stderr capture, ad-hoc scratch JSON, intermediate scan files — all must live under `<run_dir>/workers/` or be kept in memory. `/tmp` is mode 1777 (world-readable on every Unix), shared across concurrent sessions, and collides under parallel development. The single allowed write target is your output JSON path stated in the dispatch prompt's response contract.
+- The runner injects a `--- FORBIDDEN PATHS ---` section into the dispatch prompt at staging time naming the single allowed write target (your output JSON path) and forbidding `/tmp/*` writes. That section is the single source of truth — tool stdout/stderr capture, scratch JSON, intermediate scan files all live under `<run_dir>/workers/` or stay in memory.
 - Return ONLY the JSON object.
 
 ## Validation will reject

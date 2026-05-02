@@ -412,6 +412,38 @@ function computeFilteredDiff(baseSha, headSha, fileGlobs) {
 // (up to 1MB) for Opus 4.7 1M-context runs that want maximum
 // per-Agent context.
 const DEFAULT_SHARD_THRESHOLD = 256 * 1024;
+
+// Single source of truth for the FORBIDDEN PATHS notice that every
+// dispatched worker / specialist Agent must see. Real-world regression:
+// dispatched Agents have been observed writing scratch files like
+// `/tmp/tree-descend/build.js`, `/tmp/trim-prompt.md`, and
+// `/tmp/worker-out-*.json` despite the skill's SKILL.md forbidding it
+// for the orchestrator. The prohibition has to be IN the dispatch
+// prompt the Agent reads (the skill's own SKILL.md is not visible to
+// dispatched sub-Agents). This constant is referenced from
+// buildDispatchPromptText (both the per-specialist branch and the
+// standard-worker branch) AND from buildShimText so the wording stays
+// byte-identical across every emission site — drift between copies
+// silently weakens the contract for whichever worker has the stale
+// copy.
+const FORBIDDEN_PATHS_NOTICE =
+  "NEVER write to /tmp/* or any path outside the run-dir. This includes " +
+  "scratch files (build.js, leaves.json, ad-hoc node -e scripts, etc.). " +
+  "/tmp is mode 1777 (world-readable on every Unix), shared across " +
+  "concurrent sessions, and collides under parallel development. The " +
+  "ONLY allowed write target is the output path stated above; if you " +
+  "need scratch space, use the same workers/ directory that holds your " +
+  "dispatch prompt.";
+
+// Compact one-liner derived from FORBIDDEN_PATHS_NOTICE for the shim
+// prompt — the shim has a documented ~200-token bound, so it gets a
+// short-form pointer that names the rule and the canonical location of
+// the full rationale (the on-disk dispatch prompt the shim references).
+const FORBIDDEN_PATHS_NOTICE_SHORT =
+  "FORBIDDEN PATHS: NEVER write to /tmp/* or any path outside the run-dir. " +
+  "The ONLY allowed write target is the output path above. " +
+  "/tmp is shared across concurrent sessions and forbidden by skill contract.";
+
 function getShardThreshold() {
   const raw = process.env.SPECIALIST_DIFF_SHARD_THRESHOLD_BYTES;
   if (typeof raw === "string" && /^\d+$/.test(raw)) {
@@ -886,7 +918,7 @@ export function buildDispatchPromptText(brief, opts = {}) {
       "",
       "Do NOT return JSON to the orchestrator inline; the runner reads from the path above on --continue and aggregates all per-leaf outputs into specialist_outputs[]. Concurrent specialists writing to the same path would clobber each other; the per-leaf path is unique.",
       "",
-      "FORBIDDEN PATHS: NEVER write to /tmp/* or any path outside the run-dir. This includes scratch files (build.js, leaves.json, ad-hoc node -e workspaces, etc.). /tmp is mode 1777 (world-readable on every Unix), shared across concurrent sessions, and collides under parallel development. The ONLY allowed write target is the per-leaf output path above; if you need scratch space, use the same workers/ directory that holds your dispatch prompt.",
+      `FORBIDDEN PATHS: ${FORBIDDEN_PATHS_NOTICE}`,
       "",
       `(For audit context: the runner's aggregate output is written to ${outputsPath}.)`,
       "",
@@ -932,7 +964,7 @@ export function buildDispatchPromptText(brief, opts = {}) {
   lines.push(outputsPath);
   lines.push("");
   lines.push("--- FORBIDDEN PATHS ---");
-  lines.push("NEVER write to /tmp/* or any path outside the run-dir. This includes scratch files (build.js, leaves.json, ad-hoc node -e scripts, etc.). /tmp is mode 1777 (world-readable on every Unix), shared across concurrent sessions, and collides under parallel development. The ONLY allowed write target is the OUTPUTS PATH above; if you need scratch space, use the same workers/ directory that holds your dispatch prompt.");
+  lines.push(FORBIDDEN_PATHS_NOTICE);
   lines.push("");
   return lines.join("\n");
 }
@@ -3223,7 +3255,7 @@ function buildShimText(runId, leafId, shardIdx, cliName) {
     "Include `skip_reason: \"<one sentence>\"` when status == \"skipped\" (FSM schema requires it then) OR when status == \"failed\" (encouraged for actionable diagnostics).",
     "",
     "Do NOT return JSON inline; the runner aggregates from this file path on --continue.",
-    "FORBIDDEN PATHS: NEVER write to /tmp/* or any path outside the run-dir. The ONLY allowed write target is the output path above. /tmp is shared across concurrent sessions and forbidden by skill contract.",
+    FORBIDDEN_PATHS_NOTICE_SHORT,
     `Repository root: ${REPO_ROOT}`,
     "",
   ];

@@ -71,7 +71,7 @@ Fields:
 - Every leaf in `stage_a_candidates` appears in EITHER `picked_leaves` OR `rejected_leaves` — no leaf left out.
 - Justifications must be specific. "Looks relevant" is rejected by review.
 - The runner has pre-extracted leaf frontmatter (`focus`, `dimensions`, `audit_surface`, etc.) into `stage_a_candidates[*]`. Read those fields from the brief env. You should NOT open the file at `stage_a_candidates[*].path` — opening leaf files at trim time wastes Agent tokens and the orchestrator may flag it as a divergence. Leaf body content is off-limits regardless. (`stage_a_candidates[*].path` is the leaf markdown file's path; it can be either wiki-relative `<sub>/<id>.md` or repo-relative `reviewers.wiki/<sub>/<id>.md`.)
-- **NEVER write to `/tmp` or any path outside the run-dir.** This includes scratch files (`/tmp/trim-prompt.md`, `/tmp/trim-stage-a.json`, ad-hoc `node -e` build scripts, etc.). `/tmp` is mode 1777 (world-readable on every Unix), shared across concurrent sessions, and collides under parallel development. The single allowed write target is your output JSON path stated in the dispatch prompt's response contract.
+- The runner injects a `--- FORBIDDEN PATHS ---` section into the dispatch prompt at staging time naming the single allowed write target (your output JSON path) and forbidding `/tmp/*` writes. That section is the single source of truth — read it for the full rationale.
 
 ## Validation will reject
 

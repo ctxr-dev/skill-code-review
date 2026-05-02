@@ -121,10 +121,34 @@ test("buildDispatchPromptText: standard worker — embeds prompt_body, INPUTS, O
   // /tmp/* or anywhere outside the run-dir. Real-world regression —
   // tree-descender and other workers have been observed writing
   // scratch files like /tmp/tree-descend/build.js. The shipped
-  // dispatch prompt MUST carry the prohibition.
+  // dispatch prompt MUST carry the prohibition AFTER the OUTPUTS
+  // PATH section so a worker reading top-down sees the allowed
+  // write target first, then the prohibition referencing it.
+  assertForbiddenPathsAfterOutputs(text);
+});
+
+// Shared assertion helper for the FORBIDDEN PATHS contract check.
+// Closes the round-1 review's "assertion pair duplicated" finding
+// AND the round-1 "presence but not placement" finding: every
+// invocation now also asserts the section appears AFTER OUTPUTS PATH
+// so a structural regression scrambling section order would fail.
+function assertForbiddenPathsAfterOutputs(text) {
   assert.match(text, /--- FORBIDDEN PATHS ---/);
   assert.match(text, /NEVER write to \/tmp/);
-});
+  // Section ordering: FORBIDDEN PATHS must come AFTER OUTPUTS PATH
+  // so the dispatch prompt reads (in order): worker body, INPUTS,
+  // RESPONSE SCHEMA, OUTPUTS PATH, FORBIDDEN PATHS. A reordering
+  // regression would silently re-introduce ambiguity about which
+  // "output path" the prohibition refers to.
+  const outputsPathIdx = text.indexOf("--- OUTPUTS PATH ---");
+  const forbiddenPathsIdx = text.indexOf("--- FORBIDDEN PATHS ---");
+  assert.ok(outputsPathIdx >= 0, "expected OUTPUTS PATH section");
+  assert.ok(forbiddenPathsIdx >= 0, "expected FORBIDDEN PATHS section");
+  assert.ok(
+    forbiddenPathsIdx > outputsPathIdx,
+    `FORBIDDEN PATHS must come after OUTPUTS PATH; got OUTPUTS@${outputsPathIdx} FORBIDDEN@${forbiddenPathsIdx}`,
+  );
+}
 
 test("buildDispatchPromptText: standard worker — embeds RESPONSE SCHEMA when brief carries one (#85)", () => {
   // Regression: previously the prompt's tail said "matching the
@@ -246,15 +270,19 @@ test("buildDispatchPromptText: per-specialist (no opts.filteredDiff) — emits F
   assert.match(text, /Do NOT return JSON to the orchestrator inline/);
   assert.match(text, /aggregates all per-leaf outputs into specialist_outputs/);
   // FORBIDDEN PATHS guidance: dispatched specialist Agents must not
-  // write to /tmp/* or anywhere outside the run-dir. Real-world
-  // regression — the tree-descender and other workers have been
-  // observed writing /tmp/<role>/build.js + /tmp/<role>/*.json
-  // scratch files (skill explicitly forbids it). The shipped
-  // per-specialist prompt MUST carry the prohibition so the
-  // dispatched Agent sees it before deciding where to write
-  // intermediates.
+  // write to /tmp/* or anywhere outside the run-dir. The
+  // per-specialist prompt embeds it INSIDE the RESPONSE CONTRACT
+  // section (one block, not a separate `--- FORBIDDEN PATHS ---`
+  // header) — assert presence + that it appears AFTER the
+  // RESPONSE CONTRACT marker so structural regressions surface.
   assert.match(text, /FORBIDDEN PATHS/);
   assert.match(text, /NEVER write to \/tmp/);
+  const responseContractIdx = text.indexOf("--- RESPONSE CONTRACT ---");
+  const forbiddenPathsIdx = text.indexOf("FORBIDDEN PATHS");
+  assert.ok(responseContractIdx >= 0, "expected RESPONSE CONTRACT section");
+  assert.ok(forbiddenPathsIdx > responseContractIdx,
+    `FORBIDDEN PATHS must come after RESPONSE CONTRACT; got RC@${responseContractIdx} FP@${forbiddenPathsIdx}`,
+  );
 });
 
 test("defaultDispatchPromptPath: rejects unsafe state segments (path traversal guard on state)", () => {

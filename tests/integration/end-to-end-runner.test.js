@@ -1470,87 +1470,85 @@ test("--continue --outputs-file <path>: explicit-path branch hard-fails when man
   });
 });
 
-test("--continue: manifest path is a directory (not a file) — runner exits within timeout, not via SIGTERM", (t) => {
-  // Closes the round-5 review's "no dependency-down / negative path"
-  // finding: the existing hard-fail tests cover the structured-error
-  // contract for parseable-but-corrupt inputs (unparseable brief,
-  // missing manifest, missing current_state). They do NOT cover a
-  // hostile filesystem state where manifest.json is unreadable as a
-  // file at all. Without this regression, a hang in manifest-read
-  // would surface only as the 120s timeout SIGTERM — masking the
-  // real failure mode.
-  //
-  // Portable hostile shape: replace manifest.json with a DIRECTORY of
-  // the same name. readFileSync on a directory throws EISDIR on every
-  // POSIX system (including the runner's Node child); chmod-based
-  // tests would flake in CI containers.
+// Table-driven regression for the EISDIR-as-directory hostile
+// filesystem shape. Closes the round-5 review's "no dependency-down /
+// negative path" finding: the existing hard-fail tests cover
+// parseable-but-corrupt inputs (unparseable brief, missing manifest,
+// missing current_state). They do NOT cover a hostile filesystem state
+// where manifest.json is unreadable as a file at all. Without this
+// regression, a hang in manifest-read would surface only as the 120s
+// timeout SIGTERM — masking the real failure mode.
+//
+// Portable hostile shape: replace manifest.json with a DIRECTORY of
+// the same name. readFileSync on a directory throws EISDIR on every
+// POSIX system (including the runner's Node child); chmod-based
+// tests would flake in CI containers.
+//
+// Both --continue branches (implicit-default outputs-file derivation
+// AND explicit --outputs-file <path>) route through the same
+// safeReadManifest() helper at scripts/run-review.mjs, so each branch
+// must surface the EISDIR shape as a structured fail() — a future
+// refactor that splits the two branches' manifest reads could
+// silently regress one of them, so we cover both.
+//
+// Branch label / SHAs / extra args are the only per-row deltas; the
+// arrange and the assertion contract are identical, so a table-driven
+// test is the natural shape (round-6 review #2 — antipattern-copy-paste).
+// SHAs are arbitrary 40-hex placeholders that satisfy
+// makeFreshRunForContinueTest's validator; they're decorrelated per
+// branch so concurrent test runs of the two rows write to distinct
+// run-dirs (sentinel uniqueness is also guaranteed by
+// freshNonexistentRunId, but using distinct SHAs keeps run-dir paths
+// human-readable in failure traces).
+const EISDIR_BRANCH_CASES = [
+  {
+    label: "implicit",
+    extraContinueArgs: [],
+    baseSha: "3333333333333333333333333333333333333333",
+    headSha: "4444444444444444444444444444444444444444",
+  },
+  {
+    label: "explicit-outputs-file",
+    extraContinueArgs: ["--outputs-file", "/nonexistent/x.json"],
+    baseSha: "7777777777777777777777777777777777777777",
+    headSha: "8888888888888888888888888888888888888888",
+  },
+];
 
-  // Arrange: fresh run, then replace the manifest file with a
-  // directory of the same name.
-  const { runId, manifestPath } = makeFreshRunForContinueTest(
-    t,
-    "3333333333333333333333333333333333333333",
-    "4444444444444444444444444444444444444444",
-  );
-  rmSync(manifestPath, { force: true });
-  mkdirSync(manifestPath, { recursive: true });
+for (const { label, extraContinueArgs, baseSha, headSha } of EISDIR_BRANCH_CASES) {
+  test(
+    `--continue (${label} branch): manifest path is a directory — runner exits within timeout, not via SIGTERM`,
+    (t) => {
+      // Arrange: fresh run, then replace the manifest file with a
+      // directory of the same name.
+      const { runId, manifestPath } = makeFreshRunForContinueTest(t, baseSha, headSha);
+      rmSync(manifestPath, { force: true });
+      mkdirSync(manifestPath, { recursive: true });
 
-  // Act + Assert: --continue must produce a structured error within
-  // CONTINUE_TEST_TIMEOUT_MS (no SIGTERM masking). assertContinueHardFails
-  // already enforces parseable JSON on stdout — under SIGTERM stdout
-  // would be empty/truncated and parseStdoutOrFail would assert.fail
-  // with the diagnostic, so this test inherits the timeout-masking
-  // negative assertion automatically.
-  //
-  // We don't pin the exact error message wording (the runner's
-  // EISDIR / ENOTFILE / "is a directory" surfaces vary by Node
-  // version); we only require: non-zero exit, JSON-parseable
-  // stdout, and SOME EISDIR/manifest-shape token so the regression
-  // is genuinely scoped to "runner couldn't read manifest as a
-  // file". Excludes "run-id" — that token leaks into virtually
-  // every fail() the runner emits and would weaken the regression
-  // intent (any unrelated fail-fast path could match).
-  //
-  // The structured payload's run_id field is pinned in
-  // extraAssertions instead, locking down that the
-  // manifest-corruption fail() carries the operator-actionable
-  // run-id (matches the contract on the parallel hard-fail tests
-  // above).
-  assertContinueHardFails(runId, [], {
-    messageRegex: /(manifest|directory|EISDIR|ENOTFILE)/i,
-    extraAssertions: (payload) => {
-      assert.equal(payload.run_id, runId, "structured error must carry the run-id");
+      // Act + Assert: --continue must produce a structured error within
+      // CONTINUE_TEST_TIMEOUT_MS (no SIGTERM masking).
+      // assertContinueHardFails already enforces parseable JSON on
+      // stdout — under SIGTERM stdout would be empty/truncated and
+      // parseStdoutOrFail would assert.fail with the diagnostic, so
+      // this test inherits the timeout-masking negative assertion
+      // automatically.
+      //
+      // We don't pin exact error message wording (the runner's EISDIR
+      // / ENOTFILE / "is a directory" surfaces vary by Node version);
+      // we only require: non-zero exit, JSON-parseable stdout, and
+      // SOME EISDIR/manifest-shape token so the regression is
+      // genuinely scoped to "runner couldn't read manifest as a
+      // file". Excludes "run-id" — that token leaks into virtually
+      // every fail() the runner emits and would weaken the regression
+      // intent (any unrelated fail-fast path could match). The
+      // structured payload's run_id field is pinned in
+      // extraAssertions instead.
+      assertContinueHardFails(runId, extraContinueArgs, {
+        messageRegex: /(manifest|directory|EISDIR|ENOTFILE)/i,
+        extraAssertions: (payload) => {
+          assert.equal(payload.run_id, runId, "structured error must carry the run-id");
+        },
+      });
     },
-  });
-});
-
-test("--continue --outputs-file <path>: manifest path is a directory — explicit-path branch also hard-fails (no SIGTERM)", (t) => {
-  // Parallel regression to the implicit-branch test above: the
-  // explicit --outputs-file branch routes through the same
-  // safeReadManifest() helper at scripts/run-review.mjs, so the
-  // EISDIR-as-directory hostile shape must surface as a structured
-  // fail() through this code path too. Without this, a future
-  // refactor that splits the two branches' manifest reads could
-  // silently regress one of them and the test suite would only
-  // catch it via the implicit branch.
-
-  // Arrange: fresh run, then replace the manifest file with a
-  // directory of the same name.
-  const { runId, manifestPath } = makeFreshRunForContinueTest(
-    t,
-    "7777777777777777777777777777777777777777",
-    "8888888888888888888888888888888888888888",
   );
-  rmSync(manifestPath, { force: true });
-  mkdirSync(manifestPath, { recursive: true });
-
-  // Act + Assert: --continue --outputs-file <path> must produce a
-  // structured EISDIR/manifest-shape error, not a SIGTERM. Same
-  // contract as the implicit-branch test.
-  assertContinueHardFails(runId, ["--outputs-file", "/nonexistent/x.json"], {
-    messageRegex: /(manifest|directory|EISDIR|ENOTFILE)/i,
-    extraAssertions: (payload) => {
-      assert.equal(payload.run_id, runId, "structured error must carry the run-id");
-    },
-  });
-});
+}

@@ -1,7 +1,7 @@
 {
   "name": "@ctxr/skill-code-review",
   "version": "2.4.0",
-  "description": "Claude Code skill — wiki-organised corpus of ~476 specialist reviewer leaves selected by semantic tree descent against the diff, aggregated into an 8-gate GO/NO-GO release verdict.",
+  "description": "Agent Skills code-review harness (Claude Code, Codex CLI): wiki-organised corpus of ~476 specialist reviewer leaves selected by semantic tree descent against the diff, aggregated into an 8-gate GO/NO-GO release verdict.",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -13,12 +13,14 @@
     "url": "https://github.com/ctxr-dev/skill-code-review/issues"
   },
   "keywords": [
+    "agent-skills",
+    "agents-md",
+    "codex",
     "claude-code",
     "skill",
     "code-review",
     "ai",
-    "agents",
-    "agentskills"
+    "agents"
   ],
   "files": [
     "SKILL.md",
@@ -36,6 +38,9 @@
   "ctxr": {
     "type": "skill",
     "target": "folder"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "engines": {
     "node": ">=20"

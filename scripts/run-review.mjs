@@ -41,6 +41,13 @@ import { runEnv, runDirPath, readLock, readManifest } from "@ctxr/fsm";
 // across run-review.mjs and the inline-state handlers; the
 // post-#101 local skill review flagged the duplication as a
 // principle-dry-kiss-yagni "important" finding.
+//
+// Only the helpers actually used in this file are imported. The
+// shared module exposes additional symbols (FSM_NAME,
+// MAX_GIT_TOPLEVEL_WALK_DEPTH, coerceAbsoluteProjectRoot) that
+// the inline-state handlers and assert-fresh-run.mjs use; this
+// file pulls them via the lib path when it needs them, not via
+// a transitive re-export.
 import {
   gitToplevelFromCwd,
   readFsmRcDirect,
@@ -3455,9 +3462,19 @@ async function main() {
     // --continue produce a valid empty specialist_outputs[].
     if (pickedLeaves.length === 0) {
       if (args["print-batch-envelope"]) {
-        process.stdout.write(JSON.stringify({
-          batch: [], remaining_after: 0, pending_now: 0, total_dispatch_units: 0, shims: {},
-        }) + "\n");
+        if (args.format === "dispatch-v1") {
+          process.stdout.write(JSON.stringify({
+            kind: "subagent.batch.v1",
+            envelopes: [],
+            remaining_after: 0,
+            pending_now: 0,
+            total_dispatch_units: 0,
+          }) + "\n");
+        } else {
+          process.stdout.write(JSON.stringify({
+            batch: [], remaining_after: 0, pending_now: 0, total_dispatch_units: 0, shims: {},
+          }) + "\n");
+        }
       }
       return;
     }
@@ -3514,6 +3531,63 @@ async function main() {
       // a per-leaf count (sharded leaves merge into one row at
       // --continue aggregation), so the two totals will differ on
       // sharded runs and that's by design.
+      // The legacy `--print-batch-envelope` form returns
+      // `{ batch, shims, remaining_after, pending_now, total_dispatch_units }`
+      // which existing Claude Code orchestrators consume directly. The
+      // additive `--format=dispatch-v1` form returns a
+      // `subagent.batch.v1` containing one `subagent.dispatch.v1` per
+      // batch id (see ../ctxr/docs/subagent-dispatch-v1.md). The two
+      // forms share the same picked-leaves accounting; only the wire
+      // shape differs so any Agent Skills harness can dispatch.
+      if (args.format === "dispatch-v1") {
+        const envelopes = [];
+        for (const id of batch) {
+          const parsed = parseLeafIdAndShardIdx({
+            leafIdArg: id,
+            shardIdxArg: undefined,
+            cliName,
+          });
+          const promptPath = defaultDispatchPromptPath(
+            runId,
+            "dispatch_specialists",
+            parsed.leafId,
+            parsed.shardIdx,
+          );
+          const outputPath = defaultSpecialistOutputPath(
+            runId,
+            parsed.leafId,
+            parsed.shardIdx,
+          );
+          envelopes.push({
+            kind: "subagent.dispatch.v1",
+            request_id: `${runId}-${id}`,
+            role: "code-review-specialist",
+            prompt: buildShimText(runId, parsed.leafId, parsed.shardIdx, cliName),
+            inputs: { prompt_path: promptPath, leaf_id: parsed.leafId, shard_idx: parsed.shardIdx },
+            effort: "balanced",
+            response_schema: {
+              id: "string",
+              status: "completed|skipped|failed",
+              runtime_ms: "integer",
+              tokens_in: "integer",
+              tokens_out: "integer",
+              findings: "array",
+              skip_reason: "string?",
+            },
+            outputs_path: outputPath,
+            parent_run_id: runId,
+          });
+        }
+        process.stdout.write(JSON.stringify({
+          kind: "subagent.batch.v1",
+          envelopes,
+          remaining_after: Math.max(0, pending.length - batch.length),
+          pending_now: pending.length,
+          total_dispatch_units: totalDispatchUnits,
+        }) + "\n");
+        return;
+      }
+
       const shims = {};
       for (const id of batch) {
         const parsed = parseLeafIdAndShardIdx({

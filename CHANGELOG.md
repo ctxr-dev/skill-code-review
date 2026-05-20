@@ -36,6 +36,18 @@ upgrade to v2.4.x without any code changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **Cross-harness support: Claude Code and OpenAI Codex CLI.** SKILL.md prose neutralised so the FSM-driven specialist dispatch loop runs under both Claude Code (via the `Agent` tool) and OpenAI Codex CLI (via its equivalent). The capitalised tool name `Agent` was swapped to the harness-neutral term `sub-agent` everywhere except the explicit harness-name examples ("Claude Code: `Agent` tool; Codex CLI: equivalent"). README headline rebranded from "Code Review Skill for Claude Code" to "Code Review Skill (Claude Code, Codex CLI)". package.json description updated.
+- **`scripts/run-review.mjs --print-batch-envelope --format=dispatch-v1`** — additive CLI flag emitting the open `subagent.batch.v1` shape with `subagent.dispatch.v1` envelopes per leaf (see `https://github.com/ctxr-dev/kit/blob/main/docs/subagent-dispatch-v1.md`). The legacy `--print-batch-envelope` form (no `--format`) is preserved byte-identically so existing Claude Code orchestrators keep working unchanged.
+- Reordered package.json keywords to lead with `agent-skills`, `agents-md`, `codex`, `claude-code`.
+- Updated git-submodule install path in README from `.claude/skills/` to `.agents/skills/` to match the canonical install topology used by `@ctxr/kit`.
+- Declared `publishConfig.access: "public"` for scoped npm publish.
+
+### Added
+
+- `tests/integration/dispatch-envelope-v1.test.js` covering the new `--format=dispatch-v1` output shape, including a byte-identical regression check on the legacy form and an empty-picked-leaves zero-work envelope.
+
 ## [2.4.0] - 2026-05-03
 
 ### Added

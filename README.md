@@ -1,9 +1,12 @@
-# Code Review Skill for Claude Code
+# Code Review Skill (Claude Code, Codex CLI)
 
 [![npm](https://img.shields.io/npm/v/@ctxr/skill-code-review)](https://www.npmjs.com/package/@ctxr/skill-code-review)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Agent Skills](https://img.shields.io/badge/Agent%20Skills-Claude%20Code%20%7C%20Codex%20CLI-blue)](https://agentskills.io)
 
-Multi-specialist code review system for [Claude Code](https://claude.ai/code). Selects specialists from a wiki-organised corpus (~476 leaves under ~59 subcategories), runs the relevant ones in parallel, integrates external linters and analyzers, and produces structured reports with a GO / NO-GO verdict.
+> Supports Claude Code and OpenAI Codex CLI via the open Agent Skills standard. Sub-agent dispatch follows the [`subagent-dispatch-v1`](https://github.com/ctxr-dev/kit/blob/main/docs/subagent-dispatch-v1.md) envelope.
+
+Multi-specialist code review system for any Agent Skills harness ([Claude Code](https://claude.ai/code), OpenAI Codex CLI). Selects specialists from a wiki-organised corpus (~476 leaves under ~59 subcategories), runs the relevant ones in parallel, integrates external linters and analyzers, and produces structured reports with a GO / NO-GO verdict.
 
 Auto-detects your tech stack (Python, JS, TS, Swift, Go, Rust, Java, Kotlin, Scala, C#, Ruby, PHP, Dart, C, C++, Objective-C, shell, SQL, R, Lua) and activates only the relevant specialists from the wiki corpus.
 
@@ -22,7 +25,7 @@ Then in Claude Code:
 
 ## Prerequisites
 
-- [Claude Code](https://claude.ai/code) CLI or IDE extension
+- An Agent Skills-compatible harness ([Claude Code](https://claude.ai/code) CLI/IDE, or OpenAI Codex CLI)
 - Git repository with commits to review
 
 ## Installation
@@ -31,15 +34,15 @@ Then in Claude Code:
 
 ```bash
 git clone https://github.com/ctxr-dev/skill-code-review.git /tmp/skill-code-review
-mkdir -p .claude/skills
-cp -r /tmp/skill-code-review .claude/skills/skill-code-review
+mkdir -p .agents/skills
+cp -r /tmp/skill-code-review .agents/skills/skill-code-review
 ```
 
 ### Git Submodule
 
 ```bash
 git submodule add https://github.com/ctxr-dev/skill-code-review.git \
-    .claude/skills/skill-code-review
+    .agents/skills/skill-code-review
 ```
 
 ## Usage

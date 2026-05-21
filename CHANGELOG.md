@@ -77,15 +77,18 @@ upgrade to v2.4.x without any code changes.
   silently used the skill's install dir as the project root,
   reproducing the #100 failure mode. Now emits a `WARN:` line to
   stderr.
-- **`gitToplevelFromCwd` warns on the depth-cap exit.** The 64-
-  parent-walk cap is named (`MAX_GIT_TOPLEVEL_WALK_DEPTH`) and
-  hitting it (only possible under pathological mount points or
-  symlink cycles) now logs to stderr instead of silently returning
+- **`gitToplevelFromCwd` warns on the depth-cap exit.** The
+  parent-walk cap is named (`MAX_GIT_TOPLEVEL_WALK_DEPTH`, set to
+  256) and hitting it (only possible under pathological mount points
+  or symlink cycles) now logs to stderr instead of silently returning
   null. The cap and warn callback are both injectable for testing.
 - **`runTrimValidationGate`'s `_deps.repoRoot` renamed to
   `_deps.skillRoot`.** Aligns the local vocabulary with the
   `SKILL_ROOT` rename the rest of the runner adopted in v2.3.0.
-  The deprecated `repoRoot` alias was removed.
+  The old `repoRoot` key is deprecated (still accepted as a
+  fallback: `_deps.skillRoot ?? _deps.repoRoot ?? SKILL_ROOT`) so
+  in-tree callers and downstream tooling keep working; in-tree
+  callers have been migrated to `skillRoot`.
 - **`gray-matter` listed under both `Fixed` and `Changed`.** The
   promotion to `dependencies` in v2.3.0 was a bug fix AND a
   runtime-footprint shift; downstream dependency-growth audits
@@ -125,7 +128,8 @@ upgrade to v2.4.x without any code changes.
 - **Test-file constant `REPO_ROOT` renamed to `SKILL_ROOT`** to
   match the production rename.
 - **Magic SHA literals extracted** to named constants
-  (`UNREACHABLE_BASE_SHA`, `FRESH_REPO_BASE_SHA`, etc.).
+  (`UNREACHABLE_BASE_SHA`, `UNREACHABLE_HEAD_SHA`,
+  `FRESH_REPO_BASE_SHA`, `FRESH_REPO_HEAD_SHA`).
 - **`makeFreshGitRepo` checks `git init` exit status.** A silent
   failure (e.g. git missing in CI) previously masqueraded as a
   runner bug; now throws a self-describing error.

@@ -42,9 +42,6 @@ import { runEnv, runDirPath, readLock, readManifest } from "@ctxr/fsm";
 // post-#101 local skill review flagged the duplication as a
 // principle-dry-kiss-yagni "important" finding.
 import {
-  FSM_NAME,
-  MAX_GIT_TOPLEVEL_WALK_DEPTH,
-  coerceAbsoluteProjectRoot,
   gitToplevelFromCwd,
   readFsmRcDirect,
   validateStorageRootEntry,
@@ -221,11 +218,11 @@ export function enrichBriefWithPromptBody(brief, _deps = {}) {
     writeStderr(
       `WARN: enrichBriefWithPromptBody: could not resolve body path for ` +
       `prompt_template="${promptTemplate}": ${err?.message ?? err}. ` +
-      `Continuing without prompt_body. The orchestrator's dispatch ` +
-      `prompt at <run_dir>/workers/<state>-dispatch-prompt.md is still ` +
-      `valid (it bakes in the body at brief-stage time when this enrichment ` +
-      `succeeds; if THIS enrichment failed, the dispatch-prompt path is the ` +
-      `intended fallback).\n`,
+      `Continuing without prompt_body — the worker will read the prompt ` +
+      `template itself. Note that prompt_template is an FSM-relative ` +
+      `"workers/..." path, NOT repo-root-relative, so there is no ` +
+      `repo-root fallback the orchestrator can resolve directly; fix the ` +
+      `template path or the skill install if this recurs.\n`,
     );
     return brief;
   }
@@ -1929,6 +1926,19 @@ function discoverProjectRoot() {
   if (explicit !== null && typeof explicit !== "string") {
     fail(
       `--repo-root: expected a string path, got ${typeof explicit}. ` +
+      `Pass an absolute path, e.g. --repo-root /path/to/project.`,
+    );
+  }
+  // An empty or whitespace-only value (`--repo-root=` or `--repo-root=" "`)
+  // is a string but would slip past the `length > 0` branch below and
+  // fall through to cwd/SKILL_ROOT discovery, silently reviewing the
+  // wrong project while emitting a misleading "--repo-root not given"
+  // warning. Hard-fail here instead. (Closes round-2 Copilot finding on
+  // PR #103.)
+  if (typeof explicit === "string" && explicit.trim().length === 0) {
+    fail(
+      `--repo-root: expected a non-empty path, got ` +
+      `${explicit.length === 0 ? `an empty value ("--repo-root=")` : "a whitespace-only value"}. ` +
       `Pass an absolute path, e.g. --repo-root /path/to/project.`,
     );
   }

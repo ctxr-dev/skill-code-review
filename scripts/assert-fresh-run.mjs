@@ -20,7 +20,6 @@ import { fileURLToPath } from "node:url";
 import { runDirPath, readManifest } from "@ctxr/fsm";
 
 import {
-  coerceAbsoluteProjectRoot,
   gitToplevelFromCwd,
   readFsmRcDirect,
   validateStorageRootEntry,
@@ -104,6 +103,25 @@ function parseNumericValue(rawValue, flag) {
       `Use ${flag} <integer-seconds>.`,
     );
   }
+  // The flag is documented as integer seconds. Number.isFinite() alone
+  // accepts fractions and negatives, but a fractional threshold is a
+  // typo and a negative one (`--max-age-seconds=-1`) makes every run
+  // instantly "stale" — a confusing failure surfaced late in
+  // validation instead of an arg error up front. Reject both here.
+  // (Closes round-2 Copilot finding on PR #103.)
+  if (!Number.isInteger(numericValue)) {
+    throw new Error(
+      `${flag}: expected an integer, got "${rawValue}". ` +
+      `Use ${flag} <integer-seconds>.`,
+    );
+  }
+  if (numericValue < 0) {
+    throw new Error(
+      `${flag}: expected a non-negative integer, got "${rawValue}". ` +
+      `A negative threshold would make every run fail as stale. ` +
+      `Use ${flag} <integer-seconds>.`,
+    );
+  }
   return numericValue;
 }
 
@@ -152,7 +170,27 @@ export function resolveProjectRootForAssertion(args, { cwd = process.cwd() } = {
     }
     return args.repoRoot;
   }
-  return coerceAbsoluteProjectRoot(gitToplevelFromCwd(cwd), SKILL_ROOT);
+  // No --repo-root: discover from cwd's git toplevel. If cwd is
+  // outside any git repo, coerceAbsoluteProjectRoot would silently
+  // return SKILL_ROOT — the validator would then look under the
+  // skill's own .skill-code-review/ tree and report "manifest.json
+  // not found" for a run that actually lives under the reviewed
+  // project, giving the operator a false negative. Surface the
+  // ambiguity instead, matching run-review.mjs's discoverProjectRoot
+  // SKILL_ROOT-fallback warning. (Closes round-2 Copilot finding on
+  // PR #103.)
+  const fromCwd = gitToplevelFromCwd(cwd);
+  if (fromCwd) return fromCwd;
+  process.stderr.write(
+    `WARN: --repo-root not given and the current working directory ` +
+    `("${cwd}") is not inside a git repository, so the project root ` +
+    `could not be determined. Falling back to the skill install dir ` +
+    `(${SKILL_ROOT}); the manifest will be looked up under the skill's ` +
+    `own storage tree, which is almost never what you want for a real ` +
+    `review. Pass --repo-root <absolute-path> to point at the project ` +
+    `being reviewed.\n`,
+  );
+  return SKILL_ROOT;
 }
 
 // Resolve the absolute storage root the runner used to write the

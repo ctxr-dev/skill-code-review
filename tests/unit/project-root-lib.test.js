@@ -10,9 +10,49 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+// Build a real git repo with two commits so `git diff base..head`
+// produces a non-empty unified diff whose body contains `keyword`.
+// Used by the activate-leaves call-site test to PROVE that
+// env.args.project_root is wired through to the git-diff cwd: the
+// keyword only appears in this repo's diff, so a leaf with a matching
+// keyword_matches activation fires iff the handler ran `git diff` here.
+// Returns { dir, base, head }. Throws a self-describing error if git
+// is unavailable so a missing-git CI environment fails loudly instead
+// of masquerading as a routing regression.
+function makeGitRepoWithKeywordDiff(keyword) {
+  const dir = mkdtempSync(join(tmpdir(), "activate-route-repo-"));
+  const run = (args) => {
+    const r = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+    if (r.status !== 0 || r.error) {
+      rmSync(dir, { recursive: true, force: true });
+      throw new Error(
+        `git ${args.join(" ")} failed (status=${r.status}, ` +
+        `error=${r.error?.message ?? "none"}, stderr=${r.stderr ?? ""}); ` +
+        `cannot run the project-root routing test. Is git installed?`,
+      );
+    }
+    return r;
+  };
+  run(["init", "-q"]);
+  run(["config", "user.email", "test@example.com"]);
+  run(["config", "user.name", "Test"]);
+  writeFileSync(join(dir, "file.txt"), "initial line\n");
+  run(["add", "file.txt"]);
+  run(["commit", "-q", "-m", "base"]);
+  const base = run(["rev-parse", "HEAD"]).stdout.trim();
+  // The added line carries the keyword, so it shows up in the diff body
+  // (which is what fetchDiffText feeds into keyword_matches).
+  writeFileSync(join(dir, "file.txt"), `initial line\nadded ${keyword} line\n`);
+  run(["add", "file.txt"]);
+  run(["commit", "-q", "-m", "head"]);
+  const head = run(["rev-parse", "HEAD"]).stdout.trim();
+  return { dir, base, head };
+}
 
 import {
   FSM_NAME,
@@ -450,94 +490,110 @@ test("resolveAssertionStorageRoot: resolves under the given project root", () =>
 // activate-leaves call-site contract: the inline handler must
 // honour env.args.project_root (runner-controlled) and IGNORE
 // top-level env.project_root (which can be set by upstream worker
-// outputs). Pre-round-2-fix this test only exercised the helper;
-// Copilot flagged it as not actually catching the regression at
-// the call site. Now imports activateLeaves and observes the
-// behavioural difference: when env.args.project_root is set we get
-// the same result as the controlled path; when only top-level
-// env.project_root is set, the handler treats it as missing.
-test("activate-leaves: uses env.args.project_root, ignores top-level env.project_root", async () => {
+// outputs). Copilot flagged the earlier version of this test as
+// not actually catching the regression: it asserted only that the
+// output was an array / that the runs matched in *shape*, so a
+// regression to reading env.project_root would still pass.
+//
+// This version proves the routing POSITIVELY. It builds a real git
+// repo whose `git diff base..head` body contains the keyword
+// "trivy". That keyword is in the keyword_matches activation block
+// of the bundled `container-image-scanning-trivy-grype-clair` leaf,
+// so the leaf fires IFF the handler actually ran `git diff` inside
+// that repo. We then assert:
+//   1. When the repo is passed via env.args.project_root, the
+//      keyword-activated leaf IS present (proves args.project_root
+//      is used as the diff cwd).
+//   2. When the SAME repo is passed only via the top-level
+//      env.project_root field, the leaf is ABSENT (proves the
+//      untrusted channel is ignored — a regression to reading it
+//      would now flip this assertion and fail).
+const KEYWORD_LEAF_ID = "container-image-scanning-trivy-grype-clair";
+test("activate-leaves: honours env.args.project_root for git diff and ignores top-level env.project_root", async () => {
   const activateLeavesMod = await import(
     "../../scripts/inline-states/activate-leaves.mjs"
   );
   const activateLeaves = activateLeavesMod.default;
-  const maliciousProject = mkdtempSync(join(tmpdir(), "untrusted-project-"));
+  const { dir: repo, base, head } = makeGitRepoWithKeywordDiff("trivy");
   try {
-    // Run 1: env.args.project_root = malicious. The handler should
-    // honour it (malicious-trusted-by-CLI is a hypothetical the
-    // operator could create themselves; for THIS test the path
-    // doesn't matter, only that env.args.project_root is the
-    // channel that gets honoured).
+    const idsOf = (run) =>
+      new Set((run.activated_leaves ?? []).map((l) => l.id));
+
+    // Run 1: trusted channel. The keyword-activated leaf MUST fire,
+    // which can only happen if `git diff base..head` ran inside `repo`.
     const trustedRun = await activateLeaves({
       brief: { state: "activate_leaves", run_id: "test-r1" },
       env: {
         project_profile: { languages: ["javascript"] },
         changed_paths: [],
-        args: { project_root: maliciousProject },
-        base_sha: "0000000000000000000000000000000000000001",
-        head_sha: "0000000000000000000000000000000000000002",
+        args: { project_root: repo },
+        base_sha: base,
+        head_sha: head,
       },
     });
-    assert.ok(Array.isArray(trustedRun.activated_leaves),
-      "handler must produce activated_leaves[]");
-    // Run 2: top-level env.project_root = malicious; args is
-    // empty. The handler MUST NOT honour the top-level field. We
-    // verify this by checking that the run's behavior matches Run
-    // 3 (no project_root anywhere) below — meaning the top-level
-    // value was ignored.
+    assert.ok(
+      idsOf(trustedRun).has(KEYWORD_LEAF_ID),
+      `env.args.project_root must drive the git-diff cwd: expected ` +
+      `${KEYWORD_LEAF_ID} to fire on the "trivy" diff, but it did not. ` +
+      `Got: ${[...idsOf(trustedRun)].join(", ")}`,
+    );
+
+    // Run 2: same repo, but passed ONLY via the untrusted top-level
+    // field. The handler must treat project_root as missing, so
+    // `git diff` runs from SKILL_ROOT (no "trivy" diff there) and the
+    // keyword leaf MUST NOT fire. A regression that read
+    // env.project_root would activate it and fail this assertion.
     const untrustedRun = await activateLeaves({
       brief: { state: "activate_leaves", run_id: "test-r2" },
       env: {
         project_profile: { languages: ["javascript"] },
         changed_paths: [],
         args: {},
-        project_root: maliciousProject, // <- untrusted; must be ignored
-        base_sha: "0000000000000000000000000000000000000001",
-        head_sha: "0000000000000000000000000000000000000002",
+        project_root: repo, // <- untrusted; must be ignored
+        base_sha: base,
+        head_sha: head,
       },
     });
-    const noRootRun = await activateLeaves({
-      brief: { state: "activate_leaves", run_id: "test-r3" },
-      env: {
-        project_profile: { languages: ["javascript"] },
-        changed_paths: [],
-        args: {},
-        base_sha: "0000000000000000000000000000000000000001",
-        head_sha: "0000000000000000000000000000000000000002",
-      },
-    });
-    // Behavioural pin: top-level env.project_root must not affect
-    // the output — runs 2 and 3 must produce the same activated
-    // set. (Runs 1 and 2 may differ on diff-text-based activation
-    // signals, but for a non-existent SHA range with empty
-    // changed_paths the diff text is empty regardless of cwd, so
-    // all three runs have the same activated_leaves shape.)
-    assert.deepEqual(
-      untrustedRun.activated_leaves.length,
-      noRootRun.activated_leaves.length,
-      "top-level env.project_root MUST NOT influence activated_leaves count",
+    assert.ok(
+      !idsOf(untrustedRun).has(KEYWORD_LEAF_ID),
+      `top-level env.project_root MUST NOT drive the git-diff cwd: ` +
+      `${KEYWORD_LEAF_ID} fired, meaning the untrusted field redirected ` +
+      `the diff into the test repo.`,
     );
   } finally {
-    rmSync(maliciousProject, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
   }
 });
 
 // writeRunArtefacts call-site contract: the inline handler in
 // scripts/inline-states/write-run-directory.mjs must wire
 // env.args.project_root through to resolveStorageRoot (anchoring
-// the run-dir under the project being reviewed) and IGNORE
-// top-level env.project_root. We exercise the contract by
-// importing the function and asserting the maliciousTopLevel
-// path is NEVER referenced — the trustedProject path may or may
-// not have a tree created depending on how far writeRunArtefacts
-// progresses before the missing-runDir failure (the load-bearing
-// assertion is the negative one).
-test("writeRunArtefacts: ignores top-level env.project_root (trusted channel only)", async () => {
+// the run-dir under the project being reviewed) and IGNORE the
+// top-level env.project_root (settable by upstream worker outputs).
+//
+// Copilot flagged the earlier version as proving only the negative
+// (the malicious path was absent), which would still pass if the
+// handler regressed to using skillRoot for BOTH inputs. This version
+// proves the routing POSITIVELY.
+//
+// We use a VALID run-id so the handler progresses to actually
+// resolving the storage root and opening <runDir>/report.json. The
+// engine has not pre-created that run-dir in this isolated unit test,
+// so writeFileSync throws ENOENT — and crucially, the ENOENT path is
+// the resolved storage tree. We assert that path is anchored under
+// env.args.project_root (positive) and is NOT anchored under the
+// malicious top-level value (negative). A regression that read
+// env.project_root would flip both assertions.
+test("writeRunArtefacts: anchors storage under env.args.project_root, ignores top-level env.project_root", async () => {
   const { writeRunArtefacts } = await import(
     "../../scripts/inline-states/write-run-directory.mjs"
   );
   const trustedProject = mkdtempSync(join(tmpdir(), "wra-trusted-"));
   const maliciousTopLevel = mkdtempSync(join(tmpdir(), "wra-untrusted-"));
+  // A well-formed run-id (YYYYMMDD-HHMMSS-<7 hex>) so the handler
+  // reaches the storage-root resolution + report write rather than
+  // failing earlier in runDirPath's run-id parser.
+  const runId = "20260503-123456-abcdef0";
   try {
     const env = {
       verdict: "GO",
@@ -551,30 +607,40 @@ test("writeRunArtefacts: ignores top-level env.project_root (trusted channel onl
     };
     let observedError = null;
     try {
-      writeRunArtefacts("20260503-route-test1", env);
+      writeRunArtefacts(runId, env);
     } catch (err) {
       observedError = err;
     }
-    // Negative: maliciousTopLevel never had a storage tree
-    // created. If the handler had honoured top-level
-    // env.project_root, this would exist.
     assert.ok(
-      !existsSync(join(maliciousTopLevel, ".skill-code-review")),
-      `top-level env.project_root MUST NOT influence storage path; ` +
-      `but ${maliciousTopLevel}/.skill-code-review was created`,
+      observedError,
+      "writeRunArtefacts must throw ENOENT (the run-dir isn't pre-created " +
+      "in this isolated unit test); without a throw the routing assertions " +
+      "below would be vacuous",
     );
-    // Negative: error message (if any) MUST NOT name the malicious
-    // path as a path component. If the handler had honoured the
-    // top-level field but failed downstream, the error would
-    // mention the malicious path's resolved storage tree.
-    if (observedError) {
-      const msg = String(observedError.message ?? observedError);
-      assert.ok(
-        !msg.includes(`${maliciousTopLevel}/.skill-code-review`) &&
-        !msg.includes(`${maliciousTopLevel}\\.skill-code-review`),
-        `error message must not reference malicious top-level path's storage tree; got: ${msg}`,
-      );
-    }
+    const msg = String(observedError.message ?? observedError);
+    const trustedTree = join(trustedProject, ".skill-code-review");
+    const maliciousTree = join(maliciousTopLevel, ".skill-code-review");
+    // Positive: the resolved storage path that the handler tried to
+    // write into is anchored under env.args.project_root. This is the
+    // assertion the earlier test lacked — it proves the trusted field
+    // is actually consulted, not merely that the untrusted one is absent.
+    assert.ok(
+      msg.includes(trustedTree),
+      `env.args.project_root must anchor the storage root; expected the ` +
+      `error path to include "${trustedTree}", got: ${msg}`,
+    );
+    // Negative: the storage path must NOT be anchored under the
+    // untrusted top-level field.
+    assert.ok(
+      !msg.includes(maliciousTree),
+      `top-level env.project_root MUST NOT anchor the storage root; ` +
+      `but the error path referenced "${maliciousTree}": ${msg}`,
+    );
+    assert.ok(
+      !existsSync(maliciousTree),
+      `top-level env.project_root MUST NOT influence storage path; ` +
+      `but ${maliciousTree} was created`,
+    );
   } finally {
     rmSync(trustedProject, { recursive: true, force: true });
     rmSync(maliciousTopLevel, { recursive: true, force: true });
@@ -646,27 +712,44 @@ test("enrichBriefWithPromptBody: passes through when prompt_template is missing"
 
 // Round-4 finding #5: the resolve-fail catch is distinct from the
 // read-fail catch (different WARN string "could not resolve body
-// path") and was uncovered. We trigger it by passing a malformed
-// prompt_template that makes repoRelativePromptPath throw — easiest
-// shape is one that triggers a path-resolution validation error.
-test("enrichBriefWithPromptBody: emits WARN and returns brief on resolve failure", async () => {
+// path") and was uncovered. Copilot flagged that the earlier test
+// asserted only "some WARN was emitted" — so if repoRelativePromptPath
+// accepted the input and readFile threw, the read-fail branch would
+// satisfy the assertion and the resolve-fail branch would never be
+// exercised. This version proves the resolve-fail branch SPECIFICALLY:
+//   - a traversal path is rejected by repoRelativePromptPath BEFORE
+//     any read, so resolve() throws deterministically;
+//   - readFile is wired to flip a flag / throw a sentinel so that, if
+//     execution ever reached the read branch, the test fails loudly;
+//   - the WARN is matched against the resolve-fail-specific phrase
+//     "could not resolve body path", not the generic prefix.
+test("enrichBriefWithPromptBody: emits the resolve-fail WARN (not the read-fail WARN) on an unresolvable prompt_template", async () => {
   const { enrichBriefWithPromptBody } = await import("../../scripts/run-review.mjs");
   const captured = [];
-  // A null-byte-bearing string is rejected by node:path's resolve
-  // (or by repoRelativePromptPath's validation, depending on
-  // implementation); either path lands in the resolve-fail catch.
-  // If the implementation accepts it, we fall back to the absolute
-  // form which the resolve catch also exercises.
-  const brief = { worker: { prompt_template: "\u0000bad-path" } };
+  let readCalled = false;
+  // A "../" traversal path is rejected by repoRelativePromptPath's
+  // traversal/absolute/UNC guard, landing in the resolve-fail catch
+  // deterministically without ever reaching readFile.
+  const brief = { worker: { prompt_template: "../escape/outside" } };
   const result = enrichBriefWithPromptBody(brief, {
     writeStderr: (msg) => captured.push(msg),
-    readFile: () => { throw new Error("must not be called — resolve must fail first"); },
+    readFile: () => {
+      readCalled = true;
+      throw new Error("readFile must NOT be called — resolve must fail first");
+    },
     skillRoot: "/fake/skill",
   });
-  // Brief passes through unchanged regardless of which catch fired.
+  // Brief passes through unchanged.
   assert.equal(result, brief);
   assert.equal(result.worker.prompt_body, undefined);
-  // Exactly one WARN should be emitted naming the function.
+  // readFile must never run — proves we took the resolve-fail branch,
+  // not the read-fail branch.
+  assert.equal(readCalled, false,
+    "resolve must fail before any read is attempted");
+  // Exactly one WARN, and it must be the resolve-fail-specific message
+  // (NOT "could not read body", which is the read-fail branch).
   assert.equal(captured.length, 1);
   assert.match(captured[0], /WARN: enrichBriefWithPromptBody/);
+  assert.match(captured[0], /could not resolve body path/);
+  assert.doesNotMatch(captured[0], /could not read body/);
 });

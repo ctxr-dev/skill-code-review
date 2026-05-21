@@ -36,6 +36,8 @@ upgrade to v2.4.x without any code changes.
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-05-20
+
 ### Changed
 
 - **Cross-harness support: Claude Code and OpenAI Codex CLI.** SKILL.md prose neutralised so the FSM-driven specialist dispatch loop runs under both Claude Code (via the `Agent` tool) and OpenAI Codex CLI (via its equivalent). The capitalised tool name `Agent` was swapped to the harness-neutral term `sub-agent` everywhere except the explicit harness-name examples ("Claude Code: `Agent` tool; Codex CLI: equivalent"). README headline rebranded from "Code Review Skill for Claude Code" to "Code Review Skill (Claude Code, Codex CLI)". package.json description updated.

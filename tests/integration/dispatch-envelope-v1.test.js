@@ -3,7 +3,7 @@
 // (no `--format`) MUST keep its existing wire shape byte-identical so
 // existing Claude Code orchestrators continue to work; the new form
 // emits a `subagent.batch.v1` envelope per
-// /Users/developer/work/projects/ctxr-dev/ctxr/docs/subagent-dispatch-v1.md
+// https://github.com/ctxr-dev/kit/blob/main/docs/subagent-dispatch-v1.md
 // so any Agent Skills harness (Codex CLI, Cursor, etc.) can consume it.
 
 import { test } from "node:test";
@@ -44,7 +44,7 @@ function planRun() {
   writeFileSync(join(workersDir, "dispatch_specialists-brief.json"), JSON.stringify(briefShape));
   writeFileSync(join(workersDir, "dispatch_specialists-prompt-v1-alpha.md"), "<staged>\n");
   writeFileSync(join(workersDir, "dispatch_specialists-prompt-v1-beta.md"), "<staged>\n");
-  const manifestPath = `${runDir}/manifest.json`;
+  const manifestPath = join(runDir, "manifest.json");
   const realManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   realManifest.current_state = "dispatch_specialists";
   writeFileSync(manifestPath, JSON.stringify(realManifest));
@@ -130,7 +130,7 @@ test("dispatch-v1 zero-work envelope (empty picked_leaves)", () => {
     join(workersDir, "dispatch_specialists-brief.json"),
     JSON.stringify({ run_id: runId, state: "dispatch_specialists", inputs: { picked_leaves: [] } }),
   );
-  const manifestPath = `${runDir}/manifest.json`;
+  const manifestPath = join(runDir, "manifest.json");
   const realManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   realManifest.current_state = "dispatch_specialists";
   writeFileSync(manifestPath, JSON.stringify(realManifest));

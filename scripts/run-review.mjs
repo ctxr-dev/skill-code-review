@@ -3536,7 +3536,7 @@ async function main() {
       // which existing Claude Code orchestrators consume directly. The
       // additive `--format=dispatch-v1` form returns a
       // `subagent.batch.v1` containing one `subagent.dispatch.v1` per
-      // batch id (see ../ctxr/docs/subagent-dispatch-v1.md). The two
+      // batch id (see https://github.com/ctxr-dev/kit/blob/main/docs/subagent-dispatch-v1.md). The two
       // forms share the same picked-leaves accounting; only the wire
       // shape differs so any Agent Skills harness can dispatch.
       if (args.format === "dispatch-v1") {

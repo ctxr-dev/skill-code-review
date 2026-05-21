@@ -3384,6 +3384,18 @@ async function main() {
       fail("--print-pending-leaf-ids and --print-batch-envelope are mutually exclusive; pass exactly one.");
     }
     const cliName = args["print-pending-leaf-ids"] ? "--print-pending-leaf-ids" : "--print-batch-envelope";
+    // --format is consumed only by --print-batch-envelope (legacy when
+    // absent, subagent.batch.v1 when "dispatch-v1"). Reject any other
+    // value loudly: silently falling through to the legacy shape on a
+    // typo'd or future-version value (e.g. --format=dispatch-v2) would
+    // hand a cross-harness orchestrator the WRONG wire contract with no
+    // signal. An unset format keeps the byte-identical legacy default.
+    if (args.format !== undefined && args.format !== "dispatch-v1") {
+      fail(
+        `--format only supports "dispatch-v1" (got ${JSON.stringify(args.format)}); ` +
+        `omit --format for the legacy --print-batch-envelope shape.`,
+      );
+    }
     const runId = args["run-id"];
     if (!runId || typeof runId !== "string" || !isValidRunId(runId)) {
       fail(`${cliName} requires --run-id <id>`);

@@ -1,6 +1,6 @@
 // Tests for the SKILL_ROOT vs PROJECT_ROOT split introduced in #100.
 //
-// Before this PR the runner hardcoded a single REPO_ROOT to the skill's
+// Before that PR the runner hardcoded a single REPO_ROOT to the skill's
 // install dir, which broke every review run from outside the skill's
 // own repo (the eval in #100 documented the failure mode: every per-leaf
 // dispatch prompt embedded a `(diff unavailable: ...)` placeholder
@@ -15,7 +15,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,17 +23,71 @@ import { fileURLToPath } from "node:url";
 import {
   FilteredDiffError,
   handleWorkerStateBrief,
+  projectRoot,
   setProjectRootForTesting,
 } from "../../scripts/run-review.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(__dirname, "..", "..");
-const RUNNER_PATH = resolve(REPO_ROOT, "scripts", "run-review.mjs");
+// SKILL_ROOT, not REPO_ROOT — the test-file vocabulary mirrors the
+// production rename (closes finding #31).
+const SKILL_ROOT = resolve(__dirname, "..", "..");
+const RUNNER_PATH = resolve(SKILL_ROOT, "scripts", "run-review.mjs");
 
-// FilteredDiffError is exported so writeSpecialistPromptsToDisk's
-// caller (handleWorkerStateBrief) can pattern-match it. The class
-// name and `cause` plumbing both matter for the structured fault
-// payload the runner emits to the operator.
+// Named placeholder SHAs (closes finding #32 — magic literals). These
+// are deliberately unreachable 40-hex strings: the runner's --start
+// validates the format, but `git diff <unreachable>..<unreachable>`
+// is the negative path under test.
+const UNREACHABLE_BASE_SHA = "0000000000000000000000000000000000000001";
+const UNREACHABLE_HEAD_SHA = "0000000000000000000000000000000000000002";
+const FRESH_REPO_BASE_SHA = "1111111111111111111111111111111111111111";
+const FRESH_REPO_HEAD_SHA = "2222222222222222222222222222222222222222";
+
+// Spawn the runner with --start and the unreachable SHA pair so the
+// run reaches a documented failure mode without doing real diff work.
+// Returns { status, stdout, stderr, allOutput }.
+function runStart(extraArgs, opts = {}) {
+  const result = spawnSync(
+    process.execPath,
+    [
+      RUNNER_PATH,
+      "--start",
+      "--base", UNREACHABLE_BASE_SHA,
+      "--head", UNREACHABLE_HEAD_SHA,
+      ...extraArgs,
+    ],
+    { encoding: "utf8", cwd: SKILL_ROOT, timeout: 30_000, ...opts },
+  );
+  return {
+    status: result.status,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    allOutput: `${result.stdout}\n${result.stderr}`,
+  };
+}
+
+// Initialise a git repo at a fresh tmpdir for tests that need a
+// real project root (closes finding #29 — host VCS coupling).
+//
+// Verifies `git init` exit status (closes the round-2 lang-javascript
+// + flaky-tests findings: silent git failures in CI containers
+// without git installed would otherwise propagate as misleading
+// downstream "not a git repository" errors from the runner under
+// test, hiding the real environmental cause).
+function makeFreshGitRepo() {
+  const dir = mkdtempSync(join(tmpdir(), "fresh-git-repo-"));
+  const init = spawnSync("git", ["init", "-q", dir], { encoding: "utf8" });
+  if (init.status !== 0 || init.error) {
+    rmSync(dir, { recursive: true, force: true });
+    throw new Error(
+      `git init failed (status=${init.status}, error=${init.error?.message ?? "none"}, ` +
+      `stderr=${init.stderr ?? ""}); cannot run tests that need a fresh git repo. ` +
+      `Is git installed?`,
+    );
+  }
+  return dir;
+}
+
+// FilteredDiffError contract — name, message, optional cause.
 test("FilteredDiffError carries name + message + optional cause", () => {
   const cause = new Error("ENOENT");
   const err = new FilteredDiffError("git diff exited 1", { cause });
@@ -49,17 +103,58 @@ test("FilteredDiffError without cause is still an Error", () => {
   assert.equal(err.cause, undefined);
 });
 
-// setProjectRootForTesting is the unit-test escape hatch that bypasses
-// the discovery walk. It exists so tests don't need to mutate
-// process.cwd() (which is process-global and would race with parallel
-// tests).
-test("setProjectRootForTesting accepts an absolute path and clears with null", () => {
-  const tmp = mkdtempSync(join(tmpdir(), "proj-root-test-"));
+// setProjectRootForTesting behaviour: the override must take effect
+// observably, and the null reset must clear it. Pre-fix, the
+// "accepts an absolute path and clears with null" test had ZERO
+// assertions and the comment admitted as much (closes findings #1
+// and #28). The fix asserts the observable consequence: projectRoot()
+// returns the override value when set, and re-discovers from cwd
+// after null is passed.
+test("setProjectRootForTesting: override is observable via projectRoot()", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "proj-root-override-"));
   try {
     setProjectRootForTesting(tmp);
-    setProjectRootForTesting(null);
-    // No assertion failures means the override + reset round-trip works.
+    assert.equal(projectRoot(), resolve(tmp),
+      "projectRoot() must return the override value");
   } finally {
+    setProjectRootForTesting(null);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("setProjectRootForTesting(null) re-enables discovery (cache cleared)", () => {
+  // Closes finding #2: the cache-invalidation test had zero
+  // assertions and admitted in a comment that the next test didn't
+  // actually verify the contract either.
+  //
+  // Observed contract: after override → reset, projectRoot() must
+  // re-run discovery (returning the cwd-based value), NOT keep
+  // returning the cleared override.
+  //
+  // The two assertions are NOT redundant:
+  //   - notEqual against the override pins "cache cleared the
+  //     override"
+  //   - equal against discoveredFirst pins "and ran the discovery
+  //     branch again, not some default" — without it, an
+  //     implementation that returned a hardcoded sentinel after
+  //     reset would pass the notEqual but fail this one.
+  // Process.cwd() is stable across these calls (the test does not
+  // chdir between them), so discoveredFirst === discoveredAgain
+  // is the load-bearing equality.
+  setProjectRootForTesting(null);
+  const discoveredFirst = projectRoot();
+  const tmp = mkdtempSync(join(tmpdir(), "proj-root-cache-clear-"));
+  try {
+    setProjectRootForTesting(tmp);
+    assert.equal(projectRoot(), resolve(tmp), "override should win");
+    setProjectRootForTesting(null);
+    const discoveredAgain = projectRoot();
+    assert.notEqual(discoveredAgain, resolve(tmp),
+      "after reset, projectRoot() must NOT return the cleared override");
+    assert.equal(discoveredAgain, discoveredFirst,
+      "after reset, projectRoot() must re-run discovery, not return a default");
+  } finally {
+    setProjectRootForTesting(null);
     rmSync(tmp, { recursive: true, force: true });
   }
 });
@@ -76,173 +171,92 @@ test("setProjectRootForTesting throws on relative paths", () => {
   );
 });
 
-test("setProjectRootForTesting throws on non-string input", () => {
+// Closes finding #33: combined inputs in one test obscure which case
+// failed. Split into per-input cases so each is reported separately.
+test("setProjectRootForTesting throws on number input", () => {
   assert.throws(() => setProjectRootForTesting(42), /absolute path or null/);
+});
+
+test("setProjectRootForTesting throws on object input", () => {
   assert.throws(() => setProjectRootForTesting({}), /absolute path or null/);
 });
 
-// The --repo-root flag is the explicit user override. We exercise it
-// via a subprocess so the behaviour reflects what an end-user would
-// see: unknown SHAs in a fake repo should produce a structured fault
-// from the runner (NOT a silent placeholder, NOT a stack trace).
+// The --repo-root flag is the explicit user override.
 test("--repo-root: missing path fails up front with a clear error", () => {
-  const result = spawnSync(
-    process.execPath,
-    [
-      RUNNER_PATH,
-      "--start",
-      "--base", "0000000000000000000000000000000000000001",
-      "--head", "0000000000000000000000000000000000000002",
-      "--repo-root", "/this/path/does/not/exist/abc123",
-    ],
-    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
-  );
+  const result = runStart(["--repo-root", "/this/path/does/not/exist/abc123"]);
   assert.notEqual(result.status, 0, "missing --repo-root must fail");
-  // The error payload may land on stdout (fail() emits structured JSON
-  // to stdout, not stderr).
-  const allOutput = `${result.stdout}\n${result.stderr}`;
-  assert.match(allOutput, /--repo-root/);
-  assert.match(allOutput, /does not exist/);
+  assert.match(result.allOutput, /--repo-root/);
+  assert.match(result.allOutput, /does not exist/);
 });
 
-// Round-4 Copilot review on #101: parseArgs encodes a bare `--repo-root`
-// (no value) as boolean `true`. Pre-fix, discoverProjectRoot silently
-// fell through to cwd-discovery, so a typo'd invocation looked like it
-// worked but ran against the wrong project. Now hard-fails up front.
+// Round-4 Copilot review on #101: parseArgs encodes a bare flag as
+// boolean `true`. Pre-fix, discoverProjectRoot silently fell through.
 test("--repo-root: bare flag (no value) is rejected up front", () => {
-  const result = spawnSync(
-    process.execPath,
-    [
-      RUNNER_PATH,
-      "--start",
-      "--base", "0000000000000000000000000000000000000001",
-      "--head", "0000000000000000000000000000000000000002",
-      "--repo-root",  // intentionally no value
-    ],
-    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
-  );
+  const result = runStart(["--repo-root"]);
   assert.notEqual(result.status, 0, "bare --repo-root must fail");
-  const allOutput = `${result.stdout}\n${result.stderr}`;
-  assert.match(allOutput, /--repo-root/);
-  // Match either the bare-flag-specific error or the path-not-existent
-  // error (depending on parseArgs interpretation order).
-  assert.match(allOutput, /requires a value|bare flag|absolute|does not exist/);
+  assert.match(result.allOutput, /--repo-root/);
+  assert.match(result.allOutput, /requires a value|bare flag|absolute|does not exist/);
 });
 
-// Copilot-review #101 finding: relative paths were silently accepted
-// by `resolve()`, leaving the operator with a confusing later git
-// diff failure. The contract says "absolute path"; enforce it.
+// Relative paths were silently accepted by `resolve()`, leaving the
+// operator with a confusing later git diff failure.
 test("--repo-root: relative paths are rejected up front", () => {
-  const result = spawnSync(
-    process.execPath,
-    [
-      RUNNER_PATH,
-      "--start",
-      "--base", "0000000000000000000000000000000000000001",
-      "--head", "0000000000000000000000000000000000000002",
-      "--repo-root", "relative/path",
-    ],
-    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
-  );
+  const result = runStart(["--repo-root", "relative/path"]);
   assert.notEqual(result.status, 0, "relative --repo-root must fail");
-  const allOutput = `${result.stdout}\n${result.stderr}`;
-  assert.match(allOutput, /--repo-root/);
-  assert.match(allOutput, /absolute/);
+  assert.match(result.allOutput, /--repo-root/);
+  assert.match(result.allOutput, /absolute/);
 });
 
-// Copilot-review #101 finding: the explicit-path branch only checked
-// existence, not git-ness. Pointing at a non-git directory previously
-// produced an opaque downstream "git diff exited 128" — now it fails
-// at startup with a clear error.
+// Pointing at a non-git directory previously produced an opaque
+// downstream "git diff exited 128" — now it fails at startup.
 test("--repo-root: non-git directories are rejected up front", () => {
   const tmp = mkdtempSync(join(tmpdir(), "non-git-"));
   try {
-    const result = spawnSync(
-      process.execPath,
-      [
-        RUNNER_PATH,
-        "--start",
-        "--base", "0000000000000000000000000000000000000001",
-        "--head", "0000000000000000000000000000000000000002",
-        "--repo-root", tmp,
-      ],
-      { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
-    );
+    const result = runStart(["--repo-root", tmp]);
     assert.notEqual(result.status, 0, "non-git --repo-root must fail");
-    const allOutput = `${result.stdout}\n${result.stderr}`;
-    assert.match(allOutput, /--repo-root/);
-    assert.match(allOutput, /not a git repository/);
+    assert.match(result.allOutput, /--repo-root/);
+    assert.match(result.allOutput, /not a git repository/);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
 });
 
-// Copilot-review #101 finding: setProjectRootForTesting(null) cleared
-// the override but not the memoized cache, so a test resetting after
-// projectRoot() had been called once would silently keep returning
-// the stale value. The fix invalidates the cache on every override
-// change.
-test("setProjectRootForTesting(null) clears the memoized discovery cache", async () => {
-  // Import the projectRoot-side state via the side-effecting test
-  // hook. We can't easily inspect _projectRootCached directly, so we
-  // verify behaviourally: set an override, read projectRoot via the
-  // CLI's args echo (re-spawn so module state is fresh), then reset.
-  // The unit-level invariant is: setProjectRootForTesting(x) →
-  // setProjectRootForTesting(null) leaves projectRoot() free to
-  // re-discover from cwd, not return x.
-  const tmp1 = mkdtempSync(join(tmpdir(), "p1-"));
+// Closes finding #29: the previous "args.project_root contains
+// .git/" test ran the runner against the host repo, coupling the
+// test to whatever VCS layout the test runner happened to be in
+// (failures under tarball / sandboxed CI checkouts). The fix is
+// self-contained: spawn the runner against a fresh git repo we
+// just initialised in tmpdir, and assert the seeded value is
+// exactly that path.
+test("project_root in args bag follows --repo-root verbatim", () => {
+  const freshRepo = makeFreshGitRepo();
   try {
-    setProjectRootForTesting(tmp1);
-    setProjectRootForTesting(null);
-    // Without a follow-up spawn we can only assert no exception
-    // was thrown by either call; the cache invalidation behaviour
-    // is functionally tested by the next behavioural test below.
+    const result = runStart([
+      "--base", FRESH_REPO_BASE_SHA,
+      "--head", FRESH_REPO_HEAD_SHA,
+      "--repo-root", freshRepo,
+    ]);
+    assert.equal(result.status, 0, `--start failed: ${result.stderr}`);
+    const firstLine = result.stdout.split("\n").filter(Boolean)[0];
+    let envelope;
+    try {
+      envelope = JSON.parse(firstLine);
+    } catch (parseErr) {
+      assert.fail(
+        `--start stdout was not parseable JSON: ${parseErr.message}\n` +
+        `firstLine="${firstLine}"\nstderr=${result.stderr}`,
+      );
+    }
+    assert.equal(envelope.status, "awaiting_worker");
+    const seeded = envelope.brief?.inputs?.args?.project_root;
+    assert.equal(seeded, freshRepo,
+      "args.project_root must equal the --repo-root passed at --start");
   } finally {
-    rmSync(tmp1, { recursive: true, force: true });
+    rmSync(freshRepo, { recursive: true, force: true });
   }
 });
 
-// When the runner is invoked from inside the skill's own repo (which
-// is what every CI run does), discoverProjectRoot's gitToplevel walk
-// returns the skill repo. This pins backward compatibility: the 302
-// existing tests that don't pass --repo-root keep working.
-test("project_root in args bag defaults to a directory containing .git", () => {
-  // Run --start in a way that pauses at scan_project, then read the
-  // brief and confirm args.project_root points at a directory with a
-  // .git/ entry (i.e., a real git repo, not a stale path).
-  const start = spawnSync(
-    process.execPath,
-    [
-      RUNNER_PATH,
-      "--start",
-      "--base", "1111111111111111111111111111111111111111",
-      "--head", "2222222222222222222222222222222222222222",
-    ],
-    { encoding: "utf8", cwd: REPO_ROOT, timeout: 30_000 },
-  );
-  assert.equal(start.status, 0, `--start failed: ${start.stderr}`);
-  const envelope = JSON.parse(start.stdout.split("\n").filter(Boolean)[0]);
-  assert.equal(envelope.status, "awaiting_worker");
-  const projectRoot = envelope.brief?.inputs?.args?.project_root;
-  assert.ok(typeof projectRoot === "string" && projectRoot.length > 0,
-    "args.project_root must be a non-empty string");
-  // The seed must point at a real git repo (any directory containing
-  // .git counts: regular repo, worktree linkfile, submodule). We
-  // don't assert it equals SKILL_ROOT specifically because the
-  // runner's discovery walks up from cwd, and CI / test invocations
-  // may run in a worktree.
-  assert.ok(
-    existsSync(join(projectRoot, ".git")),
-    `args.project_root "${projectRoot}" should contain a .git/ entry`,
-  );
-});
-
-// Fault-fast contract for the dispatch_specialists branch:
-// when writeSpecialistPromptsToDisk throws FilteredDiffError, the
-// runner returns a structured fault payload BEFORE any specialist
-// is dispatched. Pre-#100 the runner silently shipped K broken
-// dispatch prompts, and the operator only learned of the misconfig
-// after K Agent dispatches returned skipped.
+// Fault-fast contract for the dispatch_specialists branch.
 test("handleWorkerStateBrief: dispatch_specialists faults on FilteredDiffError before pausing", () => {
   const brief = {
     has_worker: true,
@@ -250,25 +264,28 @@ test("handleWorkerStateBrief: dispatch_specialists faults on FilteredDiffError b
     state: "dispatch_specialists",
     inputs: { picked_leaves: [{ id: "lang-javascript", path: "x.md" }] },
   };
+  // Closes finding #27: the previous assertion pinned `git diff
+  // exited 1` (upstream git wording). The runner's contract is
+  // FilteredDiffError + the operator-actionable hint; the upstream
+  // git wording is incidental. We assert only on the runner's own
+  // surface now (FilteredDiffError class name, the --repo-root
+  // remediation hint, and the bound message string).
   const result = handleWorkerStateBrief(brief, brief.run_id, {}, {
     writeBriefToDisk: () => {},
     writeSpecialistPromptsToDisk: () => {
-      throw new FilteredDiffError("git diff exited 1: error");
+      throw new FilteredDiffError("the underlying diff failure");
     },
   });
   assert.equal(result.kind, "fault");
   assert.equal(result.payload.status, "fault");
   assert.equal(result.payload.run_id, "20260502-fault-tst");
   assert.equal(result.payload.fault.state, "dispatch_specialists");
-  // Operator-actionable hint must name the underlying cause AND the
-  // remediation flag the operator can pass on retry.
   assert.match(result.payload.fault.reason, /FilteredDiffError/);
-  assert.match(result.payload.fault.reason, /git diff exited 1/);
+  assert.match(result.payload.fault.reason, /the underlying diff failure/);
   assert.match(result.payload.fault.reason, /--repo-root/);
 });
 
-// Sanity: non-FilteredDiffError exceptions from writeSpecialistPromptsToDisk
-// must still propagate (don't swallow programming bugs).
+// Sanity: non-FilteredDiffError exceptions still propagate.
 test("handleWorkerStateBrief: re-throws non-FilteredDiffError from staging", () => {
   const brief = {
     has_worker: true,
@@ -287,8 +304,6 @@ test("handleWorkerStateBrief: re-throws non-FilteredDiffError from staging", () 
   );
 });
 
-// Non-dispatch_specialists worker states still pause normally — the
-// fault-fast catch is dispatch_specialists-specific.
 test("handleWorkerStateBrief: non-specialist states pause as before", () => {
   const brief = {
     has_worker: true,
@@ -304,17 +319,8 @@ test("handleWorkerStateBrief: non-specialist states pause as before", () => {
   assert.equal(result.payload.status, "awaiting_worker");
 });
 
-// Round-2 Copilot review on #101: the new stagePromptsOrFault seam
-// in the live-mode branch passes injected writer fns from _deps, but
-// the record/replay branch was originally calling it with `{}`,
-// silently dropping the same overrides. The fix threads them in both
-// branches; this test pins the behavioural contract for record mode.
-//
-// We exercise the path indirectly: handleWorkerStateBrief's record
-// mode requires real fsm-engine state (resolveStorageRoot, runEnv,
-// hashKeyForBrief, runDirPath, stashPendingBrief), so we mock all of
-// them to no-ops and assert the injected writeSpecialistPromptsToDisk
-// is actually invoked.
+// Round-2 Copilot review on #101: record/replay must honour
+// _deps.writeSpecialistPromptsToDisk consistently with live mode.
 test("handleWorkerStateBrief: record mode honors injected writeSpecialistPromptsToDisk", () => {
   let injectedSpecialistCalled = false;
   const brief = {
@@ -328,13 +334,11 @@ test("handleWorkerStateBrief: record mode honors injected writeSpecialistPrompts
     brief.run_id,
     { replayMode: "record" },
     {
-      // FSM engine no-ops for the record-mode path.
       resolveStorageRoot: () => "/no-where",
       runEnv: () => ({}),
       hashKeyForBrief: () => "deadbeef",
       runDirPath: () => "/no-where",
       stashPendingBrief: () => {},
-      // Writer overrides — the contract under test.
       writeBriefToDisk: () => {},
       writeDispatchPromptToDisk: () => {},
       writeSpecialistPromptsToDisk: () => {
@@ -347,122 +351,17 @@ test("handleWorkerStateBrief: record mode honors injected writeSpecialistPrompts
     "record mode must use the injected writeSpecialistPromptsToDisk");
 });
 
-// Round-3 Copilot review on #101 (defense-in-depth): top-level env
-// fields are derived from FSM state/outputs (some LLM-produced),
-// so env.project_root must NOT be honoured as a source for git diff
-// cwd / storage_root. Only env.args.project_root is trustworthy
-// (runner-seeded at --start, never written by workers). The relative
-// path / non-absolute-string check guards against a malformed seed
-// being silently used too.
-test("writeRunArtefacts: ignores env.project_root (only env.args.project_root is trusted)", async () => {
-  const { writeRunArtefacts } = await import(
-    "../../scripts/inline-states/write-run-directory.mjs"
-  );
-  const malicious = mkdtempSync(join(tmpdir(), "malicious-toplevel-"));
-  try {
-    // Top-level env.project_root MUST be ignored. If it weren't,
-    // writeRunArtefacts would target malicious/.skill-code-review/...
-    // and the resulting fault path would mention `malicious`.
-    const env = {
-      verdict: "GO",
-      project_root: malicious,           // top-level (untrusted)
-      args: {},                          // no args.project_root → fall back to skillRoot
-      changed_paths: [],
-      project_profile: { languages: ["javascript"] },
-      tier: "lite",
-    };
-    let observedError = null;
-    try {
-      writeRunArtefacts("20260502-fake-002", env);
-    } catch (err) {
-      observedError = err;
-    }
-    if (observedError) {
-      const msg = String(observedError.message ?? observedError);
-      assert.ok(
-        !msg.includes(malicious),
-        `top-level env.project_root MUST NOT influence storage path; ` +
-        `got error mentioning untrusted path "${malicious}": ${msg}`,
-      );
-    }
-  } finally {
-    rmSync(malicious, { recursive: true, force: true });
-  }
-});
-
-test("writeRunArtefacts: rejects relative env.args.project_root (must be absolute)", async () => {
-  const { writeRunArtefacts } = await import(
-    "../../scripts/inline-states/write-run-directory.mjs"
-  );
-  const env = {
-    verdict: "GO",
-    args: { project_root: "relative/path" }, // not absolute → must fall back to skillRoot
-    changed_paths: [],
-    project_profile: { languages: ["javascript"] },
-    tier: "lite",
-  };
-  let observedError = null;
-  try {
-    writeRunArtefacts("20260502-fake-003", env);
-  } catch (err) {
-    observedError = err;
-  }
-  if (observedError) {
-    const msg = String(observedError.message ?? observedError);
-    assert.ok(
-      !msg.includes("relative/path"),
-      `relative env.args.project_root MUST NOT influence storage path; ` +
-      `got error mentioning "${msg}"`,
-    );
-  }
-});
-
-// Copilot-review #101 finding #2: write-run-directory.mjs's
-// resolveStorageRoot was anchored at SKILL_ROOT, drifting from
-// run-review.mjs's PROJECT_ROOT-anchored storage. With the fix,
-// passing env.args.project_root threads the project-rooted storage
-// through to the inline-state writer too.
-//
-// We assert behaviourally: writeRunArtefacts(runId, env) targets a
-// run-dir under the env.args.project_root's .skill-code-review tree.
-test("writeRunArtefacts: storage tree follows env.args.project_root", async () => {
-  const { writeRunArtefacts } = await import(
-    "../../scripts/inline-states/write-run-directory.mjs"
-  );
-  const tmpProject = mkdtempSync(join(tmpdir(), "wra-project-"));
-  try {
-    // Minimal env that buildReportPayload accepts. The runId doesn't
-    // need to exist yet — writeRunArtefacts will throw because there's
-    // no manifest to read; we catch and inspect the error to confirm
-    // the path it was looking under.
-    const env = {
-      verdict: "GO",
-      args: { project_root: tmpProject },
-      changed_paths: [],
-      project_profile: { languages: ["javascript"] },
-      tier: "lite",
-    };
-    let observedError = null;
-    try {
-      writeRunArtefacts("20260502-fake-001", env);
-    } catch (err) {
-      observedError = err;
-    }
-    // Some failure is expected — there's no manifest at the target.
-    // What matters is that the failure references the project-rooted
-    // storage tree (tmpProject), not the skill's install dir.
-    if (observedError) {
-      const msg = String(observedError.message ?? observedError);
-      // The path should be under tmpProject. Accept either an explicit
-      // path mention OR the absence of a "skill" reference (the
-      // pre-fix bug used ~/.claude/skills/.../skill-code-review/).
-      // We don't pin exact wording — Node's ENOENT message varies.
-      assert.ok(
-        msg.includes(tmpProject) || !msg.includes(".claude/skills/"),
-        `expected error path under tmpProject "${tmpProject}", got: ${msg}`,
-      );
-    }
-  } finally {
-    rmSync(tmpProject, { recursive: true, force: true });
-  }
-});
+// Storage-path contract is verified by direct unit tests of
+// `coerceAbsoluteProjectRoot` and `validateStorageRootEntry` in
+// tests/unit/project-root-lib.test.js. Earlier versions of this
+// file went via writeRunArtefacts and:
+//   - pre-created a stub manifest at a hardcoded date path
+//     (drifted on day-rollover, pre-created the storage tree,
+//     making the assertion pass vacuously);
+//   - inspected a possibly-empty error message under a conditional
+//     `if (observedError)` guard;
+//   - hardcoded year prefixes (2025/2026/2027) that would silently
+//     stop catching misroutes on 2028-01-01.
+// All three were called out by the v2.4 round-3 self-review as
+// fragile + non-deterministic, so the writeRunArtefacts-level
+// tests were deleted in favour of the helper-level coverage.

@@ -439,8 +439,11 @@ test("runTrimValidationGate: aborts when runEnv throws", () => {
 test("runTrimValidationGate: aborts on validation errors with violation details", () => {
   // A picked-leaf id that isn't in the wiki triggers class-1; with
   // injected env carrying empty stage_a_candidates the validator hits
-  // every applicable rule. We pass `repoRoot` to a path with no
-  // reviewers.wiki/ to short-circuit class-2 fully.
+  // every applicable rule. We pass `skillRoot` to a path with no
+  // reviewers.wiki/ to short-circuit class-2 fully. (Migrated from the
+  // deprecated `_deps.repoRoot` alias — still accepted by the gate, but
+  // callers should use the `skillRoot` key so they exercise the path
+  // they asked for instead of silently falling back to SKILL_ROOT.)
   const result = runTrimValidationGate(
     "run-1",
     {
@@ -451,7 +454,7 @@ test("runTrimValidationGate: aborts on validation errors with violation details"
     {
       resolveStorageRoot: () => "/tmp",
       runEnv: () => ({ stage_a_candidates: [], changed_paths: [] }),
-      repoRoot: "/this/path/has/no/reviewers/wiki/at/all",
+      skillRoot: "/this/path/has/no/reviewers/wiki/at/all",
     },
   );
   assert.equal(result.ok, false);

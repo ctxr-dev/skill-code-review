@@ -36,6 +36,12 @@ upgrade to v2.4.x without any code changes.
 
 ## [Unreleased]
 
+## [2.5.1] - 2026-05-30
+
+### Changed
+
+- Pin the documented `npx @ctxr/kit` invocations to `npx @ctxr/kit@latest` so install and update resolve reliably (an unpinned scoped npx spec can fail to link its bin on newer npm).
+
 ## [2.5.0] - 2026-05-20
 
 ### Changed

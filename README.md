@@ -14,7 +14,7 @@ Auto-detects your tech stack (Python, JS, TS, Swift, Go, Rust, Java, Kotlin, Sca
 
 ```bash
 # Install into your project
-npx @ctxr/kit install @ctxr/skill-code-review
+npx @ctxr/kit@latest install @ctxr/skill-code-review
 ```
 
 Then in Claude Code:

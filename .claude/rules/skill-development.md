@@ -17,11 +17,12 @@
 The procedure is the same for any leaf type — language reviewers are `lang-<name>.md`, frameworks are `fw-<name>.md`, plain reviewers use whatever stable kebab-case `id`.
 
 1. Author `reviewers.src/<id>.md` with the v2 frontmatter (see `CONTRIBUTING.md` for the full schema).
-2. Run the source validators:
+2. Validate the source corpus through `skill-llm-wiki`'s build pass
+   (the v3 port no longer ships its own corpus validators — the wiki
+   tooling handles the same checks):
 
    ```bash
-   npm run validate:src
-   npm run test:src
+   node ../skill-llm-wiki/scripts/cli.mjs validate ./reviewers.src
    ```
 
 3. Rebuild the wiki via `skill-llm-wiki` (sibling project at `../skill-llm-wiki/` in this workspace):
@@ -46,7 +47,7 @@ If adding a framework that the orchestrator doesn't yet recognise from manifests
 ## Conventions
 
 - **IDs**: kebab-case, must match filename. `lang-*` for languages, `fw-*` for frameworks, `sec-*` for security, `pattern-*` for design patterns, `antipattern-*` for anti-patterns, `arch-*` for architectural styles, `domain-*` for vertical concerns, `obs-*` for observability, `data-*` for data architecture, etc.
-- **Tier limits**: see `scripts/lib/reviewer-schema.mjs` for per-type body length budgets — soft-warn on overrun, never hard-block.
+- **Tier limits**: `skill-llm-wiki`'s build pass enforces per-type body length budgets — soft-warn on overrun, never hard-block.
 - **Severity**: Critical (blocks merge), Important (blocks merge), Minor (advisory). The aggregator uses originating specialist's severity — it does not re-classify.
 - **Dimensions**: every reviewer must declare ≥ 1 of: `architecture`, `correctness`, `documentation`, `performance`, `readability`, `security`, `tests`. Gate aggregation predicates against these.
 - **Tags**: free-form topical tags. Used by gate predicates and by Tier-0 TF-IDF in clustering. Be specific and consistent — `state-management`, `circuit-breaker`, `solid` etc.
@@ -56,7 +57,9 @@ If adding a framework that the orchestrator doesn't yet recognise from manifests
 ## Before Every Commit
 
 ```bash
-npm run validate:src && npm run test:src && npm run lint
+uv run ruff check ctxr_skill_code_review/ tests/
+uv run mypy ctxr_skill_code_review/
+uv run pytest
 ```
 
-The pre-commit hook enforces this automatically. After a wiki rebuild, also run `node ../skill-llm-wiki/scripts/cli.mjs validate <wiki>` and confirm 0 errors before committing the rebuilt tree.
+All three must pass. After a wiki rebuild, also run `node ../skill-llm-wiki/scripts/cli.mjs validate <wiki>` and confirm 0 errors before committing the rebuilt tree.

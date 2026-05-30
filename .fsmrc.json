@@ -1,9 +1,0 @@
-{
-  "fsms": [
-    {
-      "name": "code-reviewer",
-      "fsm_path": "fsm/code-reviewer.fsm.yaml",
-      "storage_root": ".skill-code-review"
-    }
-  ]
-}

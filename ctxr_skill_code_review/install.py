@@ -48,6 +48,29 @@ def _resolve_db_path(project_db: Path | str | None) -> Path:
     return (Path.cwd() / ".ctxr-fsm" / "fsm.db").resolve()
 
 
+def _portable_repr(path: Path, *, base: Path) -> str:
+    """Render ``path`` in the most-portable form relative to ``base``.
+
+    1. If ``path`` is under ``base`` (typically cwd) → relative path
+       (e.g., ``.ctxr-fsm/fsm.db``). This is the common case and is what
+       gets persisted into JSON envelopes / SKILL.md examples / stdout
+       messages so the artefact survives being pushed to git or moved
+       between machines.
+    2. Else if under the user's home → ``~``-prefixed path.
+    3. Else → absolute path. (The caller explicitly pointed at a file
+       outside both cwd and home; portability is on them.)
+    """
+    try:
+        return str(path.relative_to(base))
+    except ValueError:
+        pass
+    home = Path.home()
+    try:
+        return "~/" + str(path.relative_to(home))
+    except ValueError:
+        return str(path)
+
+
 def register(
     project_db: Path | str | None = None,
     *,
@@ -78,8 +101,11 @@ def register(
           version, ``False`` when an existing matching version was reused.
         * ``handlers_registered`` — count of inline handlers wired into
           the process-wide :class:`~ctxr.fsm.InlineHandlerRegistry`.
-        * ``db_path`` — absolute path to the project DB the spec was
-          written to.
+        * ``db_path`` — project-relative (or ``~``-prefixed, when the
+          DB lives under ``$HOME``) path to the project DB the spec was
+          written to. Stays portable so callers can persist the envelope
+          into JSON manifests / commit it to git without baking machine
+          paths into the artefact.
 
     Idempotency
     -----------
@@ -107,7 +133,7 @@ def register(
         "spec_version": spec_result.spec.version,
         "spec_created": spec_result.created,
         "handlers_registered": len(INLINE_HANDLERS),
-        "db_path": str(db_path),
+        "db_path": _portable_repr(db_path, base=Path.cwd()),
     }
 
 

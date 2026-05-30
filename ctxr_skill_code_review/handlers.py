@@ -1661,12 +1661,17 @@ def write_run_artefacts(
     _atomic_write_text(run_dir / "report.json", render_report_json(report_payload))
     _atomic_write_text(run_dir / "report.md", render_report_markdown(report_payload))
 
+    # manifest.json paths are stored RELATIVE to the run_dir itself so
+    # the artefact stays portable: pushing .skill-code-review/ to git, or
+    # archiving / re-mounting it on another machine, doesn't bake an
+    # absolute filesystem path into the manifest. Consumers reading the
+    # manifest resolve via os.path.join(manifest_dir, report_path).
     manifest = {
         "run_id": legacy_run_id,
         "fsm_run_id": run_uuid_str,
         "verdict": report_payload["verdict"],
-        "report_path": str(run_dir / "report.md"),
-        "report_json_path": str(run_dir / "report.json"),
+        "report_path": "report.md",
+        "report_json_path": "report.json",
         "tier": env.get("tier"),
         "tier_cap": env.get("cap"),
         "tier_rationale": env.get("tier_rationale"),
@@ -1697,7 +1702,16 @@ def handle_write_run_directory(ctx: InlineContext) -> dict[str, Any]:
     """Port of write-run-directory.mjs."""
     env = _env_from_ctx(ctx)
     run_dir = write_run_artefacts(str(ctx.run_id), env)
-    return {"run_dir_path": str(run_dir)}
+    # Persist a project-relative path when run_dir lives under cwd; this
+    # is what downstream handlers (emit_stdout) and consumers of the
+    # terminal brief see. Falls back to the absolute form only when the
+    # run_dir is genuinely outside cwd (rare, requires explicit operator
+    # override of the storage root).
+    try:
+        portable = str(run_dir.relative_to(Path.cwd()))
+    except ValueError:
+        portable = str(run_dir)
+    return {"run_dir_path": portable}
 
 
 # ===========================================================================
@@ -1854,7 +1868,20 @@ def handle_emit_stdout(ctx: InlineContext) -> dict[str, Any]:
         if not body.endswith("\n"):
             _sys.stdout.write("\n")
 
-    manifest_line = f"Manifest: {run_dir / 'manifest.json'}\n"
+    # Print the manifest pointer in its most-portable shape: relative
+    # to cwd when run_dir is under the project root (the common case
+    # for the YYYY/MM/DD/<shard> layout under .skill-code-review/),
+    # else the absolute form. The LLM consumer reads this line; an
+    # absolute path here would be a portability bug — the consumer
+    # might persist it into the session log, paste it into a commit
+    # message, or share it with another agent running on a different
+    # machine.
+    manifest_path = run_dir / "manifest.json"
+    try:
+        manifest_repr = str(manifest_path.relative_to(Path.cwd()))
+    except ValueError:
+        manifest_repr = str(manifest_path)
+    manifest_line = f"Manifest: {manifest_repr}\n"
     if fmt == "markdown" and body is not None:
         _sys.stdout.write(manifest_line)
     else:

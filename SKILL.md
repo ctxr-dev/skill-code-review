@@ -3,25 +3,21 @@ name: skill-code-review
 version: 3.0.0
 description: |
   FSM-driven, deterministic, manifest-producing code-review pipeline.
-  Powered by ctxr-fsm (Python). The LLM is the orchestrator; ctxr-fsm
-  runs inline state handlers server-side; sub-agents are dispatched
-  only for worker states.
+  Powered by ctxr-fsm. The LLM is the orchestrator; ctxr-fsm runs
+  inline state handlers server-side; sub-agents are dispatched only
+  for worker states.
 requires:
   fsm:
     mcp_server: ctxr-fsm
     min_version: 0.2.0
 ---
 
-# skill-code-review v3
+# skill-code-review
 
 A 15-state FSM that drives a code review of a git diff to a `GO` /
 `CONDITIONAL` / `NO-GO` verdict, with deterministic dedup, an 8-gate
 release-readiness synthesis, and a persistent on-disk run directory
 (`report.md` + `report.json` + `manifest.json`).
-
-This is the v3 port: the Node orchestrator is gone, replaced by a
-Pydantic FsmSpec + 9 Python inline handlers + 5 worker prompt
-templates, driven from the LLM side via `ctxr-fsm`'s MCP tool surface.
 
 ## Bootstrap (do this FIRST)
 
@@ -41,13 +37,16 @@ The installer prints a small JSON envelope summarising the result:
 
 ```json
 {
-  "db_path": "/abs/path/.ctxr-fsm/fsm.db",
+  "db_path": ".ctxr-fsm/fsm.db",
   "handlers_registered": 9,
   "spec_created": true,
   "spec_id": "code-reviewer",
   "spec_version": 1
 }
 ```
+
+Paths in the envelope are relative to the project root so the artefact
+survives being pushed to git or moved between machines.
 
 Re-running the installer is a no-op when the spec body hasn't changed
 (`spec_created` becomes `false`; the same version is reused). Inline
@@ -118,30 +117,13 @@ A `report.md` (markdown) plus `report.json` (machine-readable) plus
 exact format is documented in [`report-format.md`](report-format.md).
 Verdict: `GO`, `CONDITIONAL`, or `NO-GO`.
 
-## What's NEW vs. v2.5.1
-
-* **No Node runner.** `scripts/run-review.mjs` (2,800 LOC), the 9
-  inline-state `.mjs` files, the `scripts/lib/` helpers, and the
-  Husky pre-commit hook are gone.
-* **No `@ctxr/fsm` npm dependency.** The skill depends on `ctxr-fsm`
-  (Python, PyPI distribution).
-* **No `--start` / `--continue` shell loop.** Use `fsm.start_run` +
-  `fsm.get_brief` + `fsm.commit_outputs` directly via the MCP tool
-  surface (or HTTP-SSE fallback per `bootstrap.md`).
-* **Same FSM**: 15 states, 9 inline handlers, 5 worker prompts,
-  8-gate verdict synthesis, `reviewers.wiki/` corpus (~476 leaves) —
-  all unchanged in behaviour. Output `report.md` is byte-identical to
-  v2.5.1 for the same fixture inputs.
-
 ## See also
 
 * [`code-reviewer.md`](code-reviewer.md) — the 11-step orchestrator
-  design doc (still relevant; the steps are now driven by the FSM,
-  not the Node script).
+  design doc.
 * [`release-readiness.md`](release-readiness.md) — the 8-gate
   predicate spec.
 * [`report-format.md`](report-format.md) — manifest + report schema.
 * [`reviewers.wiki/`](reviewers.wiki/) — the corpus of ~476 leaf
   reviewers.
-* [`CHANGELOG.md`](CHANGELOG.md) — release history, including the
-  v2 → v3 migration entry.
+* [`CHANGELOG.md`](CHANGELOG.md) — release history.

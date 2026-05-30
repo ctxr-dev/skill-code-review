@@ -36,6 +36,75 @@ upgrade to v2.4.x without any code changes.
 
 ## [Unreleased]
 
+## [3.0.0] - Python port (W14f)
+
+### BREAKING — Node orchestrator removed; depends on ctxr-fsm (Python)
+
+The skill is now a Python package that hands an `FsmSpec` + 9 inline
+handlers + 5 worker prompt templates to `ctxr-fsm`. The LLM is the
+orchestrator: it drives the run through `fsm.start_run` +
+`fsm.get_brief` + `fsm.commit_outputs` over MCP. There is no longer a
+Node runner.
+
+This is a **major** breaking change. The two breaking facets:
+
+1. **Runtime dependency.** Consumers no longer install `@ctxr/fsm`
+   from npm. They install `ctxr-fsm` from PyPI (a Python package) and
+   run `python -m ctxr_skill_code_review.install` once per project to
+   wire the spec + handlers into the local `.ctxr-fsm/fsm.db`.
+2. **Invocation shape.** The legacy `--start` / `--continue` shell
+   loop, the `scripts/run-review.mjs` entrypoint, the `.fsmrc.json`
+   storage-root config, and the `npm test` toolchain are gone.
+   See [`SKILL.md`](SKILL.md) for the new bootstrap + run procedure.
+
+Behaviourally the skill is unchanged: the 15-state FSM, the 9 inline
+handlers, the 5 worker prompts, the 8-gate verdict synthesis, and the
+`reviewers.wiki/` corpus (~476 leaves) port 1:1. Output `report.md` is
+byte-identical to v2.5.1 for the same fixture inputs.
+
+### Added
+
+- `pyproject.toml` declaring `ctxr-skill-code-review` (PyPI name); v3
+  dev sibling-links `ctxr-fsm` from `../fsm/` per Principle 2 (manual
+  publish + file: sibling).
+- `ctxr_skill_code_review/spec.py` — Pydantic `FsmSpec` literal
+  (15 states + 8 worker schemas + 9 inline states + 1 terminal).
+- `ctxr_skill_code_review/handlers.py` — 9 deterministic Python
+  inline handlers ported from `scripts/inline-states/*.mjs` (~1,600 LOC
+  combined Node → ~1,200 LOC Python, including the report-renderer).
+- `ctxr_skill_code_review/workers/` — the 5 worker prompt `.md` files
+  bundled inside the wheel via `importlib.resources`.
+- `ctxr_skill_code_review/install.py` — idempotent `register()` +
+  `python -m ctxr_skill_code_review.install` CLI entry.
+- `tests/` — pytest suite (73 tests) covering spec structure, every
+  inline handler, the install one-shot, and an end-to-end run through
+  the engine with simulated worker outputs.
+- StrEnums for closed verdict / tier / severity / gate-status / handler-id
+  vocabularies (W14i prospective enum-discipline).
+
+### Removed
+
+- `scripts/` (`run-review.mjs`, `inline-states/*.mjs`, `lib/*.mjs`,
+  `assert-fresh-run.mjs`, `build-index-src.mjs`,
+  `validate-body-shape.mjs`, `validate-dimensions.mjs`).
+- `fsm/code-reviewer.fsm.yaml` (content ported to `spec.py`).
+- `fsm/workers/*.md` (moved to `ctxr_skill_code_review/workers/`,
+  unchanged in body).
+- `.fsmrc.json` (replaced by the `ctxr-fsm spec register` discipline
+  + the always-on `.skill-code-review` storage-root convention).
+- `package.json`, `package-lock.json`.
+- `.husky/` (pre-commit replaced by ruff + pytest hooks defined in
+  pyproject.toml; CI takes care of enforcement on PRs).
+- `tests/` Node test runner files (ported to pytest).
+
+### Migration
+
+Consumers that pinned `@ctxr/fsm` and `skill-code-review@2.x` from
+npm continue to work — npmjs.com keeps the v2.x packages reachable.
+v3 is a distinct distribution channel (PyPI / `ctxr-fsm`); upgrades
+require switching to the Python install procedure documented in
+`SKILL.md`.
+
 ## [2.5.1] - 2026-05-30
 
 ### Changed

@@ -79,4 +79,4 @@ tools:                              # optional external linters / SAST
 | 2    | 500             | 20                             | 8                        |
 | 3    | 800             | 25                             | 12                       |
 
-The validator (`scripts/validate-body-shape.mjs`) **soft-warns** on tier overruns — it does not hard-fail the build. Authors are expected to DECOMPOSE oversized reviewers, but a temporary overrun is allowed during refactoring.
+Tier overruns are **soft-warned** by `skill-llm-wiki`'s build pass — they do not hard-fail the build. Authors are expected to DECOMPOSE oversized reviewers, but a temporary overrun is allowed during refactoring.

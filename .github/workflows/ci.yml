@@ -1,31 +1,45 @@
-name: CI
+name: CI (Python)
 
 on:
   push:
-    branches: [main]
+    branches: [main, "v3/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "v3/**"]
 
 jobs:
   validate:
-    name: Build, Validate, Lint & Test
+    name: Lint, Type-check, Test
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
         with:
-          node-version: 22
-          cache: npm
+          version: "latest"
 
-      - run: npm ci
+      - name: Set up Python
+        run: uv python install 3.12
 
-      - name: FSM static validation
-        run: npm run validate:fsm
+      - name: Sync (with dev extras)
+        # Note: pre-publish ctxr-fsm sibling-links from ../fsm/ in dev;
+        # for CI we drop the sibling source and pull from PyPI once
+        # ctxr-fsm 0.2.0 ships. Until then this job runs against the
+        # PyPI fallback (>= 0.1.0a1) — works for the dev shape because
+        # the test suite is hermetic and doesn't depend on the W14a
+        # InlineHandler extension being live (e2e drives the engine
+        # via execute_inline directly).
+        run: |
+          # Strip the dev sibling source so CI resolves from PyPI.
+          python -c "import re, pathlib; p=pathlib.Path('pyproject.toml'); s=p.read_text(); s=re.sub(r'\n\[tool\.uv\.sources\][^\[]+', '\n', s); p.write_text(s)"
+          uv sync --all-extras
 
-      - name: Markdown lint
-        run: npm run lint
+      - name: Ruff
+        run: uv run ruff check ctxr_skill_code_review/ tests/
 
-      - name: Tests
-        run: npm run test:src
+      - name: Mypy
+        run: uv run mypy ctxr_skill_code_review/
+
+      - name: Pytest
+        run: uv run pytest -q

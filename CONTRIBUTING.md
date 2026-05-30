@@ -3,10 +3,23 @@
 ## Setup
 
 ```bash
-npm install
+uv sync --all-extras
 ```
 
-This installs dev dependencies and sets up the pre-commit hook via Husky.
+This installs the package in editable mode (sibling-linking
+`../fsm/` per Principle 2) and the dev extras (pytest, ruff, mypy).
+Pre-commit enforcement runs `uv run ruff check` and `uv run pytest`
+on staged Python files.
+
+## Before every commit
+
+```bash
+uv run ruff check ctxr_skill_code_review/ tests/
+uv run mypy ctxr_skill_code_review/
+uv run pytest
+```
+
+All three must pass.
 
 ## Development Workflow
 
@@ -67,119 +80,105 @@ Adding a framework that the orchestrator doesn't yet recognise from manifests re
 
 ### FSM authoring
 
-The orchestrator's flow is defined as a finite-state-machine YAML at [`fsm/code-reviewer.fsm.yaml`](fsm/code-reviewer.fsm.yaml). The engine that consumes this YAML lives in the standalone [`@ctxr/fsm`](https://github.com/ctxr-dev/fsm) package, referenced from `package.json` via `git+https://github.com/ctxr-dev/fsm.git#main` (always resolves the latest `main`).
+The orchestrator's flow is defined as a Pydantic `FsmSpec` literal at
+[`ctxr_skill_code_review/spec.py`](ctxr_skill_code_review/spec.py).
+The engine that consumes this spec lives in the standalone
+[`ctxr-fsm`](https://github.com/ctxr-dev/fsm) Python package,
+referenced from `pyproject.toml::dependencies` as
+`ctxr-fsm[sqlite] >= 0.1.0a1`. The `[tool.uv.sources]` block
+sibling-links `../fsm/` in editable mode during dev (Principle 2).
 
-The FSM design substrate, CLI reference, state-YAML schema, worker contract, and storage-layout reference all live in the FSM package's `docs/` directory:
+The FSM design substrate, MCP tool reference, predicate-DSL grammar,
+worker contract, and storage-layout reference all live in the FSM
+package's `docs/` directory at <https://github.com/ctxr-dev/fsm>.
 
-- [`orchestration-design.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/orchestration-design.md)
-- [`cli-reference.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/cli-reference.md)
-- [`state-yaml-reference.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/state-yaml-reference.md)
-- [`worker-contract.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/worker-contract.md)
-- [`storage-layout.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/storage-layout.md)
-
-`package.json` references `@ctxr/fsm` via `git+https://github.com/ctxr-dev/fsm.git#<commit-sha>` — pinned to a full 40-character commit SHA so `npm ci` resolves the same engine bytes on every run, and the `npm publish --provenance` attestation has a stable subject closure (no silent floats from `main`). To pick up new FSM commits, bump the SHA explicitly:
-
-```bash
-npm install --save "@ctxr/fsm@git+https://github.com/ctxr-dev/fsm.git#<new-sha>"
-```
-
-(or fetch the latest with `gh api repos/ctxr-dev/fsm/commits/main --jq '.sha'` and reinstall against it).
-
-**For local engine hacking** against a sibling checkout at `../fsm`, override the dep temporarily:
-
-```bash
-npm install --save file:../fsm   # writes "@ctxr/fsm": "file:../fsm" into package.json
-# ... iterate locally; changes in ../fsm are picked up immediately
-```
-
-Revert to a pinned upstream form before committing:
-
-```bash
-SHA=$(gh api repos/ctxr-dev/fsm/commits/main --jq '.sha')
-npm install --save "@ctxr/fsm@git+https://github.com/ctxr-dev/fsm.git#$SHA"
-```
-
-`.fsmrc.json` at the repo root tells the FSM CLIs where the FSM YAML and storage root live:
-
-```json
-{
-  "fsms": [
-    {
-      "name": "code-reviewer",
-      "fsm_path": "fsm/code-reviewer.fsm.yaml",
-      "storage_root": ".skill-code-review"
-    }
-  ]
-}
-```
+**For local engine hacking** against the sibling checkout at
+`../fsm`, edits are picked up automatically — the editable install
+follows the source. To swap to a different ctxr-fsm version, update
+the sources block in `pyproject.toml` (e.g. drop the
+`[tool.uv.sources]` block entirely to pin to a PyPI release).
 
 **To add a new state:**
 
-1. Append a new entry to `fsm/code-reviewer.fsm.yaml` `fsm.states[]`. Required fields: `id` (snake_case), `purpose`, `preconditions[]`, `outputs[]`, `transitions[]`. See [`state-yaml-reference.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/state-yaml-reference.md) for the full schema.
-2. If the state dispatches a worker, declare a `worker:` block with `role`, `prompt_template` (path relative to the FSM YAML's directory — typically `workers/<role>.md`), `inputs[]` (must reference outputs of upstream states, or `args` for the entry state), and `response_schema` (a valid JSON Schema). Inline states (no LLM call required) omit the `worker:` block.
-3. Author the worker prompt template at `fsm/workers/<role>.md`. See [`worker-contract.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/worker-contract.md) for conventions.
-4. Run `npm run validate:fsm` — the package's static validator catches missing prompt templates, undefined transition targets, unreachable states, missing terminal states, malformed `response_schema`, and input/output flow gaps.
+1. Add a `State(...)` factory in `spec.py` mirroring the existing
+   patterns; remember to declare `id` (snake_case), `worker=` /
+   `loop=` / `inline=` (mutually exclusive), `outputs[]`,
+   `post_validations` (predicate DSL expressions), and `transitions[]`.
+2. Append the new state to `build_spec()`'s `states=[…]` list in the
+   correct position (entry state is the first list element only by
+   convention; `entry=` controls the actual entry id).
+3. If the state is `inline=…`, add the handler callable to
+   `ctxr_skill_code_review/handlers.py` and register it in
+   `INLINE_HANDLERS`. If it is a worker, drop a new prompt template
+   under `ctxr_skill_code_review/workers/<role>.md`.
+4. Run `uv run pytest tests/test_spec.py` — the spec module's
+   structural tests catch missing handler registrations, malformed
+   transitions, and shape regressions.
 
-**Validators wired into `npm run validate:src`:**
-
-- `validate:body-shape` — enforces the H2 contract on every reviewer in `reviewers.src/`.
-- `validate:dimensions` — enforces the 7-axis dimensions taxonomy.
-- `validate:fsm` — runs `@ctxr/fsm`'s `fsm-validate-static` over `fsm/code-reviewer.fsm.yaml`.
-
-The FSM YAML validates clean before any commit.
+**Closed vocabularies → StrEnums (W14i discipline).** Any new field
+whose values form a closed vocabulary (verdict, status, severity, …)
+declares a `StrEnum` in `spec.py` and references members by name
+rather than literal strings. The W14i sweep enforces this across the
+whole tree.
 
 ### Validation
 
 ```bash
-npm run validate:src   # source-corpus validators (parse + body + dimensions)
-npm run test:src       # validator unit tests
-npm run lint           # markdown lint
-npm run lint:fix       # auto-fix markdown issues
+uv run pytest tests/                          # spec + handler + install + e2e tests
+uv run ruff check ctxr_skill_code_review/ tests/
+uv run mypy ctxr_skill_code_review/
 ```
 
-The pre-commit hook runs `validate:fsm + lint`. (Maintainers authoring new reviewers should additionally run `npm run validate:src` locally against their `reviewers.src/` checkout before opening a PR — the source layer is gitignored, so the hook can't enforce it for everyone.)
-
-#### What the Source Validators Check
-
-- **Schema** — every required frontmatter field present, valid types, valid enum values
-- **Body shape** — H1 title, required H2 sections per type, tier-cap line counts (soft-warn on overruns)
-- **Dimensions taxonomy** — every reviewer declares ≥ 1 dimension from the 7-axis closed vocabulary
+These three pass before any commit. Source-corpus validation for
+hand-authored `reviewers.src/` leaves runs through `skill-llm-wiki`
+(sibling project) — see the "Adding a Reviewer" section above for
+the rebuild + validate flow.
 
 ## File Structure
 
 ```
-SKILL.md                          LLM entry point — single imperative dispatching scripts/run-review.mjs
-code-reviewer.md                  Runtime-contract stub (redirect to SKILL.md + design doc; not LLM-runtime)
-release-readiness.md              8-gate predicate reference (consumed by inline-state handlers, not LLMs)
-report-format.md                  Report contract (consumed by inline-state handlers, not LLMs)
-docs/code-reviewer-design.md      Eleven-step orchestrator design rationale (humans only)
-fsm/code-reviewer.fsm.yaml        Authoritative state machine
-fsm/workers/*.md                  Per-state worker prompts (LLM-readable, self-contained)
-scripts/run-review.mjs            FSM-driver runner (the only LLM-facing entry point at runtime)
-scripts/inline-states/*.mjs       Deterministic per-state handlers
-scripts/lib/*.mjs                 Validators (trim-output, activation-gate, fresh-run)
-reviewers.src/                    Source corpus (gitignored)
-reviewers.wiki/                   Wiki-organised corpus — source of truth in repo
-  index.md                        Root index — entries[] of subcategories
-  <subcat>/index.md               Subcategory index — entries[] of leaves
-  <subcat>/<leaf>.md              Specialist reviewer
+SKILL.md                              LLM entry point — bootstrap + run loop
+code-reviewer.md                      Runtime-contract stub (redirect to SKILL.md + design doc)
+release-readiness.md                  8-gate predicate reference (consumed by handlers, not LLMs)
+report-format.md                      Report contract (consumed by handlers, not LLMs)
+docs/code-reviewer-design.md          Eleven-step orchestrator design rationale (humans only)
+ctxr_skill_code_review/
+  spec.py                             Pydantic FsmSpec literal (state machine + schemas)
+  handlers.py                         9 deterministic inline handlers + report renderer
+  install.py                          Idempotent register() one-shot + CLI entry
+  workers/*.md                        Per-state worker prompts (LLM-readable, self-contained)
+tests/                                pytest suite
+reviewers.src/                        Source corpus (gitignored)
+reviewers.wiki/                       Wiki-organised corpus — source of truth in repo
+  index.md                            Root index — entries[] of subcategories
+  <subcat>/index.md                   Subcategory index — entries[] of leaves
+  <subcat>/<leaf>.md                  Specialist reviewer
+pyproject.toml                        Package metadata, dev sources, tool config
 ```
 
 ## Conventions
 
 - **Reviewer files** must have an H1 title as the first heading
 - **Reviewer IDs** use kebab-case matching the filename (e.g., `sec-owasp-a01-broken-access-control` → `sec-owasp-a01-broken-access-control.md`)
-- Tier caps from `scripts/lib/reviewer-schema.mjs` give per-type body length budgets — soft-warn on overrun, never hard-block
+- Tier caps governing per-type body length budgets are enforced by `skill-llm-wiki`'s build pass — soft-warn on overrun, never hard-block
 - Use consistent severity levels: Critical, Important, Minor
 
 ## Releasing
 
-Releases are PR-gated; the bot does not push to `main` directly. One dispatch + one PR merge ships the package.
+Releases are PR-gated and manual per Principle 2 (no auto-publish to
+PyPI). The pre-v3 npm release workflow under `.github/workflows/` is
+preserved for v2.x point releases (which still ship from npm); v3+
+releases ship as Python wheels via a separate
+`workflow_dispatch`-only publish.
 
-1. Actions → Release → Run workflow. Branch selector: `main` (any other ref is rejected). Version bump: `patch` / `minor` / `major`.
-2. The workflow bumps `package.json` on a `release/v<version>` branch and opens a release PR.
-3. Review + merge the PR.
-4. `tag-on-main.yml` detects the version change on the merge commit, creates the annotated `v<version>` tag, and pushes it.
-5. The tag push triggers `publish.yml`, which runs `validate:fsm + lint + test`, verifies tag/version agreement, and runs `npm publish --access public --provenance`.
+For v3.x the procedure is:
 
-Full operator walkthrough (including troubleshooting for stale/orphan tags, non-main dispatches, and the "Allow GitHub Actions to create and approve pull requests" org-level policy) lives in the [Releasing section of the README](README.md#releasing).
+1. Bump `pyproject.toml` `[project].version` on a `release/v<version>`
+   branch and open a PR.
+2. Review + merge the PR.
+3. A maintainer runs the manual PyPI publish workflow against the
+   merge commit. The workflow runs `uv sync`, `uv run pytest`,
+   `uv run ruff check`, `uv run mypy`, then `uv build` +
+   `uv publish` with a PyPI trusted publisher.
+
+No auto-publish on tag push; the human gate is the trigger.

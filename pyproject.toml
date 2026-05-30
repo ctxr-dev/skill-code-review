@@ -12,9 +12,13 @@ dependencies = [
   # `[tool.uv.sources]` block below pins this to the sibling editable
   # checkout at `../fsm/` (Principle 2); manual PyPI publish flips
   # this constraint to the real 0.2.0 once ctxr-fsm releases.
-  # The `[sqlite]` extra pulls SQLAlchemy + SQLModel + alembic, which
-  # install.py needs to register the spec into the project DB.
-  "ctxr-fsm[sqlite]>=0.1.0a1",
+  # The `[all]` extras pull mcp + sqlite + api (httpx + uvicorn +
+  # fastapi + sse-starlette). Required because the SKILL.md bootstrap
+  # preamble runs `ctxr-fsm ensure`, whose ensure_cmd module imports
+  # httpx at module top — a `[sqlite]`-only install would fail at
+  # import time. Picking `[all]` aligns with Principle 1: the universal
+  # pre-check primitive must work from a plain install of this skill.
+  "ctxr-fsm[all]>=0.1.0a1",
   "pydantic>=2.7",
   "jsonschema>=4.23",
   "python-frontmatter>=1.1",

@@ -6,6 +6,16 @@ on:
   pull_request:
     branches: [main, "v3/**"]
 
+# Workflow-level permissions: GitHub's CodeQL warns when the
+# GITHUB_TOKEN's permissions are not scoped explicitly. This CI just
+# reads source + runs tests; ``contents: read`` is the minimum that
+# lets ``actions/checkout`` clone the repo. No write surfaces are
+# exercised here (no commenting, no releases, no PR mutations), so
+# every other permission stays at the workflow-level default of
+# ``none``.
+permissions:
+  contents: read
+
 jobs:
   validate:
     name: Lint, Type-check, Test
@@ -22,18 +32,24 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Sync (with dev extras)
-        # Note: pre-publish ctxr-fsm sibling-links from ../fsm/ in dev;
-        # for CI we drop the sibling source and pull from PyPI once
-        # ctxr-fsm 0.2.0 ships. Until then this job runs against the
-        # PyPI fallback (>= 0.1.0a1) — works for the dev shape because
-        # the test suite is hermetic and doesn't depend on the W14a
-        # InlineHandler extension being live (e2e drives the engine
-        # via execute_inline directly).
+      - name: Clone ctxr-fsm sibling
+        # Pre-publish (Principle 2 — manual PyPI release), the
+        # ``ctxr-fsm`` dependency is resolved from the sibling
+        # editable checkout at ``../fsm/`` declared under
+        # ``[tool.uv.sources]``. CI does not have a sibling checkout by
+        # default, so we materialise one here from the upstream repo's
+        # ``main``. Once ``ctxr-fsm >= 0.2.0`` is on PyPI the
+        # ``[tool.uv.sources]`` block + this step both go away and the
+        # sync resolves from PyPI in one shot.
         run: |
-          # Strip the dev sibling source so CI resolves from PyPI.
-          python -c "import re, pathlib; p=pathlib.Path('pyproject.toml'); s=p.read_text(); s=re.sub(r'\n\[tool\.uv\.sources\][^\[]+', '\n', s); p.write_text(s)"
-          uv sync --all-extras
+          git clone --depth 1 https://github.com/ctxr-dev/fsm.git ../fsm
+
+      - name: Sync (with dev extras)
+        # The sibling clone above satisfies the ``../fsm`` path source
+        # declared in ``pyproject.toml [tool.uv.sources]`` so a plain
+        # ``uv sync --all-extras`` resolves cleanly without touching
+        # PyPI for ctxr-fsm.
+        run: uv sync --all-extras
 
       - name: Ruff
         run: uv run ruff check ctxr_skill_code_review/ tests/

@@ -37,6 +37,7 @@ from ctxr.fsm import (
     ResponseSchema,
     State,
     Transition,
+    TransitionKind,
     Worker,
 )
 
@@ -638,7 +639,7 @@ def _scan_project() -> State:
             # "diff_stats.lines_changed is a non-negative integer"
             Predicate("diff_stats.lines_changed >= 0"),
         ],
-        transitions=[Transition(to="risk_tier_triage", when="always")],
+        transitions=[Transition(to="risk_tier_triage", when=TransitionKind.always)],
     )
 
 
@@ -679,7 +680,7 @@ def _risk_tier_triage() -> State:
                     "AND NOT scope_overrides_present"
                 ),
             ),
-            Transition(to="activate_leaves", when="always"),
+            Transition(to="activate_leaves", when=TransitionKind.always),
         ],
     )
 
@@ -709,7 +710,7 @@ def _activate_leaves() -> State:
                 to="stage_a_empty",
                 when=Predicate("len(activated_leaves) == 0"),
             ),
-            Transition(to="tree_descend", when="always"),
+            Transition(to="tree_descend", when=TransitionKind.always),
         ],
     )
 
@@ -739,7 +740,7 @@ def _tree_descend() -> State:
                 to="stage_a_empty",
                 when=Predicate("len(stage_a_candidates) == 0"),
             ),
-            Transition(to="llm_trim", when="always"),
+            Transition(to="llm_trim", when=TransitionKind.always),
         ],
     )
 
@@ -766,7 +767,7 @@ def _llm_trim() -> State:
         ),
         outputs=["picked_leaves", "rejected_leaves", "coverage_rescues"],
         post_validations=[Predicate("len(picked_leaves) >= 0")],
-        transitions=[Transition(to="tool_discovery", when="always")],
+        transitions=[Transition(to="tool_discovery", when=TransitionKind.always)],
     )
 
 
@@ -782,7 +783,7 @@ def _tool_discovery() -> State:
             response_schema=_tool_runner_schema(),
         ),
         outputs=["tool_results"],
-        transitions=[Transition(to="dispatch_specialists", when="always")],
+        transitions=[Transition(to="dispatch_specialists", when=TransitionKind.always)],
     )
 
 
@@ -807,7 +808,7 @@ def _dispatch_specialists() -> State:
         ),
         outputs=["specialist_outputs"],
         post_validations=[Predicate("len(specialist_outputs) >= 0")],
-        transitions=[Transition(to="collect_findings", when="always")],
+        transitions=[Transition(to="collect_findings", when=TransitionKind.always)],
     )
 
 
@@ -822,7 +823,7 @@ def _collect_findings() -> State:
             post_validations=[Predicate("len(findings) >= 0")],
         ),
         outputs=["findings", "severity_counts"],
-        transitions=[Transition(to="verify_coverage", when="always")],
+        transitions=[Transition(to="verify_coverage", when=TransitionKind.always)],
     )
 
 
@@ -841,7 +842,7 @@ def _verify_coverage() -> State:
             post_validations=[Predicate("len(coverage_matrix) >= 0")],
         ),
         outputs=["coverage_matrix", "coverage_gaps", "coverage_rule_violated"],
-        transitions=[Transition(to="synthesize_release_readiness", when="always")],
+        transitions=[Transition(to="synthesize_release_readiness", when=TransitionKind.always)],
     )
 
 
@@ -864,7 +865,7 @@ def _synthesize_release_readiness() -> State:
             ],
         ),
         outputs=["gates", "verdict"],
-        transitions=[Transition(to="write_run_directory", when="always")],
+        transitions=[Transition(to="write_run_directory", when=TransitionKind.always)],
     )
 
 
@@ -884,7 +885,7 @@ def _write_run_directory() -> State:
             post_validations=[Predicate("len(run_dir_path) > 0")],
         ),
         outputs=["run_dir_path"],
-        transitions=[Transition(to="emit_stdout", when="always")],
+        transitions=[Transition(to="emit_stdout", when=TransitionKind.always)],
     )
 
 
@@ -898,7 +899,7 @@ def _emit_stdout() -> State:
             response_schema=_emit_stdout_schema(),
         ),
         outputs=[],
-        transitions=[Transition(to="terminal", when="always")],
+        transitions=[Transition(to="terminal", when=TransitionKind.always)],
     )
 
 
@@ -927,7 +928,7 @@ def _short_circuit_exit() -> State:
             "verdict",
             "short_circuited",
         ],
-        transitions=[Transition(to="write_run_directory", when="always")],
+        transitions=[Transition(to="write_run_directory", when=TransitionKind.always)],
     )
 
 
@@ -956,7 +957,7 @@ def _stage_a_empty() -> State:
             "verdict",
             "degraded_run",
         ],
-        transitions=[Transition(to="write_run_directory", when="always")],
+        transitions=[Transition(to="write_run_directory", when=TransitionKind.always)],
     )
 
 

@@ -32,17 +32,59 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Clone ctxr-fsm sibling
+      - name: Resolve ctxr-fsm sibling ref
         # Pre-publish (Principle 2 — manual PyPI release), the
-        # ``ctxr-fsm`` dependency is resolved from the sibling
-        # editable checkout at ``../fsm/`` declared under
-        # ``[tool.uv.sources]``. CI does not have a sibling checkout by
-        # default, so we materialise one here from the upstream repo's
-        # ``main``. Once ``ctxr-fsm >= 0.2.0`` is on PyPI the
-        # ``[tool.uv.sources]`` block + this step both go away and the
-        # sync resolves from PyPI in one shot.
+        # ``ctxr-fsm`` dependency is resolved from the sibling editable
+        # checkout at ``../fsm/`` declared under ``[tool.uv.sources]``.
+        # The fsm repo's ``main`` is still the legacy Node tree (no
+        # Python package); the Python rewrite ships from workstream
+        # branches (w1, …, w14j). We pick the deepest applied chain
+        # tip as the integration target so the consumer always builds
+        # against the freshest Python ctxr-fsm. Override via the
+        # ``CTXR_FSM_REF`` repo variable when a specific PR branch
+        # needs to be tested. The fallback list is tried in order
+        # because branches get merged + deleted as the chain advances.
+        id: fsm_ref
+        env:
+          CTXR_FSM_REF: ${{ vars.CTXR_FSM_REF }}
         run: |
-          git clone --depth 1 https://github.com/ctxr-dev/fsm.git ../fsm
+          set -euo pipefail
+          candidates=(
+            "${CTXR_FSM_REF:-}"
+            "w14j/rich-subsystem-table"
+            "w14i/enum-extract-audit"
+            "w14g/workspace-docs"
+            "w14e/bootstrap-doc-and-memory-wiring"
+            "w14b/ensure-and-mcp-config"
+            "w14a/inline-handler-engine"
+            "main"
+          )
+          chosen=""
+          for ref in "${candidates[@]}"; do
+            if [ -z "$ref" ]; then continue; fi
+            if git ls-remote --exit-code https://github.com/ctxr-dev/fsm.git "refs/heads/$ref" >/dev/null 2>&1; then
+              chosen="$ref"
+              break
+            fi
+          done
+          if [ -z "$chosen" ]; then
+            echo "::error::no candidate ctxr-fsm ref resolved (override via repo variable CTXR_FSM_REF)"
+            exit 1
+          fi
+          echo "ref=$chosen" >> "$GITHUB_OUTPUT"
+
+      - name: Clone ctxr-fsm sibling
+        # Clone the resolved branch + assert pyproject.toml is present
+        # (the legacy Node main branch lacks it; we want to fail fast
+        # with a clear message rather than confuse uv sync later).
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${{ steps.fsm_ref.outputs.ref }}" \
+            https://github.com/ctxr-dev/fsm.git ../fsm
+          if [ ! -f ../fsm/pyproject.toml ]; then
+            echo "::error::cloned ${{ steps.fsm_ref.outputs.ref }} but no pyproject.toml at the root"
+            exit 1
+          fi
 
       - name: Sync (with dev extras)
         # The sibling clone above satisfies the ``../fsm`` path source

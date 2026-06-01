@@ -36,14 +36,21 @@ jobs:
         # Pre-publish (Principle 2 — manual PyPI release), the
         # ``ctxr-fsm`` dependency is resolved from the sibling editable
         # checkout at ``../fsm/`` declared under ``[tool.uv.sources]``.
-        # The fsm repo's ``main`` is still the legacy Node tree (no
-        # Python package); the Python rewrite ships from workstream
-        # branches (w1, …, w14j). We pick the deepest applied chain
-        # tip as the integration target so the consumer always builds
-        # against the freshest Python ctxr-fsm. Override via the
-        # ``CTXR_FSM_REF`` repo variable when a specific PR branch
-        # needs to be tested. The fallback list is tried in order
-        # because branches get merged + deleted as the chain advances.
+        # ``fsm/main`` IS the Python tree (W14a..j + W22 are all
+        # merged), so ``main`` is the canonical integration target.
+        # If a specific in-flight PR branch needs to be tested, set
+        # the ``CTXR_FSM_REF`` repo variable to override.
+        #
+        # Historical note: pre-W15 the fallback list named individual
+        # workstream branches because ``main`` was still the legacy
+        # Node tree and the Python rewrite shipped from branches like
+        # ``w14j/rich-subsystem-table``. That regime is over —
+        # ``w14a/inline-handler-engine`` is now a stale ghost branch
+        # whose tip predates the W14i enum-extract refactor, so
+        # picking it up resurrects pre-StrEnum APIs that the consumer
+        # has long since outgrown (e.g. ``Transition.when``'s narrower
+        # ``Literal['always','otherwise']`` shape, which mypy rejects
+        # for consumers that pass ``TransitionKind.always``).
         id: fsm_ref
         env:
           CTXR_FSM_REF: ${{ vars.CTXR_FSM_REF }}
@@ -51,12 +58,6 @@ jobs:
           set -euo pipefail
           candidates=(
             "${CTXR_FSM_REF:-}"
-            "w14j/rich-subsystem-table"
-            "w14i/enum-extract-audit"
-            "w14g/workspace-docs"
-            "w14e/bootstrap-doc-and-memory-wiring"
-            "w14b/ensure-and-mcp-config"
-            "w14a/inline-handler-engine"
             "main"
           )
           chosen=""

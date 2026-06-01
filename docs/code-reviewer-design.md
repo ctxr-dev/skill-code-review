@@ -4,9 +4,10 @@
 > step-by-step intent narrative for the FSM-driven orchestrator. It is **not**
 > a runtime spec, and an LLM running the skill must **not** read it: the
 > runtime contract is code (see the table below), and the LLM-facing entry
-> point is `../SKILL.md` at the repo root, which dispatches
-> `../scripts/run-review.mjs` directly. If you arrived here while running a
-> review, stop and re-read `SKILL.md` — you are on the wrong path.
+> point is `../SKILL.md` at the repo root. v3 drives the FSM through
+> `ctxr-fsm` (Python) — the LLM is the orchestrator, not the runner; the
+> runner is gone. If you arrived here while running a review, stop and
+> re-read `SKILL.md` — you are on the wrong path.
 >
 > The eleven Steps below describe what each FSM state *does* in human terms.
 > Each Step carries a callout naming its FSM state id and the handler / worker
@@ -24,16 +25,16 @@ The orchestrator does NOT review code itself — it scans, routes, collects, ded
 
 | Layer | File | Role |
 |---|---|---|
-| State machine | [`fsm/code-reviewer.fsm.yaml`](../fsm/code-reviewer.fsm.yaml) | Authoritative state transitions, preconditions, outputs, worker response schemas. |
-| Runner | [`scripts/run-review.mjs`](../scripts/run-review.mjs) | Drives the FSM end-to-end via `@ctxr/fsm`'s `fsm-next` / `fsm-commit` CLIs. Dispatches inline-state handlers, pauses on workers. |
-| Inline-state handlers | [`scripts/inline-states/*.mjs`](../scripts/inline-states/) | Deterministic implementations of each non-worker step. (Most are pure-in/pure-out; `write-run-directory` and `emit-stdout` intentionally perform side effects — filesystem writes and stdout/stderr — but each remains byte-deterministic given identical inputs.) |
-| Worker prompts | [`fsm/workers/*.md`](../fsm/workers/) | LLM-judgement steps (project-scanner, tree-descender, trim-candidates, tool-runner, specialist-coordinator). |
-| Activation gate | [`scripts/lib/activation-gate.mjs`](../scripts/lib/activation-gate.mjs) | Deterministic file_globs / keyword_matches / structural_signals / escalation_from evaluation. **Imported and invoked from inside the tree-descender worker** (not from the runner; the runner only pauses on workers). Lifting it into the runner so the worker consumes a precomputed `activated_leaves[]` from env is tracked under the B6 reframe. |
+| State machine | [`ctxr_skill_code_review/spec.py`](../ctxr_skill_code_review/spec.py) | Authoritative state transitions, preconditions, outputs, worker response schemas — a Pydantic `FsmSpec` literal. |
+| Runner | [`ctxr-fsm`](https://github.com/ctxr-dev/fsm) (Python, MCP) | The LLM orchestrator drives the FSM through `fsm.start_run` + `fsm.get_brief` + `fsm.commit_outputs`. Inline states advance server-side; workers pause for LLM dispatch. |
+| Inline-state handlers | [`ctxr_skill_code_review/handlers.py`](../ctxr_skill_code_review/handlers.py) | Deterministic Python implementations of each non-worker step. (Most are pure-in/pure-out; `write_run_directory` and `emit_stdout` intentionally perform side effects — filesystem writes and stdout/stderr — but each remains byte-deterministic given identical inputs.) |
+| Worker prompts | [`ctxr_skill_code_review/workers/*.md`](../ctxr_skill_code_review/workers/) | LLM-judgement steps (project-scanner, tree-descender, trim-candidates, tool-runner, specialist). |
+| Activation gate | `handle_activate_leaves` in [`handlers.py`](../ctxr_skill_code_review/handlers.py) | Deterministic file_globs / keyword_matches / structural_signals / escalation_from evaluation. Runs as the `activate_leaves` inline state so the orchestrator never has to trust an LLM-eyeballed activation_match. |
 | Report shape | [`report-format.md`](../report-format.md) | Canonical JSON / markdown report contract — what `report.json` and `report.md` look like. |
 
 **The eleven prose Steps below are not the runtime spec.** They document what each FSM state *does* in human terms. Each Step now carries a callout naming its FSM state id and the handler / worker that implements it. Read the prose to understand intent; trust the linked code for what actually executes.
 
-> **FSM substrate.** The engine + CLIs live in the standalone [`@ctxr/fsm`](https://github.com/ctxr-dev/fsm) package; `.fsmrc.json` at the repo root configures `fsm_path` and `storage_root`. See [`ctxr-dev/fsm/docs/orchestration-design.md`](https://github.com/ctxr-dev/fsm/blob/main/docs/orchestration-design.md) for the design substrate. The Markdown narrative below documents the action body of each state in human terms; the YAML is the machine-readable contract for state transitions, preconditions, outputs, and worker response schemas. The two stay in sync until the FSM package's v0.4 generator collapses the duplication.
+> **FSM substrate.** The engine + MCP surface live in the standalone [`ctxr-fsm`](https://github.com/ctxr-dev/fsm) Python package; the project DB at `.ctxr-fsm/fsm.db` stores runs / events / commit signatures. See [`ctxr-dev/fsm/docs/`](https://github.com/ctxr-dev/fsm/tree/main/docs) for the substrate documentation. The Markdown narrative below documents the action body of each state in human terms; the Pydantic `FsmSpec` literal in [`ctxr_skill_code_review/spec.py`](../ctxr_skill_code_review/spec.py) is the machine-readable contract for state transitions, preconditions, outputs, and worker response schemas.
 
 ## Context
 
@@ -180,7 +181,7 @@ repo: <name>
 
 ## Step 2: Risk-Tier Triage
 
-> **Action body for FSM state `risk_tier_triage`.** Inline-state handler: [`scripts/inline-states/risk-tier-triage.mjs`](../scripts/inline-states/risk-tier-triage.mjs). Pure-function: same `(changed_paths, diff_stats, project_profile, args) → (tier, cap, risk_signals)` for every run. The runner is authoritative; this prose documents intent.
+> **Action body for FSM state `risk_tier_triage`.** Inline-state handler: `handle_risk_tier_triage` in [`ctxr_skill_code_review/handlers.py`](../ctxr_skill_code_review/handlers.py). Pure-function: same `(changed_paths, diff_stats, project_profile, args) → (tier, cap, risk_signals)` for every run. The handler is authoritative; this prose documents intent.
 
 Bucket the diff into one of four tiers. The tier sets the upper bound on specialist count and gates the short-circuit transition (the FSM moves directly from `risk_tier_triage` to `short_circuit_exit` when `tier == 'trivial'` AND `len(risk_signals) == 0` AND no scope-overrides — no Step 3 round-trip required).
 
@@ -222,7 +223,7 @@ Explicit `max-reviewers=N` argument overrides the tier-default cap. The orchestr
 
 ## Step 3: Tree Descent
 
-> **Action body for FSM state `tree_descend`.** Worker: [`fsm/workers/tree-descender.md`](../fsm/workers/tree-descender.md). The worker invokes [`scripts/lib/activation-gate.mjs`](../scripts/lib/activation-gate.mjs) for the deterministic activation evaluation; only the focus-descent step is LLM judgement. The runner is authoritative; this prose documents intent.
+> **Action body for FSM state `tree_descend`.** Worker prompt: [`ctxr_skill_code_review/workers/tree-descender.md`](../ctxr_skill_code_review/workers/tree-descender.md). The activation gate runs *upstream* of this worker as the `activate_leaves` inline state (`handle_activate_leaves` in `handlers.py`), so the tree-descender worker only does the focus-descent LLM judgement on a pre-computed candidate set. The handler + worker pair is authoritative; this prose documents intent.
 
 Walk the wiki tree at `reviewers.wiki/` to gather a candidate leaf set. Activation evaluation (file_globs / keyword_matches / structural_signals / escalation_from) is deterministic; only the parent-`focus` semantic descent calls the LLM.
 
@@ -267,7 +268,7 @@ If `scope-framework=<f1>,<f2>,...` is set: restrict the descent to leaves whose 
 
 ## Step 4: LLM Trim
 
-> **Action body for FSM state `llm_trim`.** Worker: [`fsm/workers/trim-candidates.md`](../fsm/workers/trim-candidates.md) (role: `trim-candidates`). Once SC-B8 ([`#13`](https://github.com/ctxr-dev/skill-code-review/issues/13)) lands, a referential-integrity validator at `scripts/lib/trim-output-validator.mjs` will run after the worker output and abort the run on fabricated `picked_leaves[].id`, `coverage_rescues[].file`, etc. (Plain text rather than a link: the file is added by #13 and is not present on this branch.) The runner is authoritative; this prose documents intent.
+> **Action body for FSM state `llm_trim`.** Worker prompt: [`ctxr_skill_code_review/workers/trim-candidates.md`](../ctxr_skill_code_review/workers/trim-candidates.md) (role: `trim-candidates`). A referential-integrity validator on the worker's output (tracked under issue [`#13`](https://github.com/ctxr-dev/skill-code-review/issues/13)) is not currently bundled into the v3 port — the engine's JSON-schema validation on the worker's `response_schema` enforces shape but not cross-field referential consistency. The worker is authoritative; this prose documents intent.
 
 Pick the final K = `cap` leaves from Step 3's candidates with explicit per-pick justifications. One sub-agent dispatch (or inline reasoning).
 
@@ -362,7 +363,7 @@ Dispatch ALL specialists in parallel: emit one message with multiple Agent tool 
 
 ## Step 7: Collect Findings
 
-> **Action body for FSM state `collect_findings`.** Inline-state handler: [`scripts/inline-states/collect-findings.mjs`](../scripts/inline-states/collect-findings.mjs). Dedup keyed by `(file, line, normalised_title)`; pickWinner breaks severity ties by the persisted `__winner` / `__origin` stamp, never by the changing `flagged_by[0]`. Pure-function: byte-identical output for byte-identical input. The runner is authoritative; this prose documents intent.
+> **Action body for FSM state `collect_findings`.** Inline-state handler: `handle_collect_findings` in [`ctxr_skill_code_review/handlers.py`](../ctxr_skill_code_review/handlers.py). Dedup keyed by `(file, line, normalised_title)`; the tie-breaker breaks severity ties by the persisted `__winner` / `__origin` stamp, never by the changing `flagged_by[0]`. Pure-function: byte-identical output for byte-identical input. The handler is authoritative; this prose documents intent.
 
 Wait for all specialists to complete. Then:
 
@@ -377,7 +378,7 @@ Wait for all specialists to complete. Then:
 
 ## Step 8: Verify Coverage
 
-> **Action body for FSM state `verify_coverage`.** Inline-state handler: [`scripts/inline-states/verify-coverage.mjs`](../scripts/inline-states/verify-coverage.mjs). Per-leaf scope is narrowed by reading each picked leaf's `activation.file_globs[]` from its on-disk frontmatter; coverage_rule_violated is set when any changed file has < 2 reviewers after rescues. The runner is authoritative; this prose documents intent.
+> **Action body for FSM state `verify_coverage`.** Inline-state handler: `handle_verify_coverage` in [`ctxr_skill_code_review/handlers.py`](../ctxr_skill_code_review/handlers.py). Per-leaf scope is narrowed by reading each picked leaf's `activation.file_globs[]` from its on-disk frontmatter; `coverage_rule_violated` is set when any changed file has < 2 reviewers after rescues. The handler is authoritative; this prose documents intent.
 
 Build a coverage matrix: for every file in the diff, list which specialists reviewed it.
 
@@ -390,9 +391,9 @@ Build a coverage matrix: for every file in the diff, list which specialists revi
 
 ## Step 9: Synthesize Release Readiness
 
-> **Action body for FSM state `synthesize_release_readiness`.** Inline-state handler: [`scripts/inline-states/synthesize-release-readiness.mjs`](../scripts/inline-states/synthesize-release-readiness.mjs). The eight-gate predicate match against picked leaf dimensions, the verdict computation, and the B4 hard-coverage-rule promotion to NO-GO all live in code there — the prose below describes intent. The runner is authoritative.
+> **Action body for FSM state `synthesize_release_readiness`.** Inline-state handler: `handle_synthesize_release_readiness` in [`ctxr_skill_code_review/handlers.py`](../ctxr_skill_code_review/handlers.py). The eight-gate predicate match against picked leaf dimensions, the verdict computation, and the B4 hard-coverage-rule promotion to NO-GO all live in code there — the prose below describes intent. The handler is authoritative.
 
-Apply the 8-gate release readiness framework using the deduplicated findings from Step 7. Gate-to-specialist binding is **predicate-based**, using each leaf's `dimensions:` array (passed through tree_descend's response_schema) and a tag-like signal derived from the leaf id. The runtime predicates live in `synthesize-release-readiness.mjs`'s `GATE_DEFINITIONS`. Tags are not currently in the run env (the trim worker emits dimensions but not tags); the inline-state handler approximates tags from kebab-case segments of the leaf id, plus the full id, plus 2-4 segment slides — so a leaf id like `error-handling-async` matches both single-token (`error`, `handling`, `async`) and compound (`error-handling`, `handling-async`) tags. Lifting `tags:` into the env (via the trim worker's response_schema) is tracked for a later sprint.
+Apply the 8-gate release readiness framework using the deduplicated findings from Step 7. Gate-to-specialist binding is **predicate-based**, using each leaf's `dimensions:` array (passed through tree_descend's response_schema) and a tag-like signal derived from the leaf id. The runtime predicates live in `handlers._gate_matches` (referenced from `handle_synthesize_release_readiness`). Tags are not currently in the run env (the trim worker emits dimensions but not tags); the inline-state handler approximates tags from kebab-case segments of the leaf id, plus the full id, plus 2-4 segment slides — so a leaf id like `error-handling-async` matches both single-token (`error`, `handling`, `async`) and compound (`error-handling`, `handling-async`) tags. Lifting `tags:` into the env (via the trim worker's response_schema) is tracked for a later sprint.
 
 The 7-axis dimensions taxonomy (`architecture`, `correctness`, `documentation`, `performance`, `readability`, `security`, `tests`) covers the 8 gates as follows:
 
@@ -419,7 +420,7 @@ See `release-readiness.md` (project root) for the full audit checklist per gate.
 
 ## Step 10: Write Run Directory
 
-> **Action body for FSM state `write_run_directory`.** Inline-state handler: [`scripts/inline-states/write-run-directory.mjs`](../scripts/inline-states/write-run-directory.mjs). `buildReportPayload(runId, env)` produces the canonical [`report-format.md`](../report-format.md) JSON shape (verdict / summary / methodology / issues / strengths / tool_results / specialists / gates / coverage); `writeRunArtefacts` persists `report.json`, `report.md`, and updates `manifest.json`. Edge states `short_circuit_exit` and `stage_a_empty` route through this state too. The runner is authoritative; this prose documents intent.
+> **Action body for FSM state `write_run_directory`.** Inline-state handler: `handle_write_run_directory` in [`ctxr_skill_code_review/handlers.py`](../ctxr_skill_code_review/handlers.py). `build_report_payload(run_id, env)` produces the canonical [`report-format.md`](../report-format.md) JSON shape (verdict / summary / methodology / issues / strengths / tool_results / specialists / gates / coverage); `write_run_artefacts` persists `report.json`, `report.md`, and updates `manifest.json`. Edge states `short_circuit_exit` and `stage_a_empty` route through this state too. The handler is authoritative; this prose documents intent.
 
 Every review writes a sharded run-keyed directory at `.skill-code-review/<shard>/<run-id>/`. The directory is the canonical output; Step 11's stdout / return value is the human-readable report plus a pointer to the directory.
 
@@ -512,7 +513,7 @@ All required fields are present even when empty (e.g. `routing.stage_b.picked: [
 
 ## Step 11: Stdout / Return Value
 
-> **Action body for FSM state `emit_stdout`.** Inline-state handler: [`scripts/inline-states/emit-stdout.mjs`](../scripts/inline-states/emit-stdout.mjs). Format negotiation (`auto`/`markdown`/`json`), scope-severity / scope-gate filtering, and the canonical `Manifest: <path>` trailer all live in code there. The runner is authoritative; this prose documents intent.
+> **Action body for FSM state `emit_stdout`.** Inline-state handler: `handle_emit_stdout` in [`ctxr_skill_code_review/handlers.py`](../ctxr_skill_code_review/handlers.py). Format negotiation (`auto`/`markdown`/`json`), scope-severity / scope-gate filtering, and the canonical `Manifest: <path>` trailer all live in code there. The handler is authoritative; this prose documents intent.
 
 Read `report-format.md` for the canonical report structure.
 

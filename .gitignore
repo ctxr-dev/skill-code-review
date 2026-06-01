@@ -1,15 +1,9 @@
-node_modules/
+# OS noise
 .DS_Store
 *.tgz
 
-# Runtime caches
+# Runtime caches — the skill's persistent run directory stays gitignored.
 .skill-code-review/
-
-# Transitional v2 index artifact (Phase 1.Z.1)
-reviewers.src
-
-# Phase 2 transitional bundle sources + sub-wikis (join target is reviewers.wiki/)
-reviewers.src.bundles/
 
 # Wiki perf caches — regenerable from a rebuild, large, no value in version control
 reviewers.wiki/.llmwiki/similarity-cache/
@@ -20,4 +14,18 @@ reviewers.wiki/.llmwiki/decisions.yaml
 # Build-time work artefacts — transient.
 reviewers.wiki/.work/
 
+# Python tooling
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# logs
 logs

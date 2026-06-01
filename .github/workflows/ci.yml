@@ -1,31 +1,105 @@
-name: CI
+name: CI (Python)
 
 on:
   push:
-    branches: [main]
+    branches: [main, "v3/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "v3/**"]
+
+# Workflow-level permissions: GitHub's CodeQL warns when the
+# GITHUB_TOKEN's permissions are not scoped explicitly. This CI just
+# reads source + runs tests; ``contents: read`` is the minimum that
+# lets ``actions/checkout`` clone the repo. No write surfaces are
+# exercised here (no commenting, no releases, no PR mutations), so
+# every other permission stays at the workflow-level default of
+# ``none``.
+permissions:
+  contents: read
 
 jobs:
   validate:
-    name: Build, Validate, Lint & Test
+    name: Lint, Type-check, Test
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
         with:
-          node-version: 22
-          cache: npm
+          version: "latest"
 
-      - run: npm ci
+      - name: Set up Python
+        run: uv python install 3.12
 
-      - name: FSM static validation
-        run: npm run validate:fsm
+      - name: Resolve ctxr-fsm sibling ref
+        # Pre-publish (Principle 2 — manual PyPI release), the
+        # ``ctxr-fsm`` dependency is resolved from the sibling editable
+        # checkout at ``../fsm/`` declared under ``[tool.uv.sources]``.
+        # The fsm repo's ``main`` is still the legacy Node tree (no
+        # Python package); the Python rewrite ships from workstream
+        # branches (w1, …, w14j). We pick the deepest applied chain
+        # tip as the integration target so the consumer always builds
+        # against the freshest Python ctxr-fsm. Override via the
+        # ``CTXR_FSM_REF`` repo variable when a specific PR branch
+        # needs to be tested. The fallback list is tried in order
+        # because branches get merged + deleted as the chain advances.
+        id: fsm_ref
+        env:
+          CTXR_FSM_REF: ${{ vars.CTXR_FSM_REF }}
+        run: |
+          set -euo pipefail
+          # W14 + W15 + W18-W21 have all merged on the fsm repo;
+          # `main` IS the freshest Python ctxr-fsm. The legacy W14
+          # workstream branches that used to live here would silently
+          # pin this build to a stale tip when one of them still
+          # exists as an orphan (w14a/inline-handler-engine still
+          # does), which is what caused the W21 mypy failures. The
+          # candidate list now just tries the optional CTXR_FSM_REF
+          # override then falls straight to main.
+          candidates=(
+            "${CTXR_FSM_REF:-}"
+            "main"
+          )
+          chosen=""
+          for ref in "${candidates[@]}"; do
+            if [ -z "$ref" ]; then continue; fi
+            if git ls-remote --exit-code https://github.com/ctxr-dev/fsm.git "refs/heads/$ref" >/dev/null 2>&1; then
+              chosen="$ref"
+              break
+            fi
+          done
+          if [ -z "$chosen" ]; then
+            echo "::error::no candidate ctxr-fsm ref resolved (override via repo variable CTXR_FSM_REF)"
+            exit 1
+          fi
+          echo "ref=$chosen" >> "$GITHUB_OUTPUT"
 
-      - name: Markdown lint
-        run: npm run lint
+      - name: Clone ctxr-fsm sibling
+        # Clone the resolved branch + assert pyproject.toml is present
+        # (the legacy Node main branch lacks it; we want to fail fast
+        # with a clear message rather than confuse uv sync later).
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${{ steps.fsm_ref.outputs.ref }}" \
+            https://github.com/ctxr-dev/fsm.git ../fsm
+          if [ ! -f ../fsm/pyproject.toml ]; then
+            echo "::error::cloned ${{ steps.fsm_ref.outputs.ref }} but no pyproject.toml at the root"
+            exit 1
+          fi
 
-      - name: Tests
-        run: npm run test:src
+      - name: Sync (with dev extras)
+        # The sibling clone above satisfies the ``../fsm`` path source
+        # declared in ``pyproject.toml [tool.uv.sources]`` so a plain
+        # ``uv sync --all-extras`` resolves cleanly without touching
+        # PyPI for ctxr-fsm.
+        run: uv sync --all-extras
+
+      - name: Ruff
+        run: uv run ruff check ctxr_skill_code_review/ tests/
+
+      - name: Mypy
+        run: uv run mypy ctxr_skill_code_review/
+
+      - name: Pytest
+        run: uv run pytest -q

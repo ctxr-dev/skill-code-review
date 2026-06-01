@@ -49,14 +49,16 @@ jobs:
           CTXR_FSM_REF: ${{ vars.CTXR_FSM_REF }}
         run: |
           set -euo pipefail
+          # W14 + W15 + W18-W21 have all merged on the fsm repo;
+          # `main` IS the freshest Python ctxr-fsm. The legacy W14
+          # workstream branches that used to live here would silently
+          # pin this build to a stale tip when one of them still
+          # exists as an orphan (w14a/inline-handler-engine still
+          # does), which is what caused the W21 mypy failures. The
+          # candidate list now just tries the optional CTXR_FSM_REF
+          # override then falls straight to main.
           candidates=(
             "${CTXR_FSM_REF:-}"
-            "w14j/rich-subsystem-table"
-            "w14i/enum-extract-audit"
-            "w14g/workspace-docs"
-            "w14e/bootstrap-doc-and-memory-wiring"
-            "w14b/ensure-and-mcp-config"
-            "w14a/inline-handler-engine"
             "main"
           )
           chosen=""

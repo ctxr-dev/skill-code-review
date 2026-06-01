@@ -629,6 +629,7 @@ def _scan_project() -> State:
         worker=Worker(
             role="project-scanner",
             prompt_template=_load_worker_prompt("project-scanner"),
+            prompt_template_language='markdown',
             inputs=["args"],
             response_schema=_project_scanner_schema(),
         ),
@@ -730,6 +731,7 @@ def _tree_descend() -> State:
         worker=Worker(
             role="tree-descender",
             prompt_template=_load_worker_prompt("tree-descender"),
+            prompt_template_language='markdown',
             inputs=["project_profile", "changed_paths", "tier", "activated_leaves"],
             response_schema=_tree_descender_schema(),
         ),
@@ -756,6 +758,7 @@ def _llm_trim() -> State:
         worker=Worker(
             role="trim-candidates",
             prompt_template=_load_worker_prompt("trim-candidates"),
+            prompt_template_language='markdown',
             inputs=[
                 "project_profile",
                 "changed_paths",
@@ -779,6 +782,7 @@ def _tool_discovery() -> State:
         worker=Worker(
             role="tool-runner",
             prompt_template=_load_worker_prompt("tool-runner"),
+            prompt_template_language='markdown',
             inputs=["picked_leaves", "args"],
             response_schema=_tool_runner_schema(),
         ),
@@ -798,6 +802,7 @@ def _dispatch_specialists() -> State:
         worker=Worker(
             role="specialist",
             prompt_template=_load_worker_prompt("specialist"),
+            prompt_template_language='markdown',
             inputs=[
                 "project_profile",
                 "changed_paths",

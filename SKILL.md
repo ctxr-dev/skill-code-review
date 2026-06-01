@@ -21,11 +21,25 @@ release-readiness synthesis, and a persistent on-disk run directory
 
 ## Bootstrap (do this FIRST)
 
-Before any review work, follow
-[`@.ctxr-fsm/memory/bootstrap.md`](.ctxr-fsm/memory/bootstrap.md) to
-ensure `ctxr-fsm` is installed, the project is initialised, the MCP
-server is registered with this client, and the supervisor is running.
-The bootstrap is idempotent and fast (<500ms) when everything is up.
+**Precondition gate. Run `ctxr-fsm ensure --check --json` and route on
+the JSON status — no improvising, no shotgunning installers.**
+
+```bash
+uv run ctxr-fsm ensure --check --json
+```
+
+Decision tree (exhaustive — pick exactly ONE branch):
+
+| Observable result | Action |
+|---|---|
+| `status: "ready"` on stdout | **Proceed to "Run a review" below.** The project is already bootstrapped; skip everything else in this section. |
+| Any other observable result (other JSON status, exit non-zero, no JSON, runtime error) | Follow [`@.ctxr-fsm/memory/bootstrap.md`](.ctxr-fsm/memory/bootstrap.md) end-to-end. That doc routes every non-ready state correctly: `missing_*` axes get an `ensure --json` apply, `failed` is surfaced as `MissingRequirement` and stops, a runner-detection failure leads to exactly ONE install command, and a broken install (runner responds to `--version` but crashes on the JSON probe) is surfaced as `MissingRequirement` without reinstalling. Do NOT improvise. Do NOT shotgun installers in sequence. |
+
+The gate above is the short, mandatory entry contract; the linked
+doc is the routing table for every non-ready state. Bootstrap is
+idempotent and fast (<500ms) when everything is up; if the gate
+already returned `ready` DO NOT run any of the steps in the linked
+doc, they are no-ops at best and a re-install hazard at worst.
 
 Then register this skill's spec + inline handlers once per project:
 

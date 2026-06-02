@@ -25,7 +25,16 @@ Before any review work, follow
 [`@.ctxr-fsm/memory/bootstrap.md`](.ctxr-fsm/memory/bootstrap.md) to
 ensure `ctxr-fsm` is installed, the project is initialised, the MCP
 server is registered with this client, and the supervisor is running.
-The bootstrap is idempotent and fast (<500ms) when everything is up.
+The bootstrap is idempotent and intended to be fast on the warm path
+(around 1.5-1.8s once the supervisor and MCP server are already up).
+
+**If the package is missing, ASK the user before running the install
+command.** Print the proposed command in chat verbatim (the exact
+`uv add 'ctxr-fsm[all]'` / `pipx install 'ctxr-fsm[all]'` row from the
+bootstrap table) and require explicit go-ahead before proceeding. Do
+not auto-install. Do not chain multiple install attempts. This is the
+package-missing branch of Principle 1 (requirement pre-check, ask to
+satisfy) applied to skill startup.
 
 Then register this skill's spec + inline handlers once per project:
 

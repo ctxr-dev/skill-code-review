@@ -118,6 +118,37 @@ The cap on parallel specialists is the `cap` field from
 `risk_tier_triage`: `trivial=3`, `lite=8`, `full=20`, `sensitive=30`,
 overridable by `args["max-reviewers"]` (clamped to `[3, 50]`).
 
+## Tool surface per state
+
+Each worker state pins an `allowed_tools` allowlist in the FSM spec.
+The list is the exact set of harness tools a sub-agent dispatched for
+that state may call. Tool ids use the Claude Code permission shape
+(`Bash(<prefix>:*)` for scoped shell commands, bare tool names for
+everything else); other harnesses translate at dispatch time.
+
+| State                  | `allowed_tools`                                                                                                                                    |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scan_project`         | `Bash(git diff:*)`, `Bash(git log:*)`, `Bash(git status:*)`, `Bash(git ls-files:*)`, `Bash(cat:*)`, `Read`, `Glob`                                 |
+| `tree_descend`         | `Read`                                                                                                                                             |
+| `llm_trim`             | _(none — pure reasoning over the brief)_                                                                                                           |
+| `tool_discovery`       | `Bash(eslint:*)`, `Bash(ruff:*)`, `Bash(mypy:*)`, `Bash(npm test:*)`, `Bash(pytest:*)`, `Bash(cargo:*)`, `Bash(go test:*)`, `Bash(which:*)`, `Read` |
+| `dispatch_specialists` | `Read`, `Grep`, `Glob`, `WebFetch`, `Bash(git diff:*)`, `Bash(git log:*)`                                                                          |
+
+Inline states (`risk_tier_triage`, `activate_leaves`,
+`collect_findings`, `verify_coverage`, `synthesize_release_readiness`,
+`write_run_directory`, `emit_stdout`, `short_circuit_exit`,
+`stage_a_empty`) and the `terminal` state have an empty allowlist —
+they run server-side inside ctxr-fsm and are never dispatched to a
+sub-agent.
+
+When dispatching a sub-agent for a worker state, FORWARD this state's
+`allowed_tools` verbatim into the sub-agent's tool permission shape
+(Claude Code: `--allowedTools=<list>`; Codex equivalent: `--tools`;
+Cursor: equivalent). Then on every non-`fsm.*` tool call your
+sub-agent makes, call `fsm.observe_tool_call` so the drift detector
+can audit. Violations raise `off_allowlist_tool_call` (weight 5.0);
+cumulative > 10 auto-pauses the run.
+
 ## What the skill produces
 
 A `report.md` (markdown) plus `report.json` (machine-readable) plus

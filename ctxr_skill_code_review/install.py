@@ -28,6 +28,7 @@ from ctxr.fsm.sqlite import Project
 
 from ctxr_skill_code_review.handlers import INLINE_HANDLERS
 from ctxr_skill_code_review.spec import SPEC_ID, fsm
+from ctxr_skill_code_review.verifier_handler import install_verifier_handler
 
 
 def _resolve_db_path(project_db: Path | str | None) -> Path:
@@ -127,6 +128,14 @@ def register(
     # the same process don't clash.
     registry = get_default_registry()
     registry.register_many(SPEC_ID, INLINE_HANDLERS)
+
+    # Adversarial verifier panels: install the LLM-driven handler when a
+    # dispatcher is configured (env var or ad-hoc wiring); otherwise the
+    # engine's built-in structural verifier stays in charge so the gate
+    # still produces a verdict. install_verifier_handler is idempotent
+    # and intentionally NOT surfaced in the envelope so the JSON shape
+    # consumed by the W14f smoke pipeline stays byte-stable.
+    install_verifier_handler()
 
     return {
         "spec_id": spec_result.spec.slug,

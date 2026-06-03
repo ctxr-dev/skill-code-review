@@ -44,6 +44,7 @@ from ctxr.fsm import (
 # InlineSpec hasn't been promoted to the ergonomic top-level facade yet;
 # import it from ctxr.fsm.core where the W14a engine extension defines it.
 from ctxr.fsm.core import InlineSpec
+from ctxr.fsm.core.models import VerifierSpec
 
 # ---------------------------------------------------------------------------
 # Enum-discipline (W14i prospective) — closed vocabularies as StrEnums
@@ -135,6 +136,54 @@ def _load_worker_prompt(name: str) -> str:
         resources.files("ctxr_skill_code_review.workers")
         .joinpath(f"{name}.md")
         .read_text(encoding="utf-8")
+    )
+
+
+def _load_verifier_prompt(name: str) -> str:
+    """Read a verifier prompt .md from the bundled :mod:`verifiers` package.
+
+    Mirror of :func:`_load_worker_prompt` for the per-state adversarial
+    verifier templates declared on each worker State's ``verifier`` field.
+    """
+    return (
+        resources.files("ctxr_skill_code_review.verifiers")
+        .joinpath(f"{name}.md")
+        .read_text(encoding="utf-8")
+    )
+
+
+# Shared response schema for every verifier panel vote — the panel's
+# output is the {verdict, reason} envelope, NOT the worker's output
+# shape. The structural verifier (in :mod:`ctxr.fsm.core.verifier`)
+# already re-checks the worker's response schema against the committed
+# outputs; the LLM panel layers a semantic check on top.
+_VERIFIER_VOTE_SCHEMA: ResponseSchema = ResponseSchema.model_validate({
+    "schema": {
+        "type": "object",
+        "required": ["verdict", "reason"],
+        "properties": {
+            "verdict": {
+                "type": "string",
+                "enum": ["passed", "rejected"],
+            },
+            "reason": {
+                "type": "string",
+                "maxLength": 280,
+            },
+        },
+    }
+})
+
+
+def _verifier_for(state_id: str) -> VerifierSpec:
+    """Build the canonical 3-voter / 2-majority verifier for a worker state."""
+    return VerifierSpec(
+        role=f"verify-{state_id}",
+        prompt_template=_load_verifier_prompt(state_id),
+        prompt_template_language="markdown",
+        response_schema=_VERIFIER_VOTE_SCHEMA,
+        majority_threshold=2,
+        parallel_count=3,
     )
 
 
@@ -649,6 +698,7 @@ def _scan_project() -> State:
             "Read",
             "Glob",
         ],
+        verifier=_verifier_for("scan_project"),
         transitions=[Transition(to="risk_tier_triage", when=TransitionKind.always)],
     )
 
@@ -747,6 +797,7 @@ def _tree_descend() -> State:
         outputs=["stage_a_candidates", "descent_path"],
         post_validations=[Predicate("len(stage_a_candidates) >= 0")],
         allowed_tools=["Read"],
+        verifier=_verifier_for("tree_descend"),
         transitions=[
             Transition(
                 to="stage_a_empty",
@@ -781,6 +832,7 @@ def _llm_trim() -> State:
         outputs=["picked_leaves", "rejected_leaves", "coverage_rescues"],
         post_validations=[Predicate("len(picked_leaves) >= 0")],
         allowed_tools=[],
+        verifier=_verifier_for("llm_trim"),
         transitions=[Transition(to="tool_discovery", when=TransitionKind.always)],
     )
 
@@ -809,6 +861,7 @@ def _tool_discovery() -> State:
             "Bash(which:*)",
             "Read",
         ],
+        verifier=_verifier_for("tool_discovery"),
         transitions=[Transition(to="dispatch_specialists", when=TransitionKind.always)],
     )
 
@@ -843,6 +896,7 @@ def _dispatch_specialists() -> State:
             "Bash(git diff:*)",
             "Bash(git log:*)",
         ],
+        verifier=_verifier_for("dispatch_specialists"),
         transitions=[Transition(to="collect_findings", when=TransitionKind.always)],
     )
 

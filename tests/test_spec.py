@@ -186,3 +186,28 @@ def test_worker_states_have_allowed_tools_pinned() -> None:
             assert want == [], "llm_trim allowlist must stay empty"
         else:
             assert len(want) > 0, f"{state_id} allowlist unexpectedly empty"
+
+
+def test_each_worker_has_verifier() -> None:
+    """Every worker state ships a 3-voter / 2-majority verifier panel.
+
+    The verifier is the adversarial gate that re-checks the worker's
+    committed outputs before the engine transitions; the spec must
+    declare one for every worker state so the panel can never silently
+    no-op.
+    """
+    worker_states = [s for s in fsm.states if s.worker is not None]
+    assert len(worker_states) == 5, "spec must still ship 5 worker states"
+    for state in worker_states:
+        assert state.verifier is not None, (
+            f"worker state {state.id!r} is missing its verifier panel"
+        )
+        assert state.verifier.parallel_count == 3, (
+            f"{state.id} verifier must use 3 parallel votes"
+        )
+        assert state.verifier.majority_threshold == 2, (
+            f"{state.id} verifier must require 2 of 3 passing votes"
+        )
+        assert state.verifier.role == f"verify-{state.id}", (
+            f"{state.id} verifier role drift: got {state.verifier.role!r}"
+        )

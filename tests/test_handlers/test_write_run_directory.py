@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import uuid
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
 
 from ctxr_skill_code_review.handlers import (
     _legacy_run_id_for,
+    _run_dir_path,
     build_report_payload,
     handle_write_run_directory,
     render_report_json,
@@ -66,6 +68,24 @@ def test_legacy_run_id_is_deterministic() -> None:
     # The 7-hex suffix is deterministic; the date prefix is wall-clock so
     # only the suffix can be asserted across calls.
     assert a[-7:] == b[-7:]
+
+
+def test_run_dir_path_byte_identical_after_sharding_extract() -> None:
+    """The shard tree must stay byte-for-byte identical after the
+    sharding-helper extraction. Fixture run uuid + fixture legacy run id
+    let us assert the exact path string the v2.5.1 layout produced.
+    """
+    run_uuid_str = "0190ffff-1234-7abc-89de-fedcba987654"
+    legacy_run_id = "20240101-120000-" + sha256(run_uuid_str.encode("utf-8")).hexdigest()[:7]
+    storage_root = Path("/fake/storage")
+    out = _run_dir_path(legacy_run_id, storage_root, shard_key=run_uuid_str)
+    digest = sha256(run_uuid_str.encode("utf-8")).hexdigest()
+    expected = storage_root / "2024" / "01" / "01" / digest[:2] / digest[2:7]
+    assert out == expected
+    # Back-compat: without shard_key the function falls back to the
+    # 7-hex suffix in legacy_run_id (same path for the v2.5.1 input
+    # shape).
+    assert _run_dir_path(legacy_run_id, storage_root) == expected
 
 
 def test_invalid_verdict_raises() -> None:

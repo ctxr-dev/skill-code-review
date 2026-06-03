@@ -37,6 +37,8 @@ from typing import Any
 import frontmatter
 from ctxr.fsm.core import InlineContext, InlineHandler
 
+from .sharding import shard_segments
+
 # ---------------------------------------------------------------------------
 # Shared constants — kept module-local; promoted to spec.StrEnums where they
 # represent closed vocabularies that flow across handler boundaries.
@@ -1133,8 +1135,16 @@ def _legacy_run_id_for(run_uuid_str: str) -> str:
     return f"{_utc_now_iso()}-{digest[:7]}"
 
 
-def _run_dir_path(run_id: str, storage_root: Path) -> Path:
-    """Deterministic shard tree: <storage>/<yyyy>/<mm>/<dd>/<ab>/<rest>/."""
+def _run_dir_path(run_id: str, storage_root: Path, *, shard_key: str | None = None) -> Path:
+    """Deterministic shard tree: ``<storage>/<yyyy>/<mm>/<dd>/<ab>/<rest5>/``.
+
+    The date prefix is parsed from ``run_id`` (the v2.5.1-shaped
+    ``YYYYMMDD-HHMMSS-<7hex>``). The shard segments come from
+    :func:`sharding.shard_segments` over ``shard_key`` (typically the
+    FSM run uuid string). When ``shard_key`` is omitted we fall back to
+    the 7-hex suffix of ``run_id`` so existing v2.5.1 ids that didn't
+    carry a separate uuid still produce a byte-identical path.
+    """
     match = re.fullmatch(r"(\d{4})(\d{2})(\d{2})-\d{6}-([0-9a-f]{7})", run_id)
     if not match:
         raise ValueError(
@@ -1142,7 +1152,11 @@ def _run_dir_path(run_id: str, storage_root: Path) -> Path:
             "(expected YYYYMMDD-HHMMSS-<7 hex>)"
         )
     yyyy, mm, dd, hash7 = match.groups()
-    return storage_root / yyyy / mm / dd / hash7[:2] / hash7[2:]
+    if shard_key is not None:
+        first, rest = shard_segments(shard_key, (2, 5))
+    else:
+        first, rest = hash7[:2], hash7[2:]
+    return storage_root / yyyy / mm / dd / first / rest
 
 
 def _atomic_write_text(path: Path, contents: str) -> None:
@@ -1655,7 +1669,7 @@ def write_run_artefacts(
     project_root = _coerce_absolute_project_root(args_bag.get("project_root"), skill_root)
     storage_root = _resolve_storage_root(project_root)
     legacy_run_id = _legacy_run_id_for(run_uuid_str)
-    run_dir = _run_dir_path(legacy_run_id, storage_root)
+    run_dir = _run_dir_path(legacy_run_id, storage_root, shard_key=run_uuid_str)
 
     report_payload = build_report_payload(legacy_run_id, env)
     _atomic_write_text(run_dir / "report.json", render_report_json(report_payload))

@@ -26,8 +26,8 @@ def test_spec_id_and_version() -> None:
     assert fsm.version == SPEC_VERSION == 1
 
 
-def test_17_states_in_declared_order() -> None:
-    """The PR4 17-state shape: 15 worker/inline + 1 terminal + the new inline pair."""
+def test_18_states_in_declared_order() -> None:
+    """The PR5 18-state shape: PR4's 17 + the new verifier_stuck inline state."""
     expected = [
         "scan_project",
         "risk_tier_triage",
@@ -45,10 +45,11 @@ def test_17_states_in_declared_order() -> None:
         "emit_stdout",
         "short_circuit_exit",
         "stage_a_empty",
+        "verifier_stuck",
         "terminal",
     ]
     assert get_state_ids() == expected
-    assert len(fsm.states) == 17
+    assert len(fsm.states) == 18
 
 
 def test_handler_ids_match_inline_handlers_dict() -> None:
@@ -56,7 +57,7 @@ def test_handler_ids_match_inline_handlers_dict() -> None:
     declared = sorted(get_handler_ids())
     registered = sorted(INLINE_HANDLERS.keys())
     assert declared == registered
-    assert len(registered) == 11
+    assert len(registered) == 12
 
 
 def test_plan_and_merge_states_present() -> None:
@@ -76,11 +77,23 @@ def test_dispatch_specialists_is_a_loop_state() -> None:
 
 
 def test_plan_to_dispatch_to_merge_to_collect_chain() -> None:
-    """PR4 transition chain: tool_discovery -> plan -> dispatch (loop) -> merge -> collect_findings."""
-    assert fsm.get_state("tool_discovery").transitions[0].to == "plan_specialist_batches"
-    assert fsm.get_state("plan_specialist_batches").transitions[0].to == "dispatch_specialists"
-    assert fsm.get_state("dispatch_specialists").transitions[0].to == "merge_specialist_outputs"
-    assert fsm.get_state("merge_specialist_outputs").transitions[0].to == "collect_findings"
+    """PR4/PR5 transition chain: tool_discovery -> plan -> dispatch (loop) -> merge -> collect_findings.
+
+    PR5 prepends a verifier_stuck escape hatch on every worker state,
+    so the always-transition is now the LAST entry, not the first.
+    """
+
+    def _always_target(state_id: str) -> str:
+        """Return the destination of the always/otherwise transition."""
+        return next(
+            t.to for t in fsm.get_state(state_id).transitions
+            if str(getattr(t.when, "value", t.when)).lower() in {"always", "otherwise"}
+        )
+
+    assert _always_target("tool_discovery") == "plan_specialist_batches"
+    assert _always_target("plan_specialist_batches") == "dispatch_specialists"
+    assert _always_target("dispatch_specialists") == "merge_specialist_outputs"
+    assert _always_target("merge_specialist_outputs") == "collect_findings"
 
 
 def test_terminal_state_has_no_transitions() -> None:

@@ -157,6 +157,32 @@ A `report.md` (markdown) plus `report.json` (machine-readable) plus
 exact format is documented in [`report-format.md`](report-format.md).
 Verdict: `GO`, `CONDITIONAL`, or `NO-GO`.
 
+## Observability
+
+The skill's per-state verifier panel emits `verifier_passed` and
+`verifier_rejected` events into the FSM event stream on every worker
+commit. To watch these in real time:
+
+1. Open the fsm UI at `http://localhost:7475/runs/<run_id>` (the URL
+   the orchestrator prints on `start_run`; the port matches the
+   `ctxr-fsm` supervisor's configured UI port).
+2. Open the AdminSheet for the run; the **Drift** section surfaces the
+   per-state verifier outcome timeline.
+3. Click into any worker state (`scan_project`, `tree_descend`,
+   `llm_trim`, `tool_discovery`, `dispatch_specialists`) and switch to
+   the **Events for this state** tab — every `verifier_passed` /
+   `verifier_rejected` event for that state is listed with the panel's
+   per-voter reason strings.
+
+When the same worker state hits the consecutive-rejection cap
+(currently **3**, defined as
+`ctxr_skill_code_review.handlers._VERIFIER_REJECTION_LIMIT`), the
+orchestrator drives the run into the inline `verifier_stuck` state.
+That state emits a `degraded_run` envelope which
+`synthesize_release_readiness` consumes to lower the verdict (a
+partial-coverage run will not produce `GO`). The fsm UI surfaces the
+impasse as a yellow chip on the affected state's Sheet.
+
 ## See also
 
 * [`code-reviewer.md`](code-reviewer.md) — the 11-step orchestrator

@@ -119,6 +119,7 @@ class HandlerId(StrEnum):
     emit_stdout = "emit_stdout"
     short_circuit_exit = "short_circuit_exit"
     stage_a_empty = "stage_a_empty"
+    verifier_stuck = "verifier_stuck"
 
 
 # ---------------------------------------------------------------------------
@@ -754,6 +755,46 @@ def _stage_a_empty_schema() -> ResponseSchema:
     })
 
 
+def _verifier_stuck_schema() -> ResponseSchema:
+    """PR5 — schema for the verifier_stuck impasse record.
+
+    Emitted when a worker state has rejected the verifier panel
+    :data:`ctxr_skill_code_review.handlers._VERIFIER_REJECTION_LIMIT`
+    times in a row. Carries the stuck state id + rejection count so the
+    audit trail and the fsm UI's per-state Sheet can render exactly
+    which gate gave up. ``degraded_run`` flips True so
+    synthesize_release_readiness lowers the verdict.
+    """
+    return ResponseSchema.model_validate({
+        "schema": {
+            "type": "object",
+            "required": [
+                "verifier_stuck",
+                "degraded_run",
+                "verifier_rejection_counts",
+                "failed_units",
+            ],
+            "properties": {
+                "verifier_stuck": {
+                    "type": "object",
+                    "required": ["stuck_state_id", "rejection_count", "limit"],
+                    "properties": {
+                        "stuck_state_id": {"type": "string"},
+                        "rejection_count": {"type": "integer", "minimum": 0},
+                        "limit": {"type": "integer", "minimum": 1},
+                    },
+                },
+                "degraded_run": {"type": "boolean"},
+                "verifier_rejection_counts": {
+                    "type": "object",
+                    "additionalProperties": {"type": "integer", "minimum": 0},
+                },
+                "failed_units": {"type": "array"},
+            },
+        }
+    })
+
+
 # ---------------------------------------------------------------------------
 # Predicate translation helpers
 # ---------------------------------------------------------------------------
@@ -795,6 +836,20 @@ def _in_set(field: str, values: list[str]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _verifier_stuck_predicate(state_id: str) -> Predicate:
+    """PR5 — predicate that fires when a worker has hit the rejection cap.
+
+    Evaluates ``verifier_rejection_counts.<state_id> >= 3`` against the
+    cumulative run env. The orchestrator increments
+    ``verifier_rejection_counts[<state_id>]`` on every ``commit_outputs``
+    that returns ``error: verifier_rejected``; once the count hits the
+    cap, the transition fires on the NEXT visit to ``state_id``'s
+    transition evaluator, routing the run into ``verifier_stuck``
+    instead of looping forever on the worker.
+    """
+    return Predicate(f"verifier_rejection_counts.{state_id} >= 3")
+
+
 def _scan_project() -> State:
     return State(
         id="scan_project",
@@ -823,7 +878,10 @@ def _scan_project() -> State:
             "Glob",
         ],
         verifier=_verifier_for("scan_project"),
-        transitions=[Transition(to="risk_tier_triage", when=TransitionKind.always)],
+        transitions=[
+            Transition(to="verifier_stuck", when=_verifier_stuck_predicate("scan_project")),
+            Transition(to="risk_tier_triage", when=TransitionKind.always),
+        ],
     )
 
 
@@ -923,6 +981,7 @@ def _tree_descend() -> State:
         allowed_tools=["Read"],
         verifier=_verifier_for("tree_descend"),
         transitions=[
+            Transition(to="verifier_stuck", when=_verifier_stuck_predicate("tree_descend")),
             Transition(
                 to="stage_a_empty",
                 when=Predicate("len(stage_a_candidates) == 0"),
@@ -957,7 +1016,10 @@ def _llm_trim() -> State:
         post_validations=[Predicate("len(picked_leaves) >= 0")],
         allowed_tools=[],
         verifier=_verifier_for("llm_trim"),
-        transitions=[Transition(to="tool_discovery", when=TransitionKind.always)],
+        transitions=[
+            Transition(to="verifier_stuck", when=_verifier_stuck_predicate("llm_trim")),
+            Transition(to="tool_discovery", when=TransitionKind.always),
+        ],
     )
 
 
@@ -986,7 +1048,10 @@ def _tool_discovery() -> State:
             "Read",
         ],
         verifier=_verifier_for("tool_discovery"),
-        transitions=[Transition(to="plan_specialist_batches", when=TransitionKind.always)],
+        transitions=[
+            Transition(to="verifier_stuck", when=_verifier_stuck_predicate("tool_discovery")),
+            Transition(to="plan_specialist_batches", when=TransitionKind.always),
+        ],
     )
 
 
@@ -1062,7 +1127,13 @@ def _dispatch_specialists() -> State:
             "Bash(git log:*)",
             "Task",
         ],
-        transitions=[Transition(to="merge_specialist_outputs", when=TransitionKind.always)],
+        transitions=[
+            Transition(
+                to="verifier_stuck",
+                when=_verifier_stuck_predicate("dispatch_specialists"),
+            ),
+            Transition(to="merge_specialist_outputs", when=TransitionKind.always),
+        ],
     )
 
 
@@ -1239,6 +1310,56 @@ def _stage_a_empty() -> State:
     )
 
 
+def _verifier_stuck() -> State:
+    """PR5 — inline state reached after 3 consecutive verifier rejections.
+
+    The transition into this state is owned by the ORCHESTRATOR (not by
+    a static predicate on every worker state): when ``commit_outputs``
+    returns ``error: verifier_rejected`` for the third consecutive time
+    on the same state, the orchestrator drives the run into
+    ``verifier_stuck`` instead of re-dispatching the worker again.
+
+    The state records the impasse, marks the leaf/batch as failed in
+    env, and transitions back into the synthesize_release_readiness
+    handler (which already lowers the verdict on partial coverage via
+    ``degraded_run`` + ``coverage_rule_violated`` signals).
+    """
+    return State(
+        id="verifier_stuck",
+        purpose=(
+            "Record a verifier-panel impasse (3 consecutive rejections "
+            "on the same worker state); mark the leaf/batch as failed; "
+            "continue the pipeline with degraded coverage."
+        ),
+        preconditions=[
+            "verifier_rejection_counts exists in run state",
+        ],
+        inline=InlineSpec(
+            handler_id=HandlerId.verifier_stuck.value,
+            response_schema=_verifier_stuck_schema(),
+            post_validations=[
+                Predicate("degraded_run == true"),
+            ],
+            purpose=(
+                "Capture the verifier-rejection impasse + reset the "
+                "counter so a manual resume starts clean."
+            ),
+        ),
+        outputs=[
+            "verifier_stuck",
+            "degraded_run",
+            "verifier_rejection_counts",
+            "failed_units",
+        ],
+        transitions=[
+            Transition(
+                to="synthesize_release_readiness",
+                when=TransitionKind.always,
+            ),
+        ],
+    )
+
+
 def _terminal() -> State:
     return State(
         id="terminal",
@@ -1281,6 +1402,7 @@ def build_spec() -> FsmSpec:
             _emit_stdout(),
             _short_circuit_exit(),
             _stage_a_empty(),
+            _verifier_stuck(),
             _terminal(),
         ],
     )

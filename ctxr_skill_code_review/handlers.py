@@ -74,6 +74,24 @@ _VALID_VERDICTS: frozenset[str] = frozenset({"GO", "NO-GO", "CONDITIONAL"})
 _VALID_SEVERITIES: frozenset[str] = frozenset({"critical", "important", "minor"})
 
 
+# PR5 — verifier retry cap. Three consecutive verifier_rejected events on
+# the SAME state mean the panel and the worker disagree systemically;
+# rather than letting the run loop forever (or until max_iterations),
+# we transition into the verifier_stuck inline state which records the
+# impasse, marks the leaf/batch as failed in env, and continues the
+# pipeline with degraded coverage so synthesize_release_readiness can
+# lower the verdict accordingly.
+_VERIFIER_REJECTION_LIMIT: int = 3
+
+# PR5 — aggregate-size guard for handle_merge_specialist_outputs. Sum of
+# every per-unit JSON payload across all iterations must stay below this
+# threshold or the merger truncates the lowest-priority unit (lowest-
+# severity findings) until it fits. We NEVER drop a whole leaf — only
+# trim findings on the longest one — so the planner-vs-merger union
+# invariant continues to hold.
+_AGGREGATE_OUTPUT_BUDGET_BYTES: int = 100 * 1024 * 1024  # 100 MB
+
+
 # ---------------------------------------------------------------------------
 # Tiny helpers
 # ---------------------------------------------------------------------------
@@ -116,6 +134,70 @@ def _env_from_ctx(ctx: InlineContext) -> dict[str, Any]:
     # Mirror the original .mjs handlers' `env.args` pointer.
     env.setdefault("args", dict(ctx.args))
     return env
+
+
+# ---------------------------------------------------------------------------
+# Verifier-rejection accounting (PR5)
+# ---------------------------------------------------------------------------
+#
+# Every handler that participates in the verifier-gated pipeline reads
+# the ``verifier_rejection_counts`` map (state_id -> int) out of env on
+# the way in and stamps an updated copy onto its outputs on the way out.
+# The orchestrator is responsible for INCREMENTING the count when a
+# commit returns ``error: verifier_rejected`` — at that point it should
+# re-dispatch the worker carrying the bumped counter through args (the
+# .args bag is the orchestrator's natural channel). Inline handlers
+# don't observe the verifier directly; their job is simply to thread
+# the counter forward + expose it as part of the state envelope so a
+# downstream transition predicate can fire on it.
+#
+# We keep this surface as a tiny helper to make the env update path
+# explicit at each handler call site (audit trail for the W12 panel
+# integration) rather than burying it inside ``_env_from_ctx`` where a
+# reader would lose track of who wrote the counter.
+
+
+def _read_verifier_rejection_counts(env: dict[str, Any]) -> dict[str, int]:
+    """Defensively read the per-state verifier rejection counter map.
+
+    The counter lives in ``env["verifier_rejection_counts"]``. Any
+    malformed entry is dropped silently — we treat unknown shapes as
+    "no rejections yet" so the gate fails OPEN (i.e. the run continues)
+    rather than triggering a spurious verifier_stuck transition.
+    """
+    raw = env.get("verifier_rejection_counts")
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, int] = {}
+    for key, value in raw.items():
+        if isinstance(key, str) and isinstance(value, int) and value >= 0:
+            out[key] = value
+    return out
+
+
+def _bump_verifier_rejection_counts(
+    counts: dict[str, int], state_id: str | None
+) -> dict[str, int]:
+    """Return a NEW dict with ``state_id``'s counter incremented by 1.
+
+    Pure: never mutates the input. Callers that have just observed a
+    verifier_rejected event use this to produce the dict they thread
+    into the next handler's env. The orchestrator (commit pipeline)
+    typically does the bump; handlers themselves call this only on
+    paths where they synthesise a rejection internally (none today).
+    """
+    if not state_id:
+        return dict(counts)
+    bumped = dict(counts)
+    bumped[state_id] = bumped.get(state_id, 0) + 1
+    return bumped
+
+
+def _is_verifier_stuck(counts: dict[str, int], state_id: str | None) -> bool:
+    """True iff ``state_id`` has reached the consecutive-rejection cap."""
+    if not state_id:
+        return False
+    return counts.get(state_id, 0) >= _VERIFIER_REJECTION_LIMIT
 
 
 # ===========================================================================
@@ -2183,8 +2265,87 @@ def _resolve_iteration_payloads(env: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+def _serialised_size(payload: Any) -> int:
+    """Length of the canonical JSON encoding of ``payload`` in UTF-8 bytes.
+
+    Helper for the aggregate-size guard in
+    :func:`handle_merge_specialist_outputs`. We use the SAME serialisation
+    options the shard writer uses (``indent=2, sort_keys=True``) so the
+    accounting matches what we actually persist to disk.
+    """
+    try:
+        return len(
+            (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        )
+    except (TypeError, ValueError):
+        # Non-serialisable payload — treat as zero so it doesn't dominate
+        # the budget calculation. The shard writer will skip it anyway.
+        return 0
+
+
+def _severity_rank(finding: Any) -> int:
+    """Return a numeric severity rank for sort ordering.
+
+    Higher rank = more severe. Unknown / non-string severities collapse
+    to 0 so they sort BELOW even minor findings (= dropped first when
+    the aggregate-size guard trims).
+    """
+    if not isinstance(finding, dict):
+        return 0
+    sev = finding.get("severity")
+    if isinstance(sev, str):
+        return _SEVERITY_RANK.get(sev.lower(), 0)
+    return 0
+
+
+def _trim_lowest_priority_unit(
+    specialist_outputs: list[dict[str, Any]],
+    units_by_id: dict[str, dict[str, Any]],
+) -> tuple[bool, int]:
+    """Drop the single lowest-severity finding from the largest unit.
+
+    The guard's contract is "never drop a leaf entirely" — we always
+    preserve at least the unit envelope (``{id, status, findings: []}``)
+    so the planner-vs-merger union invariant continues to hold. Returns
+    ``(trimmed_anything, bytes_freed)``; the caller iterates while the
+    aggregate still exceeds the budget.
+    """
+    if not specialist_outputs:
+        return False, 0
+
+    # Pick the unit with the largest serialised payload — it dominates
+    # the aggregate, so trimming there yields the biggest win per drop.
+    target = max(specialist_outputs, key=_serialised_size)
+    findings = target.get("findings")
+    if not isinstance(findings, list) or not findings:
+        return False, 0
+
+    # Sort findings by severity rank ASCENDING; lowest severity at the
+    # head is the one we drop first. Stable sort keeps repeated-severity
+    # ties in insertion order so trimming is deterministic across runs.
+    before_size = _serialised_size(target)
+    sorted_findings = sorted(findings, key=_severity_rank)
+    target["findings"] = sorted_findings[1:]
+    after_size = _serialised_size(target)
+    # If we somehow grew the payload (sort changed key ordering), undo.
+    if after_size >= before_size:
+        target["findings"] = findings
+        return False, 0
+    return True, before_size - after_size
+
+
 def handle_merge_specialist_outputs(ctx: InlineContext) -> dict[str, Any]:
-    """Flatten loop outputs + persist shards + enforce no-missed-file."""
+    """Flatten loop outputs + persist shards + enforce no-missed-file.
+
+    PR5 tightens the planner-vs-merger invariant from equality to
+    ``len(union_files) >= total_files_planned`` (a unit allowed to
+    review a superset of its planned files is still OK; only DROPPED
+    files are a bug). Also adds an aggregate-size guard: when the sum
+    of serialised per-unit outputs exceeds
+    :data:`_AGGREGATE_OUTPUT_BUDGET_BYTES` (100 MB), we trim the
+    lowest-priority findings from the largest unit until we fit — but
+    we NEVER drop a leaf entirely, so the union invariant still holds.
+    """
     env = _env_from_ctx(ctx)
     args_bag = _ensure_dict(env.get("args"))
     specialist_batches = _ensure_list(env.get("specialist_batches"))
@@ -2228,6 +2389,8 @@ def handle_merge_specialist_outputs(ctx: InlineContext) -> dict[str, Any]:
 
     union_files: set[str] = set()
     specialist_outputs: list[dict[str, Any]] = []
+    units_by_id: dict[str, dict[str, Any]] = {}
+    pending_writes: list[tuple[Path, dict[str, Any]]] = []
     for (leaf_id, sub_index), unit_out in deduped.items():
         iter_n = unit_out.get("__iter_n", 0)
         specialist_output = unit_out.get("specialist_output")
@@ -2251,30 +2414,166 @@ def handle_merge_specialist_outputs(ctx: InlineContext) -> dict[str, Any]:
                     for file in unit.get("files") or []:
                         if isinstance(file, str):
                             union_files.add(file)
-        # Write the shard. The key is the unit identifier; the leaf_name
-        # carries iter_n so retries land in a separate file under the
-        # same sha256-derived shard directory.
+        # Defer the on-disk write until AFTER the aggregate-size guard
+        # has had a chance to trim oversized units in-memory. Otherwise
+        # we'd persist payloads we're about to mutate.
         unit_key = f"{leaf_id}/{sub_index}"
         filename = f"{leaf_id}__sub{sub_index}__iter{iter_n}.json"
         shard = shard_path(specialists_root, unit_key, filename)
+        pending_writes.append((shard, specialist_output))
+        specialist_outputs.append(specialist_output)
+        units_by_id[f"{leaf_id}#{sub_index}"] = specialist_output
+
+    # PR5 — aggregate-size guard. Sum the serialised size of every
+    # specialist_output and, while we exceed the 100 MB budget, trim
+    # the lowest-severity finding from the LARGEST unit. The leaf
+    # envelope itself is never removed (the union invariant still
+    # holds). We cap the loop at len(findings) total iterations as a
+    # final safety net against a pathological payload that can't be
+    # shrunk further.
+    aggregate_bytes = sum(_serialised_size(out) for out in specialist_outputs)
+    if aggregate_bytes > _AGGREGATE_OUTPUT_BUDGET_BYTES:
+        import logging  # local import — only when the guard actually fires
+
+        log = logging.getLogger(__name__)
+        log.warning(
+            "merge_specialist_outputs: aggregate output %d bytes exceeds "
+            "budget of %d bytes; trimming lowest-priority findings "
+            "(no leaf will be fully dropped)",
+            aggregate_bytes,
+            _AGGREGATE_OUTPUT_BUDGET_BYTES,
+        )
+        max_passes = sum(
+            len(out.get("findings") or []) for out in specialist_outputs
+        )
+        passes = 0
+        while (
+            aggregate_bytes > _AGGREGATE_OUTPUT_BUDGET_BYTES
+            and passes < max_passes
+        ):
+            trimmed, freed = _trim_lowest_priority_unit(
+                specialist_outputs, units_by_id
+            )
+            if not trimmed or freed == 0:
+                break
+            aggregate_bytes -= freed
+            passes += 1
+
+    # Persist the (possibly trimmed) shards. Writing AFTER the trim
+    # keeps the on-disk record consistent with the in-memory state we
+    # return — the manifest + report pipeline reads the in-memory list,
+    # but the shards are the durable replay surface for a re-run.
+    for shard, specialist_output in pending_writes:
         shard.parent.mkdir(parents=True, exist_ok=True)
         shard.write_text(
             json.dumps(specialist_output, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        specialist_outputs.append(specialist_output)
 
     # Enforce the no-missed-file invariant. The merger's union must
-    # match the planner's total — if not, the loop body dropped units.
-    if len(union_files) != total_files_planned:
+    # be at least the planner's total — if smaller, the loop body
+    # dropped units; if larger, a sub-agent reviewed extras (allowed).
+    if len(union_files) < total_files_planned:
         raise MissedFileError(
             f"merge_specialist_outputs: union of unit files "
-            f"({len(union_files)}) does not match planner's "
+            f"({len(union_files)}) is below planner's "
             f"total_files_planned ({total_files_planned}); the loop "
             f"body dropped one or more planned units"
         )
 
     return {"specialist_outputs": specialist_outputs}
+
+
+# ===========================================================================
+# Handler 12 — verifier_stuck (PR5)
+# ===========================================================================
+#
+# Reached when the same worker state has rejected the verifier panel
+# _VERIFIER_REJECTION_LIMIT times in a row. Records the impasse so the
+# audit trail explains why the run is degraded, marks the relevant
+# leaf/batch as failed in env, and lets the pipeline continue. The
+# synthesize_release_readiness handler already lowers the verdict when
+# coverage is partial — verifier_stuck simply ensures we GET to that
+# handler instead of looping until the engine's max_iterations cap.
+
+
+def handle_verifier_stuck(ctx: InlineContext) -> dict[str, Any]:
+    """Record a verifier-rejection impasse and degrade the run.
+
+    The handler is intentionally tiny: it does NOT re-dispatch the
+    worker, does NOT mutate findings, and does NOT try to "fix" the
+    rejected outputs. Its single job is to:
+
+    1. Emit a structured ``verifier_stuck`` record (stuck_state +
+       rejection_count) so reviewers can see exactly which gate gave
+       up at audit time.
+    2. Mark ``degraded_run=True`` so downstream handlers know coverage
+       is incomplete (synthesize_release_readiness consumes this).
+    3. Reset the rejection counter for the stuck state so a later
+       retry — should the operator manually resume the run — starts
+       from a clean slate.
+
+    Inputs (all optional, defensive defaults):
+
+    * ``verifier_rejection_counts`` (dict[str, int]) — per-state count
+      of consecutive rejections.
+    * ``stuck_state_id`` (str) — explicit override of which state is
+      stuck; falls back to scanning the counts dict for the first
+      entry at or above the limit.
+    * ``current_leaf_id`` (str) / ``current_batch_index`` (int) — the
+      leaf or batch that owned the rejected commit; surfaced in the
+      record so downstream tools can render a useful error.
+
+    Outputs:
+
+    * ``verifier_stuck`` (dict) — the structured impasse record.
+    * ``degraded_run`` (bool) — always True.
+    * ``verifier_rejection_counts`` (dict[str, int]) — the counter map
+      with the stuck state reset to 0.
+    * ``failed_units`` (list) — the leaf/batch markers the orchestrator
+      uses to skip re-dispatching the same unit on resume.
+    """
+    env = _env_from_ctx(ctx)
+    counts = _read_verifier_rejection_counts(env)
+
+    explicit_stuck = env.get("stuck_state_id")
+    stuck_state_id: str | None = None
+    if isinstance(explicit_stuck, str) and explicit_stuck:
+        stuck_state_id = explicit_stuck
+    else:
+        for state_id, count in counts.items():
+            if count >= _VERIFIER_REJECTION_LIMIT:
+                stuck_state_id = state_id
+                break
+
+    rejection_count = counts.get(stuck_state_id or "", 0)
+
+    failed_units: list[dict[str, Any]] = []
+    current_leaf = env.get("current_leaf_id")
+    if isinstance(current_leaf, str) and current_leaf:
+        failed_units.append({"leaf_id": current_leaf, "reason": "verifier_stuck"})
+    current_batch = env.get("current_batch_index")
+    if isinstance(current_batch, int):
+        failed_units.append(
+            {"batch_index": current_batch, "reason": "verifier_stuck"}
+        )
+
+    # Reset the counter for the stuck state so a manual resume gets a
+    # clean slate. Other states keep their counts untouched.
+    reset_counts = dict(counts)
+    if stuck_state_id is not None:
+        reset_counts[stuck_state_id] = 0
+
+    return {
+        "verifier_stuck": {
+            "stuck_state_id": stuck_state_id or "",
+            "rejection_count": rejection_count,
+            "limit": _VERIFIER_REJECTION_LIMIT,
+        },
+        "degraded_run": True,
+        "verifier_rejection_counts": reset_counts,
+        "failed_units": failed_units,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2294,6 +2593,7 @@ INLINE_HANDLERS: dict[str, InlineHandler] = {
     "emit_stdout": handle_emit_stdout,
     "short_circuit_exit": handle_short_circuit_exit,
     "stage_a_empty": handle_stage_a_empty,
+    "verifier_stuck": handle_verifier_stuck,
 }
 
 
@@ -2310,6 +2610,7 @@ __all__ = [
     "handle_short_circuit_exit",
     "handle_stage_a_empty",
     "handle_synthesize_release_readiness",
+    "handle_verifier_stuck",
     "handle_verify_coverage",
     "handle_write_run_directory",
     "render_report_json",

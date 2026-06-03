@@ -126,3 +126,63 @@ def test_stage_a_empty_transition_when_no_activated_leaves() -> None:
     stage_a = state.transitions[0]
     assert stage_a.to == "stage_a_empty"
     assert "len(activated_leaves) == 0" in stage_a.when.expression  # type: ignore[union-attr]
+
+
+def test_worker_states_have_allowed_tools_pinned() -> None:
+    """Each worker state pins an `allowed_tools` allowlist per the spec.
+
+    The allowlist is the tool surface forwarded to the dispatched
+    sub-agent. Four of the five worker states expose a non-empty list;
+    ``llm_trim`` is intentionally empty because it is pure reasoning
+    over the brief. Inline / terminal states keep the default empty
+    list — they never see a sub-agent.
+    """
+    expected: dict[str, list[str]] = {
+        "scan_project": [
+            "Bash(git diff:*)",
+            "Bash(git log:*)",
+            "Bash(git status:*)",
+            "Bash(git ls-files:*)",
+            "Bash(cat:*)",
+            "Read",
+            "Glob",
+        ],
+        "tree_descend": ["Read"],
+        "llm_trim": [],
+        "tool_discovery": [
+            "Bash(eslint:*)",
+            "Bash(ruff:*)",
+            "Bash(mypy:*)",
+            "Bash(npm test:*)",
+            "Bash(pytest:*)",
+            "Bash(cargo:*)",
+            "Bash(go test:*)",
+            "Bash(which:*)",
+            "Read",
+        ],
+        "dispatch_specialists": [
+            "Read",
+            "Grep",
+            "Glob",
+            "WebFetch",
+            "Bash(git diff:*)",
+            "Bash(git log:*)",
+        ],
+    }
+    worker_state_ids = {
+        state.id for state in fsm.states if state.worker is not None
+    }
+    assert worker_state_ids == set(expected.keys()), (
+        f"worker-state set drifted: got {sorted(worker_state_ids)}"
+    )
+    for state_id, want in expected.items():
+        got = fsm.get_state(state_id).allowed_tools
+        assert got == want, (
+            f"{state_id}: allowed_tools drift — got {got}, want {want}"
+        )
+    # Worker states other than `llm_trim` must carry a non-empty allowlist.
+    for state_id, want in expected.items():
+        if state_id == "llm_trim":
+            assert want == [], "llm_trim allowlist must stay empty"
+        else:
+            assert len(want) > 0, f"{state_id} allowlist unexpectedly empty"

@@ -640,6 +640,15 @@ def _scan_project() -> State:
             # "diff_stats.lines_changed is a non-negative integer"
             Predicate("diff_stats.lines_changed >= 0"),
         ],
+        allowed_tools=[
+            "Bash(git diff:*)",
+            "Bash(git log:*)",
+            "Bash(git status:*)",
+            "Bash(git ls-files:*)",
+            "Bash(cat:*)",
+            "Read",
+            "Glob",
+        ],
         transitions=[Transition(to="risk_tier_triage", when=TransitionKind.always)],
     )
 
@@ -737,6 +746,7 @@ def _tree_descend() -> State:
         ),
         outputs=["stage_a_candidates", "descent_path"],
         post_validations=[Predicate("len(stage_a_candidates) >= 0")],
+        allowed_tools=["Read"],
         transitions=[
             Transition(
                 to="stage_a_empty",
@@ -770,6 +780,7 @@ def _llm_trim() -> State:
         ),
         outputs=["picked_leaves", "rejected_leaves", "coverage_rescues"],
         post_validations=[Predicate("len(picked_leaves) >= 0")],
+        allowed_tools=[],
         transitions=[Transition(to="tool_discovery", when=TransitionKind.always)],
     )
 
@@ -787,6 +798,17 @@ def _tool_discovery() -> State:
             response_schema=_tool_runner_schema(),
         ),
         outputs=["tool_results"],
+        allowed_tools=[
+            "Bash(eslint:*)",
+            "Bash(ruff:*)",
+            "Bash(mypy:*)",
+            "Bash(npm test:*)",
+            "Bash(pytest:*)",
+            "Bash(cargo:*)",
+            "Bash(go test:*)",
+            "Bash(which:*)",
+            "Read",
+        ],
         transitions=[Transition(to="dispatch_specialists", when=TransitionKind.always)],
     )
 
@@ -813,6 +835,14 @@ def _dispatch_specialists() -> State:
         ),
         outputs=["specialist_outputs"],
         post_validations=[Predicate("len(specialist_outputs) >= 0")],
+        allowed_tools=[
+            "Read",
+            "Grep",
+            "Glob",
+            "WebFetch",
+            "Bash(git diff:*)",
+            "Bash(git log:*)",
+        ],
         transitions=[Transition(to="collect_findings", when=TransitionKind.always)],
     )
 

@@ -38,12 +38,15 @@ from ctxr_skill_code_review.verifier_handler import (
     load_verifier_prompt,
 )
 
+# PR4 dropped dispatch_specialists from this list: it is now a Loop
+# state (no .worker, the inner per-batch worker is wrapped by Loop).
+# Its iteration-level verification happens via the merge handler's
+# no-missed-file invariant, not a verifier panel.
 WORKER_STATE_IDS = [
     "scan_project",
     "tree_descend",
     "llm_trim",
     "tool_discovery",
-    "dispatch_specialists",
 ]
 
 

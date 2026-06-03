@@ -72,14 +72,22 @@ def _simulated_worker_output(state_id: str) -> dict[str, Any]:
     if state_id == "tool_discovery":
         return {"tool_results": []}
     if state_id == "dispatch_specialists":
+        # PR4: loop body output. The simulated single-iteration loop
+        # carries one unit's specialist output and flips loop_done.
         return {
-            "specialist_outputs": [
+            "batch_index": 1,
+            "iter_outputs": [
                 {
-                    "id": "example-leaf",
-                    "status": "completed",
-                    "findings": [],
+                    "leaf_id": "example-leaf",
+                    "sub_index": 1,
+                    "specialist_output": {
+                        "id": "example-leaf",
+                        "status": "completed",
+                        "findings": [],
+                    },
                 }
-            ]
+            ],
+            "loop_done": True,
         }
     raise KeyError(f"no simulated output for state {state_id!r}")
 
@@ -156,6 +164,7 @@ def test_drive_skill_through_engine_inline_path(tmp_path: Path) -> None:
         )
 
     # Happy-path expected sequence — every state visited in spec order.
+    # PR4: plan_specialist_batches + merge_specialist_outputs join the path.
     assert visited == [
         "scan_project",
         "risk_tier_triage",
@@ -163,7 +172,9 @@ def test_drive_skill_through_engine_inline_path(tmp_path: Path) -> None:
         "tree_descend",
         "llm_trim",
         "tool_discovery",
+        "plan_specialist_batches",
         "dispatch_specialists",
+        "merge_specialist_outputs",
         "collect_findings",
         "verify_coverage",
         "synthesize_release_readiness",
@@ -172,10 +183,11 @@ def test_drive_skill_through_engine_inline_path(tmp_path: Path) -> None:
         "terminal",
     ], f"unexpected state path: {visited}"
 
-    # All inline handlers ran (7 along the happy path: risk_tier_triage,
-    # activate_leaves, collect_findings, verify_coverage,
-    # synthesize_release_readiness, write_run_directory, emit_stdout).
-    assert inline_steps == 7
+    # All inline handlers ran (9 along the happy path: risk_tier_triage,
+    # activate_leaves, plan_specialist_batches, merge_specialist_outputs,
+    # collect_findings, verify_coverage, synthesize_release_readiness,
+    # write_run_directory, emit_stdout).
+    assert inline_steps == 9
 
     # write_run_directory wrote three artefacts under .skill-code-review/.
     storage_root = tmp_path / ".skill-code-review"
@@ -184,3 +196,107 @@ def test_drive_skill_through_engine_inline_path(tmp_path: Path) -> None:
     assert len(report_files) == 1
     assert (report_files[0].parent / "report.json").exists()
     assert (report_files[0].parent / "manifest.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# PR4-specific end-to-end coverage (~80 LOC):
+#   - 7 picked leaves + batch_size 3 -> 3 iterations
+#   - 1 leaf with 200 files -> 2 sub-batches
+#   - Assertions: specialist_outputs length == sum of units; sharded files
+#     exist at the expected paths; terminal verdict reached; no missed file.
+# ---------------------------------------------------------------------------
+
+
+def test_pr4_plan_then_merge_seven_leaves_batch_size_three(tmp_path: Path) -> None:
+    """Drive plan + merge in isolation: 7 leaves @ batch_size 3 -> 3 batches.
+
+    We assert the planner produces 3 batches (3+3+1) and the merger
+    rolls every unit back into a flat specialist_outputs[] list.
+    """
+    from ctxr.fsm.core import InlineContext
+
+    from ctxr_skill_code_review.handlers import (
+        handle_merge_specialist_outputs,
+        handle_plan_specialist_batches,
+    )
+
+    picked = [
+        {"id": f"leaf-{n}", "path": f"leaf-{n}.md", "activation": {"file_globs": [f"src/m{n}/*.py"]}}
+        for n in range(1, 8)
+    ]
+    changed = [f"src/m{n}/x.py" for n in range(1, 8)]
+
+    plan_ctx = InlineContext(
+        run_id=uuid.uuid4(),
+        fsm_id="code-reviewer",
+        state_id="plan_specialist_batches",
+        args={"project_root": str(tmp_path), "batch_size": 3},
+        inputs={"picked_leaves": picked, "changed_paths": changed, "tier": "full"},
+    )
+    plan = handle_plan_specialist_batches(plan_ctx)
+    assert plan["total_batches"] == 3
+    assert sum(len(b["units"]) for b in plan["specialist_batches"]) == 7
+
+    # Build per-iteration loop payloads — every unit returns a completed output.
+    loop_iters = []
+    for batch in plan["specialist_batches"]:
+        loop_iters.append({
+            "batch_index": batch["batch_index"],
+            "iter_outputs": [
+                {
+                    "leaf_id": u["leaf_id"],
+                    "sub_index": u["sub_index"],
+                    "specialist_output": {
+                        "id": u["leaf_id"],
+                        "status": "completed",
+                        "findings": [],
+                    },
+                }
+                for u in batch["units"]
+            ],
+            "loop_done": batch["batch_index"] == plan["total_batches"],
+        })
+
+    merge_ctx = InlineContext(
+        run_id=uuid.uuid4(),
+        fsm_id="code-reviewer",
+        state_id="merge_specialist_outputs",
+        args={"project_root": str(tmp_path)},
+        inputs={
+            "specialist_batches": plan["specialist_batches"],
+            "total_files_planned": plan["total_files_planned"],
+            "loop_iters": loop_iters,
+        },
+    )
+    merged = handle_merge_specialist_outputs(merge_ctx)
+    assert len(merged["specialist_outputs"]) == 7
+    # Sharded files exist under the per-run specialists root.
+    specialists_root = tmp_path / ".skill-code-review" / "specialists"
+    shards = sorted(specialists_root.rglob("*.json"))
+    assert len(shards) == 7
+
+
+def test_pr4_huge_leaf_splits_into_subbatches(tmp_path: Path) -> None:
+    """One leaf with 200 files at the default token budget -> >= 2 sub-batches."""
+    from ctxr.fsm.core import InlineContext
+
+    from ctxr_skill_code_review.handlers import handle_plan_specialist_batches
+
+    files = [f"src/big/f{i}.py" for i in range(200)]
+    picked = [
+        {"id": "huge-leaf", "path": "huge.md", "activation": {"file_globs": ["src/big/*.py"]}}
+    ]
+    ctx = InlineContext(
+        run_id=uuid.uuid4(),
+        fsm_id="code-reviewer",
+        state_id="plan_specialist_batches",
+        # max_leaf_tokens=50000 with TOKENS_PER_FILE=500 => 100 files per sub-batch.
+        args={"max_leaf_tokens": 50_000, "batch_size": 5},
+        inputs={"picked_leaves": picked, "changed_paths": files, "tier": "full"},
+    )
+    plan = handle_plan_specialist_batches(ctx)
+    assert plan["total_batches"] >= 1
+    # 200 files / 100 per sub-batch = 2 sub-batches.
+    total_units = sum(len(b["units"]) for b in plan["specialist_batches"])
+    assert total_units == 2
+    assert plan["total_files_planned"] == 200

@@ -1,4 +1,4 @@
-"""The skill-code-review FSM spec — a 15-state pipeline declared in Python.
+"""The skill-code-review FSM spec — a 17-state pipeline declared in Python.
 
 Port of ``fsm/code-reviewer.fsm.yaml`` from the legacy Node skill (v2.5.1)
 to a Pydantic :class:`~ctxr.fsm.FsmSpec` literal. The spec preserves the
@@ -44,7 +44,7 @@ from ctxr.fsm import (
 # InlineSpec hasn't been promoted to the ergonomic top-level facade yet;
 # import it from ctxr.fsm.core where the W14a engine extension defines it.
 from ctxr.fsm.core import InlineSpec
-from ctxr.fsm.core.models import VerifierSpec
+from ctxr.fsm.core.models import Loop, VerifierSpec
 
 # ---------------------------------------------------------------------------
 # Enum-discipline (W14i prospective) — closed vocabularies as StrEnums
@@ -110,6 +110,8 @@ class HandlerId(StrEnum):
 
     risk_tier_triage = "risk_tier_triage"
     activate_leaves = "activate_leaves"
+    plan_specialist_batches = "plan_specialist_batches"
+    merge_specialist_outputs = "merge_specialist_outputs"
     collect_findings = "collect_findings"
     verify_coverage = "verify_coverage"
     synthesize_release_readiness = "synthesize_release_readiness"
@@ -453,6 +455,128 @@ def _tool_runner_schema() -> ResponseSchema:
                             "properties": {"status": {"const": "skipped"}},
                         },
                         "then": {"required": ["reason"]},
+                    },
+                },
+            },
+        }
+    })
+
+
+def _plan_specialist_batches_schema() -> ResponseSchema:
+    """Inline-state schema: validates plan_specialist_batches outputs.
+
+    The planner emits a sequence of batches; each batch carries one or
+    more units, where a unit is a single (leaf, sub_index) reviewing a
+    non-overlapping slice of files. ``total_batches`` doubles as the
+    loop terminator: ``loop_done`` flips true when the worker's
+    ``batch_index`` reaches ``total_batches``.
+    """
+    return ResponseSchema.model_validate({
+        "schema": {
+            "type": "object",
+            "required": [
+                "specialist_batches",
+                "total_batches",
+                "total_files_planned",
+            ],
+            "properties": {
+                "specialist_batches": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["batch_index", "units"],
+                        "properties": {
+                            "batch_index": {"type": "integer", "minimum": 1},
+                            "units": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": [
+                                        "leaf_id",
+                                        "sub_index",
+                                        "total_subs",
+                                        "files",
+                                    ],
+                                    "properties": {
+                                        "leaf_id": {"type": "string"},
+                                        "sub_index": {"type": "integer", "minimum": 1},
+                                        "total_subs": {
+                                            "type": "integer",
+                                            "minimum": 1,
+                                        },
+                                        "files": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+                "total_batches": {"type": "integer", "minimum": 0},
+                "total_files_planned": {"type": "integer", "minimum": 0},
+            },
+        }
+    })
+
+
+def _specialist_batch_schema() -> ResponseSchema:
+    """Loop-worker schema: validates one iteration's per-batch outputs.
+
+    The batch worker dispatches ``len(units)`` parallel sub-agents
+    (one per unit) and folds their results into ``iter_outputs``. The
+    ``loop_done`` field terminates the loop early when the dispatcher
+    decides we've consumed all planned batches.
+    """
+    return ResponseSchema.model_validate({
+        "schema": {
+            "type": "object",
+            "required": ["batch_index", "iter_outputs", "loop_done"],
+            "properties": {
+                "batch_index": {"type": "integer", "minimum": 1},
+                "iter_outputs": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["leaf_id", "sub_index", "specialist_output"],
+                        "properties": {
+                            "leaf_id": {"type": "string"},
+                            "sub_index": {"type": "integer", "minimum": 1},
+                            "specialist_output": {"type": "object"},
+                        },
+                    },
+                },
+                "loop_done": {"type": "boolean"},
+            },
+        }
+    })
+
+
+def _merge_specialist_outputs_schema() -> ResponseSchema:
+    """Inline-state schema: same shape collect_findings consumes.
+
+    Flattens the loop's per-iteration ``iter_outputs[]`` into the legacy
+    ``specialist_outputs[]`` list collect_findings reads.
+    """
+    return ResponseSchema.model_validate({
+        "schema": {
+            "type": "object",
+            "required": ["specialist_outputs"],
+            "properties": {
+                "specialist_outputs": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["id", "status", "findings"],
+                        "properties": {
+                            "id": {"type": "string"},
+                            "status": {
+                                "enum": ["completed", "failed", "skipped"],
+                            },
+                            "findings": {"type": "array"},
+                            "skip_reason": {"type": "string"},
+                        },
                     },
                 },
             },
@@ -862,6 +986,33 @@ def _tool_discovery() -> State:
             "Read",
         ],
         verifier=_verifier_for("tool_discovery"),
+        transitions=[Transition(to="plan_specialist_batches", when=TransitionKind.always)],
+    )
+
+
+def _plan_specialist_batches() -> State:
+    return State(
+        id="plan_specialist_batches",
+        purpose=(
+            "Plan deterministic batches of specialist units. Splits huge leaves "
+            "into non-overlapping sub-batches so dispatch_specialists never "
+            "drops a file when a single leaf would overflow the context window."
+        ),
+        preconditions=[
+            "picked_leaves is an array",
+            "changed_paths exists in run state",
+        ],
+        inline=InlineSpec(
+            handler_id=HandlerId.plan_specialist_batches.value,
+            response_schema=_plan_specialist_batches_schema(),
+            post_validations=[
+                Predicate("len(specialist_batches) >= 0"),
+                Predicate("total_batches >= 0"),
+                Predicate("total_files_planned >= 0"),
+            ],
+            purpose="Deterministic batch + sub-batch planning for the loop.",
+        ),
+        outputs=["specialist_batches", "total_batches", "total_files_planned"],
         transitions=[Transition(to="dispatch_specialists", when=TransitionKind.always)],
     )
 
@@ -870,24 +1021,38 @@ def _dispatch_specialists() -> State:
     return State(
         id="dispatch_specialists",
         purpose=(
-            "Dispatch K picked-leaf specialists in parallel; aggregate their "
-            "findings into specialist_outputs[]."
+            "Loop over the planned specialist batches; each iteration dispatches "
+            "one batch's units in parallel and folds their outputs. The loop "
+            "terminates when the worker reports loop_done=true (typically when "
+            "batch_index == total_batches)."
         ),
-        preconditions=["picked_leaves is an array"],
-        worker=Worker(
-            role="specialist",
-            prompt_template=_load_worker_prompt("specialist"),
-            prompt_template_language='markdown',
-            inputs=[
-                "project_profile",
-                "changed_paths",
-                "picked_leaves",
-                "tool_results",
-            ],
-            response_schema=_specialist_schema(),
+        preconditions=[
+            "picked_leaves is an array",
+            "specialist_batches exists in run state",
+            "total_batches exists in run state",
+        ],
+        loop=Loop(
+            worker=Worker(
+                role="specialist-batch",
+                prompt_template=_load_worker_prompt("specialist-batch"),
+                prompt_template_language='markdown',
+                inputs=[
+                    "project_profile",
+                    "changed_paths",
+                    "tool_results",
+                    "specialist_batches",
+                    "total_batches",
+                ],
+                response_schema=_specialist_batch_schema(),
+            ),
+            max_iterations=64,
+            done_field="loop_done",
         ),
-        outputs=["specialist_outputs"],
-        post_validations=[Predicate("len(specialist_outputs) >= 0")],
+        outputs=["batch_index", "iter_outputs", "loop_done"],
+        # Carry forward the tool allowlist trunk pinned on the worker
+        # variant of dispatch_specialists. The Loop's worker reuses it
+        # for every iteration; PR2 will hoist this onto Worker but for
+        # now the State envelope carries it.
         allowed_tools=[
             "Read",
             "Grep",
@@ -895,8 +1060,32 @@ def _dispatch_specialists() -> State:
             "WebFetch",
             "Bash(git diff:*)",
             "Bash(git log:*)",
+            "Task",
         ],
-        verifier=_verifier_for("dispatch_specialists"),
+        transitions=[Transition(to="merge_specialist_outputs", when=TransitionKind.always)],
+    )
+
+
+def _merge_specialist_outputs() -> State:
+    return State(
+        id="merge_specialist_outputs",
+        purpose=(
+            "Flatten the loop's per-iteration iter_outputs[] into the legacy "
+            "specialist_outputs[] shape collect_findings consumes; persist one "
+            "JSON shard per (leaf_id, sub_index) and assert no planned file "
+            "was missed."
+        ),
+        preconditions=[
+            "specialist_batches exists in run state",
+            "total_files_planned exists in run state",
+        ],
+        inline=InlineSpec(
+            handler_id=HandlerId.merge_specialist_outputs.value,
+            response_schema=_merge_specialist_outputs_schema(),
+            post_validations=[Predicate("len(specialist_outputs) >= 0")],
+            purpose="Dedup + shard per-unit outputs; enforce no-missed-file invariant.",
+        ),
+        outputs=["specialist_outputs"],
         transitions=[Transition(to="collect_findings", when=TransitionKind.always)],
     )
 
@@ -1082,7 +1271,9 @@ def build_spec() -> FsmSpec:
             _tree_descend(),
             _llm_trim(),
             _tool_discovery(),
+            _plan_specialist_batches(),
             _dispatch_specialists(),
+            _merge_specialist_outputs(),
             _collect_findings(),
             _verify_coverage(),
             _synthesize_release_readiness(),
@@ -1122,7 +1313,7 @@ __all__ = [
 def get_state_ids() -> list[str]:
     """Return the spec's state ids in declared order.
 
-    Convenience for tests that want to assert the 15-state shape
+    Convenience for tests that want to assert the 17-state shape
     without re-reading the spec module's internals.
     """
     return [s.id for s in fsm.states]

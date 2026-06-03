@@ -37,7 +37,7 @@ from typing import Any
 import frontmatter
 from ctxr.fsm.core import InlineContext, InlineHandler
 
-from .sharding import shard_segments
+from .sharding import shard_path, shard_segments
 
 # ---------------------------------------------------------------------------
 # Shared constants — kept module-local; promoted to spec.StrEnums where they
@@ -1965,6 +1965,318 @@ def handle_stage_a_empty(ctx: InlineContext) -> dict[str, Any]:
     }
 
 
+# ===========================================================================
+# Handler 10 — plan_specialist_batches
+# ===========================================================================
+#
+# PR4: deterministic planner that turns picked_leaves into a sequence of
+# batches and (where a single leaf would overflow the context window)
+# non-overlapping sub-batches. The loop refactor of dispatch_specialists
+# walks this plan one batch per iteration so the pipeline never silently
+# drops a file when the diff is big.
+
+
+# Tier-driven default batch sizes. The full tier gets the largest batch
+# because a full review already implies the operator wants depth.
+_TIER_BATCH_SIZE: dict[str, int] = {
+    "trivial": 3,
+    "lite": 4,
+    "full": 5,
+    "sensitive": 3,
+}
+
+# Per-leaf token budget. A leaf whose estimated tokens exceed this gets
+# split into sub-batches, each carrying a slice of the leaf's files.
+# 80k tokens leaves headroom under the typical sub-agent context budget
+# once we add the diff body, the leaf's instructions, and the system
+# preamble.
+_DEFAULT_MAX_LEAF_TOKENS: int = 80_000
+
+# Token estimation heuristic: every file the leaf reviews costs ~500
+# tokens on average (the diff lines for that file plus the leaf's own
+# checklist scan). The .mjs port refined this with file-size-aware
+# tokenisation; the Python port keeps the cheap heuristic because the
+# planner is deterministic and the sub-batch threshold is a soft cap —
+# overshooting by 1 sub-batch costs nothing but underbatching can drop
+# files, which is the bug this whole PR fixes.
+_TOKENS_PER_FILE: int = 500
+
+
+def _math_ceil(num: int, den: int) -> int:
+    if den <= 0:
+        return 0
+    return -(-num // den)
+
+
+def _leaf_file_set(
+    leaf: dict[str, Any], changed_paths: list[str]
+) -> list[str]:
+    """Return the files this leaf should review.
+
+    Activation rule:
+    * If the leaf has `activation.file_globs`, intersect with `changed_paths`.
+    * Otherwise (keyword-only / structural-only activation), assign the
+      full `changed_paths` set — those leaves run against everything
+      that landed in the diff.
+    """
+    globs: Any = None
+    activation = leaf.get("activation")
+    if isinstance(activation, dict):
+        globs = activation.get("file_globs")
+    # Some upstream shapes hoist file_globs onto the leaf directly.
+    if globs is None:
+        globs = leaf.get("file_globs")
+    if not isinstance(globs, list) or not globs:
+        # Keyword-only / structural-only: full diff scope.
+        return list(changed_paths)
+    matched: list[str] = []
+    seen: set[str] = set()
+    for path in changed_paths:
+        if not isinstance(path, str):
+            continue
+        for glob in globs:
+            if not isinstance(glob, str) or not glob:
+                continue
+            if _minimatch(path, glob) and path not in seen:
+                matched.append(path)
+                seen.add(path)
+                break
+    return matched
+
+
+def handle_plan_specialist_batches(ctx: InlineContext) -> dict[str, Any]:
+    """Plan batches + sub-batches for the dispatch_specialists loop."""
+    env = _env_from_ctx(ctx)
+    args_bag = _ensure_dict(env.get("args"))
+    picked_leaves = _ensure_list(env.get("picked_leaves"))
+    changed_paths_raw = _ensure_list(env.get("changed_paths"))
+    changed_paths: list[str] = [p for p in changed_paths_raw if isinstance(p, str)]
+    tier = env.get("tier")
+
+    batch_size_raw = args_bag.get("batch_size")
+    if isinstance(batch_size_raw, int) and batch_size_raw > 0:
+        batch_size = batch_size_raw
+    else:
+        batch_size = _TIER_BATCH_SIZE.get(
+            tier if isinstance(tier, str) else "", 4
+        )
+
+    max_leaf_tokens_raw = args_bag.get("max_leaf_tokens")
+    if isinstance(max_leaf_tokens_raw, int) and max_leaf_tokens_raw > 0:
+        max_leaf_tokens = max_leaf_tokens_raw
+    else:
+        max_leaf_tokens = _DEFAULT_MAX_LEAF_TOKENS
+
+    # Build units. Each unit is one (leaf_id, sub_index) slice of files.
+    units: list[dict[str, Any]] = []
+    union_files: set[str] = set()
+    for leaf in picked_leaves:
+        if not isinstance(leaf, dict):
+            continue
+        leaf_id = leaf.get("id")
+        if not isinstance(leaf_id, str) or not leaf_id:
+            continue
+        files = _leaf_file_set(leaf, changed_paths)
+        if not files:
+            # No files matched this leaf; emit a single empty unit so the
+            # merger sees it (and the sub-agent can return status=skipped
+            # with a "no files in scope" reason).
+            units.append({
+                "leaf_id": leaf_id,
+                "sub_index": 1,
+                "total_subs": 1,
+                "files": [],
+            })
+            continue
+        estimated_tokens = len(files) * _TOKENS_PER_FILE
+        if estimated_tokens > max_leaf_tokens:
+            sub_count = _math_ceil(estimated_tokens, max_leaf_tokens)
+            chunk_size = _math_ceil(len(files), sub_count)
+            for sub_idx in range(sub_count):
+                slice_start = sub_idx * chunk_size
+                slice_end = min(slice_start + chunk_size, len(files))
+                if slice_start >= len(files):
+                    break
+                slice_files = files[slice_start:slice_end]
+                units.append({
+                    "leaf_id": leaf_id,
+                    "sub_index": sub_idx + 1,
+                    "total_subs": sub_count,
+                    "files": slice_files,
+                })
+                union_files.update(slice_files)
+        else:
+            units.append({
+                "leaf_id": leaf_id,
+                "sub_index": 1,
+                "total_subs": 1,
+                "files": files,
+            })
+            union_files.update(files)
+
+    # Pack units into batches of size <= batch_size.
+    batches: list[dict[str, Any]] = []
+    for i in range(0, len(units), batch_size):
+        batch_units = units[i : i + batch_size]
+        batches.append({
+            "batch_index": len(batches) + 1,
+            "units": batch_units,
+        })
+
+    total_files_planned = len(union_files)
+
+    return {
+        "specialist_batches": batches,
+        "total_batches": len(batches),
+        "total_files_planned": total_files_planned,
+    }
+
+
+# ===========================================================================
+# Handler 11 — merge_specialist_outputs
+# ===========================================================================
+#
+# PR4: fold the loop's per-iteration iter_outputs[] back into the legacy
+# specialist_outputs[] shape that collect_findings consumes. Persist one
+# JSON shard per (leaf_id, sub_index) so a partial-batch retry doesn't
+# lose history; assert the planner-vs-merger file-union invariant.
+
+
+class MissedFileError(RuntimeError):
+    """Raised by merge_specialist_outputs when planned files are missing.
+
+    The loop refactor exists to guarantee that every file the planner
+    assigned to a unit reaches a specialist. If the merger's union of
+    unit.files[] disagrees with the planner's total_files_planned, the
+    invariant is broken — fail loudly so the failure surfaces as a
+    post_validation rather than a silently-shrunk review.
+    """
+
+
+def _resolve_iteration_payloads(env: dict[str, Any]) -> list[dict[str, Any]]:
+    """Defensively pull the per-iteration payloads out of the env.
+
+    The engine's exposed key for loop iteration outputs is still in
+    flux (see :func:`ctxr.fsm.core.aggregate_loop_outputs` for the
+    canonical fold). The merger accepts any of the following shapes,
+    in priority order:
+
+    1. ``specialist_outputs_by_iter`` — explicit per-iteration list.
+    2. ``loop_iters`` — generic loop iterations list (per the engine
+       roadmap).
+    3. ``iteration_outputs`` — alias used by some engine versions.
+
+    Each element is expected to be ``{batch_index, iter_outputs[], loop_done}``.
+    Falls back to wrapping a single-iteration top-level payload when the
+    env carries only the LAST iteration's outputs.
+    """
+    for key in ("specialist_outputs_by_iter", "loop_iters", "iteration_outputs"):
+        value = env.get(key)
+        if isinstance(value, list):
+            return [v for v in value if isinstance(v, dict)]
+    if isinstance(env.get("iter_outputs"), list):
+        return [{
+            "batch_index": env.get("batch_index", 1),
+            "iter_outputs": env["iter_outputs"],
+            "loop_done": bool(env.get("loop_done", True)),
+        }]
+    return []
+
+
+def handle_merge_specialist_outputs(ctx: InlineContext) -> dict[str, Any]:
+    """Flatten loop outputs + persist shards + enforce no-missed-file."""
+    env = _env_from_ctx(ctx)
+    args_bag = _ensure_dict(env.get("args"))
+    specialist_batches = _ensure_list(env.get("specialist_batches"))
+    total_files_planned = env.get("total_files_planned")
+    if not isinstance(total_files_planned, int):
+        total_files_planned = 0
+
+    iter_payloads = _resolve_iteration_payloads(env)
+
+    # Dedupe iter outputs by (leaf_id, sub_index) keeping the LAST
+    # occurrence. Later iterations win because retries replay a batch
+    # with fresh outputs that should overwrite the earlier attempt.
+    deduped: dict[tuple[str, int], dict[str, Any]] = {}
+    for iter_n_zero, payload in enumerate(iter_payloads):
+        iter_n = iter_n_zero + 1
+        iter_outputs = payload.get("iter_outputs")
+        if not isinstance(iter_outputs, list):
+            continue
+        for unit_out in iter_outputs:
+            if not isinstance(unit_out, dict):
+                continue
+            leaf_id = unit_out.get("leaf_id")
+            sub_index = unit_out.get("sub_index")
+            if not isinstance(leaf_id, str) or not isinstance(sub_index, int):
+                continue
+            key = (leaf_id, sub_index)
+            # Stamp the iter_n so the sharded filename preserves history.
+            deduped[key] = {**unit_out, "__iter_n": iter_n}
+
+    # Materialise one shard per (leaf_id, sub_index). The shard root lives
+    # under the run directory (project_root/.skill-code-review/specialists/).
+    # We use the content-addressed shard_path helper trunk introduced so
+    # the directory tree stays sub-1000-entries per node even when leaf
+    # counts grow into the thousands across many runs.
+    skill_root = _resolve_skill_root()
+    project_root = _coerce_absolute_project_root(
+        args_bag.get("project_root"), skill_root
+    )
+    storage_root = _resolve_storage_root(project_root)
+    specialists_root = storage_root / "specialists"
+
+    union_files: set[str] = set()
+    specialist_outputs: list[dict[str, Any]] = []
+    for (leaf_id, sub_index), unit_out in deduped.items():
+        iter_n = unit_out.get("__iter_n", 0)
+        specialist_output = unit_out.get("specialist_output")
+        if not isinstance(specialist_output, dict):
+            continue
+        # Stamp leaf_id back onto the specialist output if the sub-agent
+        # forgot — the legacy collect_findings handler keys on id.
+        if not isinstance(specialist_output.get("id"), str):
+            specialist_output = {**specialist_output, "id": leaf_id}
+        # Track which files this unit reviewed so we can enforce the
+        # planner-vs-merger union invariant.
+        for batch in specialist_batches:
+            if not isinstance(batch, dict):
+                continue
+            for unit in batch.get("units") or []:
+                if (
+                    isinstance(unit, dict)
+                    and unit.get("leaf_id") == leaf_id
+                    and unit.get("sub_index") == sub_index
+                ):
+                    for file in unit.get("files") or []:
+                        if isinstance(file, str):
+                            union_files.add(file)
+        # Write the shard. The key is the unit identifier; the leaf_name
+        # carries iter_n so retries land in a separate file under the
+        # same sha256-derived shard directory.
+        unit_key = f"{leaf_id}/{sub_index}"
+        filename = f"{leaf_id}__sub{sub_index}__iter{iter_n}.json"
+        shard = shard_path(specialists_root, unit_key, filename)
+        shard.parent.mkdir(parents=True, exist_ok=True)
+        shard.write_text(
+            json.dumps(specialist_output, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        specialist_outputs.append(specialist_output)
+
+    # Enforce the no-missed-file invariant. The merger's union must
+    # match the planner's total — if not, the loop body dropped units.
+    if len(union_files) != total_files_planned:
+        raise MissedFileError(
+            f"merge_specialist_outputs: union of unit files "
+            f"({len(union_files)}) does not match planner's "
+            f"total_files_planned ({total_files_planned}); the loop "
+            f"body dropped one or more planned units"
+        )
+
+    return {"specialist_outputs": specialist_outputs}
+
+
 # ---------------------------------------------------------------------------
 # Public dispatch table
 # ---------------------------------------------------------------------------
@@ -1973,6 +2285,8 @@ def handle_stage_a_empty(ctx: InlineContext) -> dict[str, Any]:
 INLINE_HANDLERS: dict[str, InlineHandler] = {
     "risk_tier_triage": handle_risk_tier_triage,
     "activate_leaves": handle_activate_leaves,
+    "plan_specialist_batches": handle_plan_specialist_batches,
+    "merge_specialist_outputs": handle_merge_specialist_outputs,
     "collect_findings": handle_collect_findings,
     "verify_coverage": handle_verify_coverage,
     "synthesize_release_readiness": handle_synthesize_release_readiness,
@@ -1985,10 +2299,13 @@ INLINE_HANDLERS: dict[str, InlineHandler] = {
 
 __all__ = [
     "INLINE_HANDLERS",
+    "MissedFileError",
     "build_report_payload",
     "handle_activate_leaves",
     "handle_collect_findings",
     "handle_emit_stdout",
+    "handle_merge_specialist_outputs",
+    "handle_plan_specialist_batches",
     "handle_risk_tier_triage",
     "handle_short_circuit_exit",
     "handle_stage_a_empty",

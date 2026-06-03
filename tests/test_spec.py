@@ -26,8 +26,8 @@ def test_spec_id_and_version() -> None:
     assert fsm.version == SPEC_VERSION == 1
 
 
-def test_15_states_in_declared_order() -> None:
-    """The state list matches the YAML's 14 happy-path + 1 terminal shape."""
+def test_17_states_in_declared_order() -> None:
+    """The PR4 17-state shape: 15 worker/inline + 1 terminal + the new inline pair."""
     expected = [
         "scan_project",
         "risk_tier_triage",
@@ -35,7 +35,9 @@ def test_15_states_in_declared_order() -> None:
         "tree_descend",
         "llm_trim",
         "tool_discovery",
+        "plan_specialist_batches",
         "dispatch_specialists",
+        "merge_specialist_outputs",
         "collect_findings",
         "verify_coverage",
         "synthesize_release_readiness",
@@ -46,7 +48,7 @@ def test_15_states_in_declared_order() -> None:
         "terminal",
     ]
     assert get_state_ids() == expected
-    assert len(fsm.states) == 15
+    assert len(fsm.states) == 17
 
 
 def test_handler_ids_match_inline_handlers_dict() -> None:
@@ -54,7 +56,31 @@ def test_handler_ids_match_inline_handlers_dict() -> None:
     declared = sorted(get_handler_ids())
     registered = sorted(INLINE_HANDLERS.keys())
     assert declared == registered
-    assert len(registered) == 9
+    assert len(registered) == 11
+
+
+def test_plan_and_merge_states_present() -> None:
+    """PR4: plan_specialist_batches and merge_specialist_outputs join the spec."""
+    state_ids = {s.id for s in fsm.states}
+    assert "plan_specialist_batches" in state_ids
+    assert "merge_specialist_outputs" in state_ids
+
+
+def test_dispatch_specialists_is_a_loop_state() -> None:
+    """PR4: dispatch_specialists becomes a Loop with max_iterations=64 + done_field='loop_done'."""
+    state = fsm.get_state("dispatch_specialists")
+    assert state.loop is not None
+    assert state.loop.max_iterations == 64
+    assert state.loop.done_field == "loop_done"
+    assert state.loop.worker.role == "specialist-batch"
+
+
+def test_plan_to_dispatch_to_merge_to_collect_chain() -> None:
+    """PR4 transition chain: tool_discovery -> plan -> dispatch (loop) -> merge -> collect_findings."""
+    assert fsm.get_state("tool_discovery").transitions[0].to == "plan_specialist_batches"
+    assert fsm.get_state("plan_specialist_batches").transitions[0].to == "dispatch_specialists"
+    assert fsm.get_state("dispatch_specialists").transitions[0].to == "merge_specialist_outputs"
+    assert fsm.get_state("merge_specialist_outputs").transitions[0].to == "collect_findings"
 
 
 def test_terminal_state_has_no_transitions() -> None:
@@ -132,9 +158,11 @@ def test_worker_states_have_allowed_tools_pinned() -> None:
     """Each worker state pins an `allowed_tools` allowlist per the spec.
 
     The allowlist is the tool surface forwarded to the dispatched
-    sub-agent. Four of the five worker states expose a non-empty list;
-    ``llm_trim`` is intentionally empty because it is pure reasoning
-    over the brief. Inline / terminal states keep the default empty
+    sub-agent. Four worker states expose lists (``llm_trim`` is empty
+    because it is pure reasoning over the brief). PR4 converted
+    ``dispatch_specialists`` into a Loop, so its allowlist now lives on
+    the loop-state envelope (still asserted below) rather than under
+    ``state.worker``. Inline / terminal states keep the default empty
     list — they never see a sub-agent.
     """
     expected: dict[str, list[str]] = {
@@ -160,14 +188,6 @@ def test_worker_states_have_allowed_tools_pinned() -> None:
             "Bash(which:*)",
             "Read",
         ],
-        "dispatch_specialists": [
-            "Read",
-            "Grep",
-            "Glob",
-            "WebFetch",
-            "Bash(git diff:*)",
-            "Bash(git log:*)",
-        ],
     }
     worker_state_ids = {
         state.id for state in fsm.states if state.worker is not None
@@ -186,18 +206,26 @@ def test_worker_states_have_allowed_tools_pinned() -> None:
             assert want == [], "llm_trim allowlist must stay empty"
         else:
             assert len(want) > 0, f"{state_id} allowlist unexpectedly empty"
+    # PR4: dispatch_specialists is now a Loop state. Its allowlist lives
+    # on the loop-state envelope and must include Task so the loop body
+    # can fan out per-unit sub-agents.
+    ds_tools = fsm.get_state("dispatch_specialists").allowed_tools
+    assert "Task" in ds_tools
+    for tool in ("Read", "Grep", "Glob", "WebFetch"):
+        assert tool in ds_tools
 
 
 def test_each_worker_has_verifier() -> None:
     """Every worker state ships a 3-voter / 2-majority verifier panel.
 
-    The verifier is the adversarial gate that re-checks the worker's
-    committed outputs before the engine transitions; the spec must
-    declare one for every worker state so the panel can never silently
-    no-op.
+    PR4 converted dispatch_specialists into a Loop, so the worker count
+    drops from 5 to 4 (scan_project, tree_descend, llm_trim,
+    tool_discovery). The Loop's inner worker is not directly subject to
+    a verifier in this revision — verification of per-iteration outputs
+    happens via the merger's no-missed-file invariant.
     """
     worker_states = [s for s in fsm.states if s.worker is not None]
-    assert len(worker_states) == 5, "spec must still ship 5 worker states"
+    assert len(worker_states) == 4, "spec must ship 4 (non-loop) worker states post-PR4"
     for state in worker_states:
         assert state.verifier is not None, (
             f"worker state {state.id!r} is missing its verifier panel"

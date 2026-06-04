@@ -180,3 +180,77 @@ def test_leaf_with_no_matched_files_still_emits_a_unit() -> None:
     unit = out["specialist_batches"][0]["units"][0]
     assert unit["leaf_id"] == "no-match"
     assert unit["files"] == []
+
+
+def test_zero_picked_leaves_emits_zero_batches() -> None:
+    """No picked_leaves -> no units -> 0 batches.
+
+    Regression marker for run 019e93cb: when an upstream env-threading
+    bug drops picked_leaves before this handler runs, the handler is
+    expected to emit ``total_batches == 0`` (NOT to crash). The
+    spec-level post_validation
+    ``(len(picked_leaves) == 0) OR (total_batches > 0)`` then takes
+    over: it PASSES this case (0 == 0) but would FAIL the buggy case
+    (picked_leaves dropped from env -> the handler still emits 0
+    batches but the predicate disagrees, surfacing the upstream bug).
+
+    The follow-on spec transition routes 0-batch runs directly to
+    merge_specialist_outputs so the empty Loop is skipped entirely;
+    see ``tests/test_handlers/test_loop_empty_path.py`` for that path.
+    """
+    out = handle_plan_specialist_batches(
+        _ctx(picked_leaves=[], changed_paths=["src/a.py", "src/b.py"], tier="lite")
+    )
+    assert out["total_batches"] == 0
+    assert out["specialist_batches"] == []
+    assert out["total_files_planned"] == 0
+
+
+def test_single_small_leaf_produces_single_batch() -> None:
+    """One leaf with a small file set -> 1 batch, 1 unit, 1 sub-index.
+
+    Matches the audit's "1 leaf small -> 1 batch" repro shape.
+    """
+    picked = [
+        {"id": "leaf-1", "path": "leaf-1.md", "activation": {"file_globs": ["src/*.py"]}}
+    ]
+    out = handle_plan_specialist_batches(
+        _ctx(picked_leaves=picked, changed_paths=["src/a.py", "src/b.py"], tier="lite")
+    )
+    assert out["total_batches"] == 1
+    assert len(out["specialist_batches"][0]["units"]) == 1
+    unit = out["specialist_batches"][0]["units"][0]
+    assert unit["sub_index"] == 1
+    assert unit["total_subs"] == 1
+    assert set(unit["files"]) == {"src/a.py", "src/b.py"}
+
+
+def test_single_huge_leaf_splits_into_multiple_sub_batches() -> None:
+    """The audit's "1 huge leaf -> sub-batches" case, exercised end-to-end.
+
+    300 files * 500 tokens = 150_000 estimated; cap 50_000 ->
+    ceil(150_000 / 50_000) = 3 sub-batches.
+    """
+    files = [f"src/huge/f{i}.py" for i in range(300)]
+    picked = [
+        {"id": "huge", "path": "huge.md", "activation": {"file_globs": ["src/huge/*.py"]}}
+    ]
+    out = handle_plan_specialist_batches(
+        _ctx(
+            picked_leaves=picked,
+            changed_paths=files,
+            tier="full",
+            args={"max_leaf_tokens": 50_000, "batch_size": 5},
+        )
+    )
+    units = [u for b in out["specialist_batches"] for u in b["units"]]
+    assert len(units) == 3
+    assert {u["sub_index"] for u in units} == {1, 2, 3}
+    assert all(u["total_subs"] == 3 for u in units)
+    # Disjoint slices, covering the full input.
+    union: set[str] = set()
+    for u in units:
+        u_files = set(u["files"])
+        assert union.isdisjoint(u_files), f"overlap: {u_files & union}"
+        union.update(u_files)
+    assert union == set(files)

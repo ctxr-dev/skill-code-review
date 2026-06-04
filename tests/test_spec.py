@@ -252,3 +252,75 @@ def test_each_worker_has_verifier() -> None:
         assert state.verifier.role == f"verify-{state.id}", (
             f"{state.id} verifier role drift: got {state.verifier.role!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# PR6: plan_specialist_batches gains a guard predicate + a 0-batch skip edge
+# ---------------------------------------------------------------------------
+
+
+def test_plan_specialist_batches_has_two_outgoing_transitions() -> None:
+    """PR6: plan -> (merge when 0 batches) OR (dispatch otherwise).
+
+    Before PR6 there was a single always-transition into the Loop. The
+    new edge lets us short-circuit an empty Loop when picked_leaves is
+    empty (which happens when llm_trim picks nothing OR when an env
+    threading bug drops picked_leaves between states).
+    """
+    state = fsm.get_state("plan_specialist_batches")
+    assert len(state.transitions) == 2, (
+        f"plan_specialist_batches must have 2 outgoing transitions; got "
+        f"{[(t.to, t.when) for t in state.transitions]}"
+    )
+    # First (guarded) edge: 0 batches -> merge_specialist_outputs.
+    first = state.transitions[0]
+    assert first.to == "merge_specialist_outputs"
+    assert hasattr(first.when, "expression"), (
+        "the 0-batch edge must be predicate-guarded, not an always-transition"
+    )
+    assert "total_batches == 0" in first.when.expression  # type: ignore[union-attr]
+    # Second (always) edge: dispatch the Loop.
+    second = state.transitions[1]
+    assert second.to == "dispatch_specialists"
+    assert str(getattr(second.when, "value", second.when)).lower() in {
+        "always",
+        "otherwise",
+    }
+
+
+def test_plan_specialist_batches_post_validation_guards_total_batches() -> None:
+    """PR6: register-time guard that catches the env-threading regression.
+
+    If picked_leaves is non-empty but the planner emits 0 batches, the
+    handler was fed an empty picked_leaves by an upstream bug. The
+    post_validation
+    ``(len(picked_leaves) == 0) OR (total_batches > 0)`` makes that
+    failure surface here loudly instead of silently flowing 0 work into
+    the Loop.
+    """
+    state = fsm.get_state("plan_specialist_batches")
+    assert state.inline is not None
+    expressions = [p.expression for p in state.inline.post_validations]
+    assert any(
+        "len(picked_leaves) == 0" in expr and "total_batches > 0" in expr
+        for expr in expressions
+    ), (
+        f"plan_specialist_batches must carry the planner-vs-picked_leaves "
+        f"guard predicate; got {expressions}"
+    )
+
+
+def test_dispatch_specialists_worker_inputs_include_picked_leaves() -> None:
+    """PR6: the Loop body needs picked_leaves to review each unit.
+
+    The Loop's worker dispatches a sub-agent per iteration; it must
+    receive the leaf-level metadata (purpose, dimensions, justification)
+    so the sub-agent can carry out the review the leaf specifies, not
+    just iterate file lists in the batch envelope.
+    """
+    state = fsm.get_state("dispatch_specialists")
+    assert state.loop is not None
+    assert "picked_leaves" in state.loop.worker.inputs, (
+        f"dispatch_specialists.loop.worker.inputs must include "
+        f"picked_leaves; got {state.loop.worker.inputs}"
+    )

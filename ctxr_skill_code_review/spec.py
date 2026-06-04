@@ -1074,11 +1074,31 @@ def _plan_specialist_batches() -> State:
                 Predicate("len(specialist_batches) >= 0"),
                 Predicate("total_batches >= 0"),
                 Predicate("total_files_planned >= 0"),
+                # Catch the env-threading bug that produced run 019e93cb:
+                # if there ARE picked leaves but the planner emitted 0
+                # batches, the handler was fed an empty picked_leaves
+                # by an upstream env-seeding bug. Hard-fail at the gate
+                # so the fault surfaces here instead of silently flowing
+                # an empty Loop into merge_specialist_outputs.
+                Predicate(
+                    "(len(picked_leaves) == 0) OR (total_batches > 0)"
+                ),
             ],
             purpose="Deterministic batch + sub-batch planning for the loop.",
         ),
         outputs=["specialist_batches", "total_batches", "total_files_planned"],
-        transitions=[Transition(to="dispatch_specialists", when=TransitionKind.always)],
+        # PR6: when the planner emits 0 batches (no picked leaves at all),
+        # skip dispatch_specialists' Loop entirely and route straight to
+        # the merger. The merger handles an empty specialist_outputs[]
+        # gracefully; entering an empty Loop wastes a brief round-trip
+        # and complicates the Loop body's "no work to do" reasoning.
+        transitions=[
+            Transition(
+                to="merge_specialist_outputs",
+                when=Predicate("total_batches == 0"),
+            ),
+            Transition(to="dispatch_specialists", when=TransitionKind.always),
+        ],
     )
 
 
@@ -1107,6 +1127,15 @@ def _dispatch_specialists() -> State:
                     "tool_results",
                     "specialist_batches",
                     "total_batches",
+                    # PR6: declare picked_leaves on the Loop worker
+                    # explicitly so the sub-agent dispatched per
+                    # iteration has the leaf-level metadata it needs
+                    # (purpose, dimensions, justification) to review
+                    # each unit, not just the file lists carried on the
+                    # batch itself. Skipping this leaves the Loop body
+                    # working from a partial view of the leaves chosen
+                    # upstream by llm_trim.
+                    "picked_leaves",
                 ],
                 response_schema=_specialist_batch_schema(),
             ),

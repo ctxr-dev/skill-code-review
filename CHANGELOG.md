@@ -36,6 +36,29 @@ upgrade to v2.4.x without any code changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- `merge_specialist_outputs` now raises `DispatchLoopExitedEarlyError`
+  when the dispatch_specialists Loop exits before draining every
+  planned `(leaf_id, sub_index)` unit. Previously the merger silently
+  emitted a partial `specialist_outputs[]` whose missing units would
+  surface in the final report as `status: fail` rows with `key_finding`
+  of `"no per-leaf output written"` (or `"no output written for shard
+  <n>"` for sharded leaves) — masking an orchestrator bug as a NO-GO
+  verdict. The error message lists the missing unit ids and points
+  the operator at the remediation: resume polling
+  `fsm.get_brief(run_id)` until the brief moves off
+  `dispatch_specialists`.
+
+### Documentation
+
+- `SKILL.md` clarifies that `dispatch_specialists` is a Loop state
+  and the orchestrator MUST keep polling `fsm.get_brief(run_id)`
+  after every iteration's commit until the engine advances to a
+  different state. Added a "DRAIN ALL ITERATIONS" warning callout
+  and a loop-until-empty pseudo-code example.
+
+
 ## [3.0.0] - Python port (W14f)
 
 ### BREAKING — Node orchestrator removed; depends on ctxr-fsm (Python)

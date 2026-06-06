@@ -18,7 +18,7 @@ import pytest
 from ctxr.fsm.core import InlineContext
 
 from ctxr_skill_code_review.handlers import (
-    MissedFileError,
+    DispatchLoopExitedEarlyError,
     handle_merge_specialist_outputs,
 )
 from ctxr_skill_code_review.sharding import shard_path
@@ -193,8 +193,15 @@ def test_later_iteration_overwrites_earlier_on_disk(tmp_path: Path) -> None:
     assert findings[0]["title"] == "v2"
 
 
-def test_missed_file_raises_when_planner_and_merger_disagree(tmp_path: Path) -> None:
-    """If the loop body drops a unit, the merger's union shrinks -> raise."""
+def test_missed_unit_raises_when_loop_dropped_a_planned_unit(tmp_path: Path) -> None:
+    """If the loop body drops a unit, the more-specific DispatchLoopExitedEarlyError fires.
+
+    The planner enumerated 2 units; loop_iters covers only 1. The
+    merger's defensive guard catches the missing (leaf_id, sub_index)
+    BEFORE the file-union invariant — that gives the orchestrator a
+    pointer to the exact missing unit ids instead of a "files dropped"
+    statistic.
+    """
     # Planner says total_files_planned=2 (both a.py and b.py).
     batches = [
         _unit_batch(
@@ -227,7 +234,7 @@ def test_missed_file_raises_when_planner_and_merger_disagree(tmp_path: Path) -> 
             loop_done=True,
         )
     ]
-    with pytest.raises(MissedFileError):
+    with pytest.raises(DispatchLoopExitedEarlyError, match="leaf-b#1"):
         handle_merge_specialist_outputs(
             _ctx(
                 tmp_path=tmp_path,
@@ -543,3 +550,238 @@ def test_shard_files_land_at_expected_paths(tmp_path: Path) -> None:
     data = json.loads(p1.read_text())
     assert data["id"] == "leaf-a"
     assert data["status"] == "completed"
+
+
+# ---------------------------------------------------------------------------
+# Regression coverage for the dispatch-loop-exited-early diagnostic.
+#
+# Scenario: the orchestrator dispatched only the FIRST batch's units and
+# advanced past dispatch_specialists instead of polling fsm.get_brief for
+# the next iteration. The merger must hard-fail with
+# DispatchLoopExitedEarlyError listing the missing (leaf_id, sub_index)
+# pairs so the operator knows exactly which batches were dropped, instead
+# of silently emitting a NO-GO report with most specialists marked failed.
+# ---------------------------------------------------------------------------
+
+
+def test_loop_exited_early_after_first_batch_raises_with_missing_unit_ids(
+    tmp_path: Path,
+) -> None:
+    """Three planned batches, only batch 1's units committed -> raise.
+
+    Mirrors the field-reported bug: 25 picked leaves, planner emits N
+    batches, the orchestrator only ran iteration 1. The merger must
+    list the absent (leaf_id, sub_index) pairs in the error message so
+    the operator can confirm the exact gap.
+    """
+    # 3 batches with 2 units each = 6 planned units, only first 2 committed.
+    batches = []
+    for batch_idx in range(1, 4):
+        batches.append(
+            _unit_batch(
+                batch_idx,
+                [
+                    {
+                        "leaf_id": f"leaf-{batch_idx}a",
+                        "sub_index": 1,
+                        "total_subs": 1,
+                        "files": [f"src/{batch_idx}a.py"],
+                    },
+                    {
+                        "leaf_id": f"leaf-{batch_idx}b",
+                        "sub_index": 1,
+                        "total_subs": 1,
+                        "files": [f"src/{batch_idx}b.py"],
+                    },
+                ],
+            )
+        )
+    # Orchestrator only ran iteration 1: 2 units committed; 4 dropped.
+    loop_iters = [
+        _iter_payload(
+            1,
+            [
+                (
+                    "leaf-1a",
+                    1,
+                    {"id": "leaf-1a", "status": "completed", "findings": []},
+                ),
+                (
+                    "leaf-1b",
+                    1,
+                    {"id": "leaf-1b", "status": "completed", "findings": []},
+                ),
+            ],
+            loop_done=True,  # orchestrator wrongly thought it was done
+        )
+    ]
+    with pytest.raises(DispatchLoopExitedEarlyError) as excinfo:
+        handle_merge_specialist_outputs(
+            _ctx(
+                tmp_path=tmp_path,
+                specialist_batches=batches,
+                total_files_planned=6,
+                loop_iters=loop_iters,
+            )
+        )
+    msg = str(excinfo.value)
+    # The error names the 4 absent units so the operator can grep them.
+    assert "4 of 6" in msg
+    for absent in ("leaf-2a#1", "leaf-2b#1", "leaf-3a#1", "leaf-3b#1"):
+        assert absent in msg, f"error must list missing unit {absent!r}: {msg!r}"
+    # And it points the operator at the actual remediation (resume the loop).
+    assert "fsm.get_brief" in msg
+
+
+def test_loop_exited_early_caps_sample_at_ten_with_overflow_count(
+    tmp_path: Path,
+) -> None:
+    """Error message lists at most 10 missing ids; the rest become "(+N more)".
+
+    Keeps the diagnostic short on a worst-case 50-leaf review where the
+    orchestrator dispatched 0 batches. We assert the truncation contract
+    rather than dumping every id into the exception.
+    """
+    # 15 planned units, none committed.
+    units = [
+        {
+            "leaf_id": f"leaf-{n:02d}",
+            "sub_index": 1,
+            "total_subs": 1,
+            "files": [f"src/{n:02d}.py"],
+        }
+        for n in range(15)
+    ]
+    batches = [_unit_batch(1, units)]
+    loop_iters: list[dict[str, Any]] = []
+    with pytest.raises(DispatchLoopExitedEarlyError) as excinfo:
+        handle_merge_specialist_outputs(
+            _ctx(
+                tmp_path=tmp_path,
+                specialist_batches=batches,
+                total_files_planned=15,
+                loop_iters=loop_iters,
+            )
+        )
+    msg = str(excinfo.value)
+    assert "15 of 15" in msg
+    assert "(+5 more)" in msg
+
+
+def test_loop_exited_early_during_sharded_leaf_lists_each_subindex(
+    tmp_path: Path,
+) -> None:
+    """A leaf split into 3 sub-batches with only sub_index=1 committed -> 2 missing.
+
+    Sharded leaves were 16 of the 20 specialists in the bug report; the
+    diagnostic must distinguish "sub_index=1 ran" from "sub_index=2 and
+    sub_index=3 dropped" via the canonical leaf-id#sub-index notation.
+    """
+    units = [
+        {
+            "leaf_id": "huge-leaf",
+            "sub_index": sidx,
+            "total_subs": 3,
+            "files": [f"src/h{sidx}.py"],
+        }
+        for sidx in (1, 2, 3)
+    ]
+    batches = [_unit_batch(1, units)]
+    loop_iters = [
+        _iter_payload(
+            1,
+            [(
+                "huge-leaf",
+                1,
+                {"id": "huge-leaf", "status": "completed", "findings": []},
+            )],
+            loop_done=True,
+        )
+    ]
+    with pytest.raises(DispatchLoopExitedEarlyError) as excinfo:
+        handle_merge_specialist_outputs(
+            _ctx(
+                tmp_path=tmp_path,
+                specialist_batches=batches,
+                total_files_planned=3,
+                loop_iters=loop_iters,
+            )
+        )
+    msg = str(excinfo.value)
+    assert "huge-leaf#2" in msg
+    assert "huge-leaf#3" in msg
+    # The sub_index that DID run does NOT appear in the missing list.
+    # Slice the message past the "Missing:" prefix to avoid false negatives.
+    missing_section = msg.split("Missing:", 1)[1]
+    assert "huge-leaf#1" not in missing_section
+
+
+def test_loop_fully_drained_passes_no_diagnostic(tmp_path: Path) -> None:
+    """Happy path: every planned unit covered -> merger succeeds, no error.
+
+    This is the regression guard against the new check over-firing on
+    correct runs. We use 3 batches with 2 units each and commit every
+    iteration; the merger returns 6 specialist_outputs with no fault.
+    """
+    batches = []
+    for batch_idx in range(1, 4):
+        batches.append(
+            _unit_batch(
+                batch_idx,
+                [
+                    {
+                        "leaf_id": f"leaf-{batch_idx}a",
+                        "sub_index": 1,
+                        "total_subs": 1,
+                        "files": [f"src/{batch_idx}a.py"],
+                    },
+                    {
+                        "leaf_id": f"leaf-{batch_idx}b",
+                        "sub_index": 1,
+                        "total_subs": 1,
+                        "files": [f"src/{batch_idx}b.py"],
+                    },
+                ],
+            )
+        )
+    loop_iters = []
+    for batch_idx in range(1, 4):
+        loop_iters.append(
+            _iter_payload(
+                batch_idx,
+                [
+                    (
+                        f"leaf-{batch_idx}a",
+                        1,
+                        {
+                            "id": f"leaf-{batch_idx}a",
+                            "status": "completed",
+                            "findings": [],
+                        },
+                    ),
+                    (
+                        f"leaf-{batch_idx}b",
+                        1,
+                        {
+                            "id": f"leaf-{batch_idx}b",
+                            "status": "completed",
+                            "findings": [],
+                        },
+                    ),
+                ],
+                loop_done=(batch_idx == 3),
+            )
+        )
+    out = handle_merge_specialist_outputs(
+        _ctx(
+            tmp_path=tmp_path,
+            specialist_batches=batches,
+            total_files_planned=6,
+            loop_iters=loop_iters,
+        )
+    )
+    assert len(out["specialist_outputs"]) == 6
+    ids = sorted(o["id"] for o in out["specialist_outputs"])
+    assert ids == [
+        "leaf-1a", "leaf-1b", "leaf-2a", "leaf-2b", "leaf-3a", "leaf-3b",
+    ]

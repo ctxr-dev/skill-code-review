@@ -2235,6 +2235,43 @@ class MissedFileError(RuntimeError):
     """
 
 
+class DispatchLoopExitedEarlyError(RuntimeError):
+    """Raised when the dispatch_specialists Loop exited before draining all batches.
+
+    The planner emits ``specialist_batches[]`` and the engine drives
+    one Loop iteration per batch. Each iteration's commit is expected
+    to carry one entry per planned ``(leaf_id, sub_index)`` unit in
+    the current batch. When the merger sees fewer total
+    ``(leaf_id, sub_index)`` units across all iterations than the
+    planner enumerated, the orchestrator advanced past
+    ``dispatch_specialists`` instead of polling
+    :func:`~ctxr.fsm.get_brief` for the next iteration — silently
+    dropping every undispatched unit.
+
+    Two notable symptoms this guards against:
+
+    1. ``loop_iters`` covers only the first batch's units (the
+       orchestrator committed once, then jumped to the next state
+       instead of looping). Without this guard the merger would
+       emit a partial ``specialist_outputs[]`` whose specialists
+       look completed, while every undispatched leaf would silently
+       become a ``status: fail`` row in the final report keyed off
+       ``skip_reason: "no per-leaf output written"``.
+
+    2. ``loop_iters`` covers most batches but a middle iteration's
+       commit dropped one or more units (e.g. the orchestrator
+       returned a partial ``iter_outputs[]``). Same failure mode,
+       same hard-raise — the post-validation makes it surface as a
+       fault instead of a degraded report.
+
+    The error is recoverable on the orchestrator side: resume
+    iterating ``fsm.get_brief(run_id)`` until the brief's
+    ``state_id`` moves off ``dispatch_specialists``. The runner is
+    purely diagnostic — it cannot dispatch sub-agents on the
+    orchestrator's behalf.
+    """
+
+
 def _resolve_iteration_payloads(env: dict[str, Any]) -> list[dict[str, Any]]:
     """Defensively pull the per-iteration payloads out of the env.
 
@@ -2355,6 +2392,24 @@ def handle_merge_specialist_outputs(ctx: InlineContext) -> dict[str, Any]:
 
     iter_payloads = _resolve_iteration_payloads(env)
 
+    # Enumerate the full set of (leaf_id, sub_index) units the planner
+    # produced. This is the authoritative coverage set; the merger's
+    # output must include one entry per planned unit. We compute this
+    # BEFORE folding loop payloads so we can compare against the dedupe
+    # set below and raise DispatchLoopExitedEarlyError when the
+    # orchestrator skipped iterations.
+    planned_units: set[tuple[str, int]] = set()
+    for batch in specialist_batches:
+        if not isinstance(batch, dict):
+            continue
+        for unit in batch.get("units") or []:
+            if not isinstance(unit, dict):
+                continue
+            leaf_id = unit.get("leaf_id")
+            sub_index = unit.get("sub_index")
+            if isinstance(leaf_id, str) and isinstance(sub_index, int):
+                planned_units.add((leaf_id, sub_index))
+
     # Dedupe iter outputs by (leaf_id, sub_index) keeping the LAST
     # occurrence. Later iterations win because retries replay a batch
     # with fresh outputs that should overwrite the earlier attempt.
@@ -2374,6 +2429,39 @@ def handle_merge_specialist_outputs(ctx: InlineContext) -> dict[str, Any]:
             key = (leaf_id, sub_index)
             # Stamp the iter_n so the sharded filename preserves history.
             deduped[key] = {**unit_out, "__iter_n": iter_n}
+
+    # Enforce the loop-drained invariant. Every planned unit must have
+    # SOME entry in deduped — completed, failed, or skipped — because
+    # the orchestrator's Loop body returns one iter_outputs[] entry per
+    # unit in each batch. A planned unit absent from deduped means the
+    # orchestrator exited the dispatch_specialists Loop before draining
+    # all of plan_specialist_batches' batches (or returned a partial
+    # iter_outputs[] in some iteration). Either way the silent-failure
+    # mode is the same: the final report would mark every missing unit
+    # FAIL with key_finding "no per-leaf output written" / "no output
+    # written for shard <n>", and the verdict drops to NO-GO for opaque
+    # reasons. Raising here surfaces the exact missing unit ids so the
+    # orchestrator knows to resume the loop.
+    missing_units = sorted(planned_units - set(deduped.keys()))
+    if missing_units:
+        sample = ", ".join(
+            f"{leaf_id}#{sub_index}"
+            for leaf_id, sub_index in missing_units[:10]
+        )
+        suffix = (
+            f" (+{len(missing_units) - 10} more)"
+            if len(missing_units) > 10
+            else ""
+        )
+        raise DispatchLoopExitedEarlyError(
+            f"merge_specialist_outputs: {len(missing_units)} of "
+            f"{len(planned_units)} planned (leaf_id, sub_index) units "
+            f"missing from loop_iters; the dispatch_specialists Loop "
+            f"exited before draining all batches. The orchestrator must "
+            f"keep polling fsm.get_brief(run_id) after each iteration's "
+            f"commit until the brief's state_id moves off "
+            f"dispatch_specialists. Missing: {sample}{suffix}."
+        )
 
     # Materialise one shard per (leaf_id, sub_index). The shard root lives
     # under the run directory (project_root/.skill-code-review/specialists/).
@@ -2599,6 +2687,7 @@ INLINE_HANDLERS: dict[str, InlineHandler] = {
 
 __all__ = [
     "INLINE_HANDLERS",
+    "DispatchLoopExitedEarlyError",
     "MissedFileError",
     "build_report_payload",
     "handle_activate_leaves",

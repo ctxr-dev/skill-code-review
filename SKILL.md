@@ -92,6 +92,37 @@ through the `fsm.*` MCP tool family:
      iteration index. Commit the iteration's output; the engine
      decides whether to advance or to issue another iteration.
 
+     > **DRAIN ALL ITERATIONS — never short-circuit the loop.** When
+     > the engine issues a Loop brief, it expects you to keep calling
+     > `fsm.get_brief(run_id)` AFTER every commit until it returns a
+     > brief for a DIFFERENT state. The engine itself decides loop
+     > termination (via the worker's `loop_done` flag and the planner's
+     > `total_batches`). One commit is one iteration; if there are
+     > N batches, you must complete N iterations.
+     >
+     > The first Loop brief carries `iteration_n = 1`. After you commit
+     > iteration 1's output the engine re-enters the same state with
+     > `iteration_n = 2` and a new brief; KEEP THE LOOP RUNNING until
+     > `fsm.get_brief` returns a brief whose `state_id` is no longer
+     > `dispatch_specialists`. The orchestrator MUST NOT exit the
+     > dispatch loop based on its own counter; only the engine knows
+     > when the planner's batches are drained.
+     >
+     > **Symptom of this bug**: the final `report.md` shows specialists
+     > with `status: fail` and `skip_reason: "no per-leaf output written"`
+     > or `"no output written for shard <n>"`, even though the orchestrator
+     > thought every dispatched sub-agent succeeded. Cause: the
+     > orchestrator committed iteration 1's outputs and then advanced
+     > past `dispatch_specialists` (e.g. by calling
+     > `merge_specialist_outputs` directly) instead of polling the next
+     > brief. The merger then sees only the first batch's units in
+     > `loop_iters`, synthesises failure rows for every undispatched
+     > unit, and the run lands at NO-GO with most reviewers silently
+     > marked failed. **The runner now hard-raises
+     > `DispatchLoopExitedEarlyError` in this situation** (instead of
+     > silently producing a degraded report) so the failure surfaces
+     > as a post-validation fault.
+
    * **Inline briefs.** You will NEVER see them. Inline states
      (`risk_tier_triage`, `activate_leaves`, `collect_findings`,
      `verify_coverage`, `synthesize_release_readiness`,
@@ -107,16 +138,78 @@ through the `fsm.*` MCP tool family:
 ## Worker dispatch — concurrency
 
 The `dispatch_specialists` state's worker is the only one that fans
-out. Its brief carries a `batch` field listing each specialist's
-leaf-id and per-leaf prompt slice. Dispatch them concurrently using
-your client's parallel-tool-call mechanism (Claude Code: multiple
-Bash / Agent tool calls in a single message; Codex: equivalent),
-collect every output, then commit the aggregated outputs dict to
-`fsm.commit_outputs` matching the worker's `response_schema`.
+out. It is a **Loop** state: the upstream `plan_specialist_batches`
+inline handler partitions every picked leaf into one or more
+deterministic batches (typically 3-5 units per batch, tier-driven),
+and the engine drives one Loop iteration per batch. Each iteration's
+brief carries:
 
-The cap on parallel specialists is the `cap` field from
-`risk_tier_triage`: `trivial=3`, `lite=8`, `full=20`, `sensitive=30`,
-overridable by `args["max-reviewers"]` (clamped to `[3, 50]`).
+* `iteration_n` — 1-based iteration counter.
+* `inputs.specialist_batches[]` — the full plan.
+* `inputs.total_batches` — the planner's expected loop length.
+
+On each iteration: dispatch every unit in
+`specialist_batches[iteration_n - 1].units[]` concurrently using your
+client's parallel-tool-call mechanism (Claude Code: multiple Task /
+Agent calls in a single message; Codex: equivalent), collect every
+sub-agent's output, then commit the aggregated payload (`{batch_index,
+iter_outputs[], loop_done}`) to `fsm.commit_outputs` matching the
+worker's `response_schema`.
+
+**Loop termination is the engine's decision, not yours.** Set
+`loop_done = (iteration_n == total_batches)` on the LAST iteration —
+but never advance past `dispatch_specialists` yourself. After every
+commit, call `fsm.get_brief(run_id)` again. As long as the next brief
+carries `state_id = "dispatch_specialists"`, you have another iteration
+to run. Only when the next brief moves on (typically to
+`merge_specialist_outputs`) is the dispatch complete.
+
+### Loop-until-empty example (pseudo-code)
+
+```python
+while True:
+    brief = fsm.get_brief(run_id)
+    if brief.terminal:
+        print(brief.run_dir_path)
+        break
+    if brief.has_loop and brief.state_id == "dispatch_specialists":
+        # One iteration = one planner batch. Drain every unit IN PARALLEL.
+        current_batch = brief.inputs["specialist_batches"][brief.iteration_n - 1]
+        iter_outputs = dispatch_units_in_parallel(current_batch["units"])
+        loop_done = brief.iteration_n == brief.inputs["total_batches"]
+        fsm.commit_outputs(run_id, outputs={
+            "batch_index": brief.iteration_n,
+            "iter_outputs": iter_outputs,
+            "loop_done": loop_done,
+        })
+        # Do NOT break here. Continue the WHILE loop so we re-poll
+        # fsm.get_brief; the engine reissues another dispatch_specialists
+        # iteration (with iteration_n + 1) until total_batches is reached.
+        continue
+    if brief.has_worker:
+        outputs = dispatch_single_agent(brief.worker)
+        fsm.commit_outputs(run_id, outputs=outputs)
+        continue
+```
+
+The cap on parallel specialists WITHIN A SINGLE ITERATION is the
+`cap` field from `risk_tier_triage`: `trivial=3`, `lite=8`, `full=20`,
+`sensitive=30`, overridable by `args["max-reviewers"]` (clamped to
+`[3, 50]`). The number of ITERATIONS is independent — that is
+`total_batches` from the planner. A 100-leaf review at the full tier
+with batch_size 5 produces 20 iterations, each dispatching up to 5
+units in parallel.
+
+### Diagnostic: `DispatchLoopExitedEarlyError`
+
+If the merger detects that `loop_iters[]` covers fewer
+`(leaf_id, sub_index)` units than `specialist_batches[]` planned, it
+raises `DispatchLoopExitedEarlyError` rather than emitting a NO-GO
+report with silently-failed specialists. The error message includes
+the missing unit ids so the operator can immediately see which
+iterations the orchestrator skipped. **The fix is always orchestrator-
+side**: resume the loop until `fsm.get_brief` moves off
+`dispatch_specialists`.
 
 ## Tool surface per state
 

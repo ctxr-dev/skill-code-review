@@ -20,6 +20,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import pytest
 from ctxr.fsm.core.engine import advance as engine_advance
 from ctxr.fsm.core.engine import execute_inline
 from ctxr.fsm.core.inline_registry import InlineHandlerRegistry
@@ -274,6 +275,183 @@ def test_pr4_plan_then_merge_seven_leaves_batch_size_three(tmp_path: Path) -> No
     specialists_root = tmp_path / ".skill-code-review" / "specialists"
     shards = sorted(specialists_root.rglob("*.json"))
     assert len(shards) == 7
+
+
+# ---------------------------------------------------------------------------
+# Regression coverage for the dispatch-loop-exited-early bug (Fix B).
+#
+# Simulates a 25-leaf review (the field-reported case). The integration
+# test fully drains the loop and asserts every planned unit lands in
+# specialist_outputs[]. A companion test demonstrates that the merger
+# hard-raises when the orchestrator exits after only the first batch.
+# ---------------------------------------------------------------------------
+
+
+def test_fix_b_orchestrator_drains_25_leaf_dispatch_no_units_lost(
+    tmp_path: Path,
+) -> None:
+    """End-to-end: 25 leaves at batch_size 5 -> 5 iterations, every unit covered.
+
+    Mirrors the bug-report shape (20 picked leaves; many sharded so the
+    total dispatch-unit count exceeds the per-iteration batch size).
+    We assert:
+
+    * The planner emits 5 batches of 5 units each (25 units total).
+    * Driving every iteration through the merger produces 25
+      specialist_outputs[] entries (no silent drops).
+    * Each (leaf_id, sub_index) shard lands on disk.
+    """
+    from ctxr.fsm.core import InlineContext
+
+    from ctxr_skill_code_review.handlers import (
+        handle_merge_specialist_outputs,
+        handle_plan_specialist_batches,
+    )
+
+    picked = [
+        {
+            "id": f"leaf-{n:02d}",
+            "path": f"leaf-{n:02d}.md",
+            "activation": {"file_globs": [f"src/m{n:02d}/*.py"]},
+        }
+        for n in range(1, 26)
+    ]
+    changed = [f"src/m{n:02d}/x.py" for n in range(1, 26)]
+
+    plan = handle_plan_specialist_batches(
+        InlineContext(
+            run_id=uuid.uuid4(),
+            fsm_id="code-reviewer",
+            state_id="plan_specialist_batches",
+            args={"project_root": str(tmp_path), "batch_size": 5},
+            inputs={"picked_leaves": picked, "changed_paths": changed, "tier": "full"},
+        )
+    )
+    assert plan["total_batches"] == 5
+    total_units = sum(len(b["units"]) for b in plan["specialist_batches"])
+    assert total_units == 25
+
+    # The drain: drive EVERY iteration. This is the contract the
+    # orchestrator must honour — one commit per batch, total commits ==
+    # plan.total_batches. Skipping any iteration is the field bug.
+    loop_iters = []
+    for batch in plan["specialist_batches"]:
+        loop_iters.append({
+            "batch_index": batch["batch_index"],
+            "iter_outputs": [
+                {
+                    "leaf_id": u["leaf_id"],
+                    "sub_index": u["sub_index"],
+                    "specialist_output": {
+                        "id": u["leaf_id"],
+                        "status": "completed",
+                        "findings": [],
+                    },
+                }
+                for u in batch["units"]
+            ],
+            "loop_done": batch["batch_index"] == plan["total_batches"],
+        })
+
+    merged = handle_merge_specialist_outputs(
+        InlineContext(
+            run_id=uuid.uuid4(),
+            fsm_id="code-reviewer",
+            state_id="merge_specialist_outputs",
+            args={"project_root": str(tmp_path)},
+            inputs={
+                "specialist_batches": plan["specialist_batches"],
+                "total_files_planned": plan["total_files_planned"],
+                "loop_iters": loop_iters,
+            },
+        )
+    )
+    # All 25 units survive the merge.
+    assert len(merged["specialist_outputs"]) == 25
+    surviving_ids = sorted(o["id"] for o in merged["specialist_outputs"])
+    expected_ids = sorted(p["id"] for p in picked)
+    assert surviving_ids == expected_ids
+    # All 25 shards land on disk.
+    shards = sorted((tmp_path / ".skill-code-review" / "specialists").rglob("*.json"))
+    assert len(shards) == 25
+
+
+def test_fix_b_partial_drain_after_first_batch_raises_diagnostic(
+    tmp_path: Path,
+) -> None:
+    """If the orchestrator commits only batch 1, the merger raises.
+
+    This is the field-reported bug shape (orchestrator exited the loop
+    after one iteration). The merger MUST hard-fail with
+    DispatchLoopExitedEarlyError pointing at the missing batches so
+    the operator can resume rather than ship a NO-GO report claiming
+    25 specialists failed.
+    """
+    from ctxr.fsm.core import InlineContext
+
+    from ctxr_skill_code_review.handlers import (
+        DispatchLoopExitedEarlyError,
+        handle_merge_specialist_outputs,
+        handle_plan_specialist_batches,
+    )
+
+    picked = [
+        {
+            "id": f"leaf-{n:02d}",
+            "path": f"leaf-{n:02d}.md",
+            "activation": {"file_globs": [f"src/m{n:02d}/*.py"]},
+        }
+        for n in range(1, 26)
+    ]
+    changed = [f"src/m{n:02d}/x.py" for n in range(1, 26)]
+
+    plan = handle_plan_specialist_batches(
+        InlineContext(
+            run_id=uuid.uuid4(),
+            fsm_id="code-reviewer",
+            state_id="plan_specialist_batches",
+            args={"project_root": str(tmp_path), "batch_size": 5},
+            inputs={"picked_leaves": picked, "changed_paths": changed, "tier": "full"},
+        )
+    )
+
+    # Orchestrator ran ONLY iteration 1. The remaining 4 batches (20
+    # units) never made it into loop_iters.
+    first_batch = plan["specialist_batches"][0]
+    loop_iters = [{
+        "batch_index": first_batch["batch_index"],
+        "iter_outputs": [
+            {
+                "leaf_id": u["leaf_id"],
+                "sub_index": u["sub_index"],
+                "specialist_output": {
+                    "id": u["leaf_id"],
+                    "status": "completed",
+                    "findings": [],
+                },
+            }
+            for u in first_batch["units"]
+        ],
+        "loop_done": True,  # orchestrator wrongly flagged done after iter 1
+    }]
+
+    with pytest.raises(DispatchLoopExitedEarlyError) as excinfo:
+        handle_merge_specialist_outputs(
+            InlineContext(
+                run_id=uuid.uuid4(),
+                fsm_id="code-reviewer",
+                state_id="merge_specialist_outputs",
+                args={"project_root": str(tmp_path)},
+                inputs={
+                    "specialist_batches": plan["specialist_batches"],
+                    "total_files_planned": plan["total_files_planned"],
+                    "loop_iters": loop_iters,
+                },
+            )
+        )
+    msg = str(excinfo.value)
+    assert "20 of 25" in msg
+    assert "fsm.get_brief" in msg
 
 
 def test_pr4_huge_leaf_splits_into_subbatches(tmp_path: Path) -> None:

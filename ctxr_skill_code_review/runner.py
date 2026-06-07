@@ -115,6 +115,36 @@ def _coverage_floor(
     return merged
 
 
+def _call_worker_resilient(
+    dispatch_worker: WorkerDispatch, state_id: str, inputs: dict[str, Any], *,
+    max_retries: int, base_backoff: float, sleep: Callable[[float], None],
+    stats: RunnerStats,
+) -> dict[str, Any]:
+    """Worker-state dispatch with the rate-limit / context-overflow resilience the
+    specialist pool already has. Worker states (scan/tree/trim/tools/rank) are
+    sequential and single-shot, so without this a transient rate-limit, overload,
+    or claude-side timeout on ONE worker call crashes the entire review. Retries
+    with exponential back-off; re-raises only after retries are exhausted so the
+    caller can fault gracefully (per-PR) instead of the process dying.
+    """
+    attempt = 0
+    while True:
+        try:
+            return dispatch_worker(state_id, inputs)
+        except RateLimitError:
+            stats.rate_limit_events += 1
+            if attempt >= max_retries:
+                raise
+            sleep(base_backoff * (2 ** attempt))
+            attempt += 1
+        except ContextOverflowError:
+            stats.overflow_splits += 1
+            if attempt >= max_retries:
+                raise
+            sleep(base_backoff * (2 ** attempt))
+            attempt += 1
+
+
 class _AdaptiveLimiter:
     """AIMD concurrency limiter: additive-increase on success, multiplicative
     (halving) decrease on rate-limit. Bounds the live worker count in [min, max]
@@ -350,7 +380,13 @@ def run_review(
             env["loop_iters"].append(outputs)
         else:  # worker
             inputs = {k: env.get(k) for k in (st.worker.inputs if st.worker else [])}
-            outputs = dispatch_worker(state_id, inputs)
+            try:
+                outputs = _call_worker_resilient(
+                    dispatch_worker, state_id, inputs, max_retries=max_retries,
+                    base_backoff=base_backoff, sleep=sleep, stats=stats)
+            except (RateLimitError, ContextOverflowError) as exc:
+                return RunResult(stats=stats, faulted=True,
+                                 fault=f"worker:{state_id}:{type(exc).__name__}:{exc}")
             outputs = _coverage_floor(state_id, inputs, outputs, env, stats)
 
         adv = engine_advance(fsm, ctx(), outputs)

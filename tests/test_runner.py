@@ -10,10 +10,43 @@ from ctxr_skill_code_review.runner import (
     RateLimitError,
     RunnerStats,
     _AdaptiveLimiter,
+    _call_worker_resilient,
     _coverage_floor,
     _dispatch_units,
     run_review,
 )
+
+
+def test_worker_resilient_retries_then_succeeds() -> None:
+    """A transient rate-limit / timeout on a worker state is retried, not fatal."""
+    calls = {"n": 0}
+
+    def flaky(state_id, inputs):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RateLimitError("claude timeout")
+        return {"ok": True}
+
+    stats = RunnerStats()
+    out = _call_worker_resilient(flaky, "tree_descend", {}, max_retries=2,
+                                 base_backoff=0.0, sleep=lambda _s: None, stats=stats)
+    assert out == {"ok": True}
+    assert calls["n"] == 2
+    assert stats.rate_limit_events == 1
+
+
+def test_worker_resilient_reraises_after_exhaustion() -> None:
+    """After retries are exhausted it re-raises so run_review can fault gracefully
+    (the process must not crash mid-batch)."""
+    def always(state_id, inputs):  # type: ignore[no-untyped-def]
+        raise RateLimitError("persistent overload")
+
+    stats = RunnerStats()
+    import pytest
+    with pytest.raises(RateLimitError):
+        _call_worker_resilient(always, "scan_project", {}, max_retries=2,
+                               base_backoff=0.0, sleep=lambda _s: None, stats=stats)
+    assert stats.rate_limit_events == 3  # initial + 2 retries
 
 
 def test_coverage_floor_selects_when_trim_empty() -> None:

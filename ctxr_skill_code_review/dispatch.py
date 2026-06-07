@@ -28,6 +28,12 @@ from .runner import ContextOverflowError, RateLimitError, SpecialistDispatch, Wo
 
 AgentRun = Callable[[str, str, str], str]  # (prompt, cwd, tier) -> final text
 
+# Per-call wall-clock ceiling (seconds). A hung agent call surfaces as a
+# RateLimitError so the runner's resilient worker / specialist retry kicks in.
+# Env-tunable so a hang fails fast and retries instead of burning the full
+# default — without a code change.
+_CALL_TIMEOUT = int(os.environ.get("CTXR_SCR_CALL_TIMEOUT", "600"))
+
 _ROLE_BY_STATE = {
     "scan_project": "project-scanner",
     "tree_descend": "tree-descender",
@@ -59,7 +65,7 @@ def _raise_for_signal(text: str) -> None:
 # --------------------------------------------------------------------------- #
 # backends: run(prompt, cwd, tier) -> final assistant text
 # --------------------------------------------------------------------------- #
-def claude_run(prompt: str, cwd: str, tier: str, timeout: int = 600) -> str:
+def claude_run(prompt: str, cwd: str, tier: str, timeout: int = _CALL_TIMEOUT) -> str:
     model = {"strong": "opus", "cheap": "sonnet"}.get(tier, "sonnet")
     cmd = ["claude", "-p", prompt, "--output-format", "json",
            "--permission-mode", "bypassPermissions", "--model", model]
@@ -77,7 +83,7 @@ def claude_run(prompt: str, cwd: str, tier: str, timeout: int = 600) -> str:
     return str(env.get("result", ""))
 
 
-def codex_run(prompt: str, cwd: str, tier: str, timeout: int = 600) -> str:
+def codex_run(prompt: str, cwd: str, tier: str, timeout: int = _CALL_TIMEOUT) -> str:
     with tempfile.TemporaryDirectory() as td:
         last = Path(td) / "last.txt"
         cmd = ["codex", "exec", "-C", cwd, "-s", "read-only",
@@ -96,7 +102,7 @@ def codex_run(prompt: str, cwd: str, tier: str, timeout: int = 600) -> str:
         return last.read_text(encoding="utf-8") if last.exists() else proc.stdout
 
 
-def cursor_run(prompt: str, cwd: str, tier: str, timeout: int = 600) -> str:
+def cursor_run(prompt: str, cwd: str, tier: str, timeout: int = _CALL_TIMEOUT) -> str:
     cmd = ["cursor-agent", "-p", prompt, "--output-format", "json"]
     model = os.environ.get(f"CTXR_CURSOR_MODEL_{tier.upper()}")
     if model:

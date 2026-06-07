@@ -1343,15 +1343,23 @@ def _utc_now_iso() -> str:
     return datetime.now(tz=UTC).strftime("%Y%m%d-%H%M%S")
 
 
-def _resolve_storage_root(project_root: Path) -> Path:
+def _resolve_storage_root(project_root: Path, storage_override: Any = None) -> Path:
     """Return the on-disk root for skill run artefacts.
 
     The legacy code read this from ``.fsmrc.json::fsms[code-reviewer].storage_root``
     (always ``.skill-code-review``). The Python port hard-codes the same
     default — there's no .fsmrc.json equivalent in the v3 surface and
-    every existing v2 install used ``.skill-code-review`` anyway. If a
-    future use-case needs to override, the user passes ``args.storage_root``.
+    every existing v2 install used ``.skill-code-review`` anyway.
+
+    A caller may decouple artefact storage from the repo being diffed by
+    passing ``args.storage_root`` (an absolute path): the diff still runs
+    against ``project_root`` (the repo) while reports land under the
+    override. This is what lets ``cli review --repo X --run-dir Y`` write Y
+    while reviewing X. A relative or empty override is ignored (the same
+    defensive rule as :func:`_coerce_absolute_project_root`).
     """
+    if isinstance(storage_override, str) and storage_override and Path(storage_override).is_absolute():
+        return Path(storage_override)
     return project_root / ".skill-code-review"
 
 
@@ -1903,7 +1911,7 @@ def write_run_artefacts(
     args_bag = _ensure_dict(env.get("args"))
     skill_root = _resolve_skill_root()
     project_root = _coerce_absolute_project_root(args_bag.get("project_root"), skill_root)
-    storage_root = _resolve_storage_root(project_root)
+    storage_root = _resolve_storage_root(project_root, args_bag.get("storage_root"))
     legacy_run_id = _legacy_run_id_for(run_uuid_str)
     run_dir = _run_dir_path(legacy_run_id, storage_root, shard_key=run_uuid_str)
 
@@ -2626,7 +2634,7 @@ def handle_merge_specialist_outputs(ctx: InlineContext) -> dict[str, Any]:
     project_root = _coerce_absolute_project_root(
         args_bag.get("project_root"), skill_root
     )
-    storage_root = _resolve_storage_root(project_root)
+    storage_root = _resolve_storage_root(project_root, args_bag.get("storage_root"))
     specialists_root = storage_root / "specialists"
 
     union_files: set[str] = set()

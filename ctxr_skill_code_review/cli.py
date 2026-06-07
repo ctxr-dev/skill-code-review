@@ -21,9 +21,17 @@ def _skill_root() -> Path:
 
 def cmd_review(a: argparse.Namespace) -> int:
     wiki = _skill_root() / "reviewers.wiki"
+    repo = str(Path(a.repo).resolve())  # diff cwd + project_root (must be absolute)
+    run_dir = str(Path(a.run_dir).resolve())  # decoupled artefact storage_root
+    if a.clean:
+        import shutil
+        shutil.rmtree(Path(run_dir) / ".skill-code-review", ignore_errors=True)
     dispatch_worker, dispatch_specialist = make_dispatchers(
-        a.repo, wiki, base=a.base, head=a.head, backend=a.backend)
-    args = {"project_root": a.run_dir, "base": a.base, "head": a.head}
+        repo, wiki, base=a.base, head=a.head, backend=a.backend)
+    # project_root = the repo (so `git diff base..head` runs there); storage_root
+    # = run_dir (so artefacts land outside the repo, leaving it pristine).
+    args = {"project_root": repo, "storage_root": str(Path(run_dir) / ".skill-code-review"),
+            "base": a.base, "head": a.head}
     if a.tools:
         args["tools"] = a.tools
     res = run_review(args, dispatch_worker=dispatch_worker,
@@ -51,6 +59,8 @@ def main() -> int:
     r.add_argument("--max-workers", type=int, default=8)
     r.add_argument("--min-workers", type=int, default=1)
     r.add_argument("--tools", default="silent")
+    r.add_argument("--clean", action="store_true",
+                   help="wipe <run-dir>/.skill-code-review before running (fresh, cache-free)")
     r.set_defaults(func=cmd_review)
     a = p.parse_args()
     return int(a.func(a))

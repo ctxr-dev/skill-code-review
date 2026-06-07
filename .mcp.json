@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "ctxr-fsm": {
+      "command": "/Users/developer/work/projects/ctxr-dev/skill-code-review/.venv/bin/ctxr-fsm",
+      "args": [
+        "mcp",
+        "--transport",
+        "stdio"
+      ],
+      "env": {}
+    }
+  }
+}

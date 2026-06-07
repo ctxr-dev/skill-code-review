@@ -60,6 +60,30 @@ def test_writes_three_files_under_storage_root(make_ctx, tmp_path) -> None:  # t
     assert ".skill-code-review" in run_dir.relative_to(tmp_path).parts
 
 
+def test_storage_root_override_decouples_artefacts_from_repo(make_ctx, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """`args.storage_root` (absolute) sends artefacts there, NOT into the repo.
+
+    This is what lets `cli review --repo X --run-dir Y` review repo X while
+    writing every artefact under Y, leaving X pristine. A relative override is
+    ignored (defensive), falling back to <project_root>/.skill-code-review.
+    """
+    repo = tmp_path / "repo"
+    out = tmp_path / "out" / ".skill-code-review"
+    repo.mkdir()
+    env = _minimal_env(repo)
+    env["args"] = {"project_root": str(repo), "storage_root": str(out)}  # type: ignore[index]
+    run_dir = Path(handle_write_run_directory(make_ctx(inputs=env))["run_dir_path"])
+    assert out in run_dir.parents, f"{run_dir} not under override {out}"
+    assert (run_dir / "report.json").exists()
+    # The repo itself stays clean — no .skill-code-review written into it.
+    assert not (repo / ".skill-code-review").exists()
+
+    # Relative override is ignored → falls back into the repo.
+    env["args"] = {"project_root": str(repo), "storage_root": "relative/nope"}  # type: ignore[index]
+    fallback = Path(handle_write_run_directory(make_ctx(inputs=env))["run_dir_path"])
+    assert ".skill-code-review" in fallback.relative_to(repo).parts
+
+
 def test_legacy_run_id_is_deterministic() -> None:
     """The shard suffix is a stable function of the FSM run uuid string."""
     run_uuid = str(uuid.uuid4())

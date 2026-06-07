@@ -64,6 +64,55 @@ class RunnerStats:
     overflow_splits: int = 0
     min_concurrency_seen: int = 0
     max_concurrency_seen: int = 0
+    coverage_floor_used: int = 0
+
+
+_FLOOR_PREFIXES = ("lang-", "fw-", "sec-", "footgun-", "orm-", "reliability-", "data-")
+
+
+def _coverage_floor(
+    state_id: str, inputs: dict[str, Any], outputs: dict[str, Any],
+    env: dict[str, Any], stats: RunnerStats,
+) -> dict[str, Any]:
+    """Architectural invariant: a flaky LLM routing worker must never silently
+    zero the review. If ``llm_trim`` returns no picked leaves while the
+    deterministic ``activated_leaves`` set was non-empty, select deterministically
+    from it (bias to correctness/security + project languages) so 100% diff
+    coverage holds. No-op on the happy path.
+    """
+    if state_id != "llm_trim":
+        return outputs
+    if outputs.get("picked_leaves"):
+        return outputs
+    activated = env.get("activated_leaves") or inputs.get("stage_a_candidates") or []
+    if not isinstance(activated, list) or not activated:
+        return outputs
+    cap = int(env.get("cap") or env.get("tier_cap") or 20)
+    langs = {str(x) for x in (env.get("project_profile") or {}).get("languages") or []}
+
+    def score(leaf: dict[str, Any]) -> int:
+        dims = set(leaf.get("dimensions") or [])
+        lid = str(leaf.get("id", ""))
+        s = 3 if dims & {"security", "correctness"} else 0
+        s += 2 if lid.startswith(_FLOOR_PREFIXES) else 0
+        s += 1 if any(lang and lang in lid for lang in langs) else 0
+        return s + len(leaf.get("activation_match") or [])
+
+    ranked = sorted((lf for lf in activated if isinstance(lf, dict)), key=score, reverse=True)[:cap]
+    picked = [
+        {"id": lf["id"], "path": lf["path"],
+         "justification": "deterministic coverage floor (LLM trim returned empty)",
+         "dimensions": lf.get("dimensions") or []}
+        for lf in ranked if lf.get("id") and lf.get("path")
+    ]
+    if not picked:
+        return outputs
+    stats.coverage_floor_used += 1
+    merged = dict(outputs)
+    merged["picked_leaves"] = picked
+    merged.setdefault("rejected_leaves", [])
+    merged.setdefault("coverage_rescues", [])
+    return merged
 
 
 class _AdaptiveLimiter:
@@ -302,6 +351,7 @@ def run_review(
         else:  # worker
             inputs = {k: env.get(k) for k in (st.worker.inputs if st.worker else [])}
             outputs = dispatch_worker(state_id, inputs)
+            outputs = _coverage_floor(state_id, inputs, outputs, env, stats)
 
         adv = engine_advance(fsm, ctx(), outputs)
         if adv.kind == "fault":

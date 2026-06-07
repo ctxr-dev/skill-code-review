@@ -10,9 +10,44 @@ from ctxr_skill_code_review.runner import (
     RateLimitError,
     RunnerStats,
     _AdaptiveLimiter,
+    _coverage_floor,
     _dispatch_units,
     run_review,
 )
+
+
+def test_coverage_floor_selects_when_trim_empty() -> None:
+    """A flaky llm_trim returning no picked leaves must NOT zero the review:
+    the floor selects deterministically from activated_leaves, biased to
+    correctness/security + project languages."""
+    activated = [
+        {"id": "antipattern-copy-paste", "path": "a.md", "activation_match": ["file_globs"],
+         "dimensions": ["readability"]},
+        {"id": "sec-csrf", "path": "s.md", "activation_match": ["file_globs", "keyword_matches"],
+         "dimensions": ["security"]},
+        {"id": "lang-python", "path": "p.md", "activation_match": ["file_globs"],
+         "dimensions": ["correctness"]},
+    ]
+    env = {"activated_leaves": activated, "cap": 2,
+           "project_profile": {"languages": ["python"]}}
+    stats = RunnerStats()
+    out = _coverage_floor("llm_trim", {}, {"picked_leaves": [], "rejected_leaves": []}, env, stats)
+    picked_ids = [p["id"] for p in out["picked_leaves"]]
+    assert len(picked_ids) == 2  # capped
+    assert "sec-csrf" in picked_ids and "lang-python" in picked_ids  # security/correctness win
+    assert "antipattern-copy-paste" not in picked_ids
+    assert all(set(p) >= {"id", "path", "justification", "dimensions"} for p in out["picked_leaves"])
+    assert stats.coverage_floor_used == 1
+
+
+def test_coverage_floor_noop_on_happy_path() -> None:
+    """Floor never touches a healthy trim result, nor non-trim states."""
+    stats = RunnerStats()
+    good = {"picked_leaves": [{"id": "x", "path": "x.md", "justification": "j", "dimensions": []}]}
+    assert _coverage_floor("llm_trim", {}, good, {"activated_leaves": [{"id": "y"}]}, stats) is good
+    other = {"stage_a_candidates": []}
+    assert _coverage_floor("tree_descend", {}, other, {"activated_leaves": [{"id": "y"}]}, stats) is other
+    assert stats.coverage_floor_used == 0
 
 
 def test_adaptive_limiter_aimd() -> None:

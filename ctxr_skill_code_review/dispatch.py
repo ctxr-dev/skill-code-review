@@ -160,6 +160,57 @@ def _parse_json(text: str) -> dict[str, Any]:
     return obj if isinstance(obj, dict) else {"_raw": obj}
 
 
+# Leaf-list keys whose items carry verbose frontmatter (notably ``covers[]``,
+# 10-20 long strings each). Sent raw, a ~130-leaf ``activated_leaves`` blows past
+# any char budget and gets truncated MID-ARRAY, silently dropping the
+# alphabetically-late leaves (lang-*, sec-*, footgun-* — the correctness/security
+# ones). We compact for the prompt, then rehydrate full metadata from the
+# deterministic source set by id. ``covers`` is schema-optional on every leaf
+# list, so dropping it never breaks output validation.
+_LEAF_LIST_KEYS = ("activated_leaves", "stage_a_candidates", "candidate_leaves")
+_HEAVY_LEAF_KEYS = ("covers", "audit_surface")
+_WORKER_INPUT_CAP = 160_000  # safety net only; compaction keeps real prompts far smaller
+
+
+def _compact_leaf(leaf: dict[str, Any]) -> dict[str, Any]:
+    out = {k: v for k, v in leaf.items() if k not in _HEAVY_LEAF_KEYS}
+    cov = leaf.get("covers")
+    if isinstance(cov, list) and cov:  # keep a thin semantic hint, not the bulk
+        out["covers"] = cov[:3]
+    return out
+
+
+def _compact_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
+    out = dict(inputs)
+    for k in _LEAF_LIST_KEYS:
+        v = out.get(k)
+        if isinstance(v, list):
+            out[k] = [_compact_leaf(x) if isinstance(x, dict) else x for x in v]
+    return out
+
+
+def _index_by_id(leaves: Any) -> dict[str, dict[str, Any]]:
+    return {lf["id"]: lf for lf in leaves
+            if isinstance(lf, dict) and isinstance(lf.get("id"), str)} if isinstance(leaves, list) else {}
+
+
+def _rehydrate(picked: Any, source_by_id: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Re-attach full leaf metadata stripped for the prompt; the LLM's own fields
+    (justification, dimensions, activation_match) win over the source copy."""
+    out: list[dict[str, Any]] = []
+    for p in picked if isinstance(picked, list) else []:
+        if not isinstance(p, dict):
+            continue
+        full = source_by_id.get(p.get("id", ""))
+        if full:
+            merged = dict(full)
+            merged.update({k: v for k, v in p.items() if v not in (None, [], "")})
+            out.append(merged)
+        else:
+            out.append(p)
+    return out
+
+
 def _route_tier(leaf_id: str, dimensions: list[str] | None) -> str:
     dims = dimensions or []
     if "security" in dims or "correctness" in dims:
@@ -179,10 +230,20 @@ def make_dispatchers(
     wiki = Path(wiki_root)
 
     def dispatch_worker(state_id: str, inputs: dict[str, Any]) -> dict[str, Any]:
+        compact = _compact_inputs(inputs)
         prompt = (_load_prompt(_ROLE_BY_STATE[state_id])
                   + f"\n\n## RUN INPUTS (review base {base}..head {head} in this repo)\n"
-                  + "```json\n" + json.dumps(inputs, default=str)[:20000] + "\n```" + _OUTPUT_RULE)
-        return _parse_json(run(prompt, repo, "cheap"))
+                  + "```json\n" + json.dumps(compact, default=str)[:_WORKER_INPUT_CAP] + "\n```" + _OUTPUT_RULE)
+        out = _parse_json(run(prompt, repo, "cheap"))
+        # Rehydrate the heavy leaf fields we stripped for the prompt, keyed by id
+        # off the deterministic source set, so downstream sees complete leaves.
+        if state_id == "tree_descend" and isinstance(out.get("stage_a_candidates"), list):
+            out["stage_a_candidates"] = _rehydrate(
+                out["stage_a_candidates"], _index_by_id(inputs.get("activated_leaves")))
+        elif state_id == "llm_trim" and isinstance(out.get("picked_leaves"), list):
+            src = _index_by_id(inputs.get("stage_a_candidates"))
+            out["picked_leaves"] = _rehydrate(out["picked_leaves"], src)
+        return out
 
     def dispatch_specialist(unit: dict[str, Any], shared: dict[str, Any]) -> dict[str, Any]:
         leaf_id = unit.get("leaf_id", "")

@@ -68,6 +68,68 @@ def test_dispatch_units_fault_tolerance() -> None:
     assert stats.failed >= 1
 
 
+def test_pool_bounded_concurrency_and_total_coverage_under_chaos() -> None:
+    """Stress: many units with random rate-limits/overflows/transient/permanent
+    failures. Assert (a) live concurrency NEVER exceeds max_workers, (b) every
+    unit gets a result (100% coverage), (c) no deadlock (it completes)."""
+    import threading
+    import time as _t
+
+    live = {"n": 0, "max": 0}
+    lock = threading.Lock()
+
+    def dispatch(unit: dict[str, Any], shared: dict[str, Any]) -> dict[str, Any]:
+        with lock:
+            live["n"] += 1
+            live["max"] = max(live["max"], live["n"])
+        try:
+            _t.sleep(0.002)
+            leaf = unit["leaf_id"]
+            n = int(leaf.split("-")[1])
+            if n % 7 == 0 and unit.get("_a", 0) == 0:
+                unit["_a"] = 1
+                raise RateLimitError  # transient: succeeds on retry
+            if n % 11 == 0 and len(unit.get("files", [])) > 1:
+                raise ContextOverflowError
+            if n % 13 == 0:
+                raise RuntimeError("permanent")
+            return {"id": leaf, "status": "completed",
+                    "findings": [{"severity": "minor", "file": unit["files"][0], "title": leaf}]}
+        finally:
+            with lock:
+                live["n"] -= 1
+
+    units = [{"leaf_id": f"leaf-{i}", "sub_index": 1, "total_subs": 1,
+              "files": [f"f{i}a.py", f"f{i}b.py"]} for i in range(120)]
+    stats = RunnerStats()
+    mw = 6
+    res = _dispatch_units(units, {}, dispatch, max_workers=mw, min_workers=1,
+                          max_retries=3, base_backoff=0.0, sleep=lambda _s: None, stats=stats)
+    assert len(res) == 120  # 100% coverage
+    assert all((f"leaf-{i}", 1) in res for i in range(120))
+    assert live["max"] <= mw, f"concurrency {live['max']} exceeded cap {mw}"
+    # permanent-failure units (n % 13 == 0, excluding overflow-handled) are failed, not lost
+    assert res[("leaf-13", 1)]["status"] == "failed"
+
+
+def test_overflow_recursion_no_deadlock_at_min_concurrency() -> None:
+    """Overflow recursion releases its permit before recursing — must not deadlock
+    even with max_workers=1."""
+    def dispatch(unit: dict[str, Any], shared: dict[str, Any]) -> dict[str, Any]:
+        if len(unit.get("files", [])) > 1:
+            raise ContextOverflowError
+        return {"id": unit["leaf_id"], "status": "completed",
+                "findings": [{"severity": "minor", "file": unit["files"][0], "title": "x"}]}
+
+    units = [{"leaf_id": "big", "sub_index": 1, "total_subs": 1,
+              "files": [f"f{i}.py" for i in range(8)]}]
+    stats = RunnerStats()
+    res = _dispatch_units(units, {}, dispatch, max_workers=1, min_workers=1,
+                          max_retries=1, base_backoff=0.0, sleep=lambda _s: None, stats=stats)
+    assert res[("big", 1)]["status"] == "completed"
+    assert len(res[("big", 1)]["findings"]) == 8  # all 8 files reviewed via recursive split
+
+
 def _worker(state_id: str, inputs: dict[str, Any]) -> dict[str, Any]:
     if state_id == "scan_project":
         return {"project_profile": {"languages": ["python"], "frameworks": [], "monorepo": False},

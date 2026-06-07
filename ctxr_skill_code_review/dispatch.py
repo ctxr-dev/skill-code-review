@@ -217,6 +217,50 @@ def _rehydrate(picked: Any, source_by_id: dict[str, dict[str, Any]]) -> list[dic
     return out
 
 
+_SEV_DEFAULT_CONF = {"critical": 0.9, "important": 0.7, "minor": 0.25}
+
+
+def _default_conf(finding: dict[str, Any]) -> float:
+    return _SEV_DEFAULT_CONF.get(str(finding.get("severity", "")).lower(), 0.5)
+
+
+def _apply_rank_decisions(
+    findings: list[dict[str, Any]], decisions: Any, args: dict[str, Any],
+) -> dict[str, Any]:
+    """Apply the ranker's compact per-index decisions to the FULL findings.
+
+    The LLM never re-emits finding text (slow + corruptible); it returns
+    {i, defect_confidence, primary, drop?} per index and the runner re-attaches
+    scores here. Findings the LLM omitted keep a severity-derived default so a
+    partial response never silently loses a real finding.
+    """
+    try:
+        thr = float(args.get("primary-threshold") or 0.75)
+    except (TypeError, ValueError):
+        thr = 0.75
+    by_i: dict[int, dict[str, Any]] = {}
+    if isinstance(decisions, list):
+        for d in decisions:
+            if isinstance(d, dict) and isinstance(d.get("i"), int):
+                by_i[d["i"]] = d
+    out: list[dict[str, Any]] = []
+    sev_counts = {"critical": 0, "important": 0, "minor": 0}
+    for idx, f in enumerate(findings):
+        d = by_i.get(idx, {})
+        if d.get("drop"):
+            continue
+        conf = d.get("defect_confidence")
+        conf = float(conf) if isinstance(conf, (int, float)) else _default_conf(f)
+        nf = dict(f)
+        nf["defect_confidence"] = conf
+        nf["primary"] = bool(d["primary"]) if isinstance(d.get("primary"), bool) else conf >= thr
+        out.append(nf)
+        sev = str(nf.get("severity", "")).lower()
+        if sev in sev_counts:
+            sev_counts[sev] += 1
+    return {"findings": out, "severity_counts": sev_counts}
+
+
 def _route_tier(leaf_id: str, dimensions: list[str] | None) -> str:
     dims = dimensions or []
     if "security" in dims or "correctness" in dims:
@@ -236,6 +280,27 @@ def make_dispatchers(
     wiki = Path(wiki_root)
 
     def dispatch_worker(state_id: str, inputs: dict[str, Any]) -> dict[str, Any]:
+        if state_id == "rank_findings":
+            # Ranker emits COMPACT per-index decisions, not re-emitted findings
+            # (the latter is a large slow generation that blew the call timeout).
+            findings = inputs.get("findings") or []
+            indexed = [
+                {"i": idx, "severity": f.get("severity"), "file": f.get("file"),
+                 "line": f.get("line"), "title": f.get("title"),
+                 "description": (f.get("description") or "")[:240],
+                 "flagged_by": f.get("flagged_by") or [], "corroboration": f.get("corroboration")}
+                for idx, f in enumerate(findings)
+            ]
+            rprompt = (_load_prompt("finding-ranker")
+                       + "\n\n## RUN INPUTS\n```json\n"
+                       + json.dumps({"findings": indexed,
+                                     "changed_paths": inputs.get("changed_paths") or [],
+                                     "args": inputs.get("args") or {}}, default=str)[:_WORKER_INPUT_CAP]
+                       + '\n```\n\n## OUTPUT CONTRACT\nReturn ONLY {"decisions":[...]} as '
+                       + "described above — no prose, no markdown fences, no file writes.\n")
+            parsed = _parse_json(run(rprompt, repo, "cheap"))
+            decisions = parsed.get("decisions") if isinstance(parsed, dict) else None
+            return _apply_rank_decisions(findings, decisions, inputs.get("args") or {})
         compact = _compact_inputs(inputs)
         prompt = (_load_prompt(_ROLE_BY_STATE[state_id])
                   + f"\n\n## RUN INPUTS (review base {base}..head {head} in this repo)\n"

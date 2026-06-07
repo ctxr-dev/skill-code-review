@@ -6,11 +6,46 @@ from __future__ import annotations
 import json
 
 from ctxr_skill_code_review.dispatch import (
+    _apply_rank_decisions,
     _compact_inputs,
     _index_by_id,
     _rehydrate,
     _route_tier,
 )
+
+
+def test_apply_rank_decisions_attaches_scores_drops_dupes_defaults_missing() -> None:
+    findings = [
+        {"severity": "critical", "file": "a.py", "line": 1, "title": "real bug",
+         "description": "d", "impact": "i", "fix": "f"},   # 0: scored high
+        {"severity": "minor", "file": "b.py", "line": 2, "title": "style"},      # 1: scored low
+        {"severity": "important", "file": "a.py", "line": 1, "title": "dup of 0"},  # 2: dropped dup
+        {"severity": "critical", "file": "c.py", "line": 3, "title": "unscored"},   # 3: omitted -> default
+    ]
+    decisions = [
+        {"i": 0, "defect_confidence": 0.95, "primary": True},
+        {"i": 1, "defect_confidence": 0.2, "primary": False},
+        {"i": 2, "defect_confidence": 0.9, "primary": True, "drop": True, "merge_into": 0},
+    ]
+    out = _apply_rank_decisions(findings, decisions, {"primary-threshold": 0.75})
+    titles = [f["title"] for f in out["findings"]]
+    assert titles == ["real bug", "style", "unscored"]  # dup dropped, others kept
+    assert out["findings"][0]["defect_confidence"] == 0.95 and out["findings"][0]["primary"] is True
+    assert out["findings"][1]["primary"] is False
+    # omitted finding keeps a severity-derived default, primary via threshold
+    assert out["findings"][2]["defect_confidence"] == 0.9 and out["findings"][2]["primary"] is True
+    # full fields preserved (ranker never re-emits them, so they can't be lost)
+    assert out["findings"][0]["impact"] == "i" and out["findings"][0]["fix"] == "f"
+    assert out["severity_counts"] == {"critical": 2, "important": 0, "minor": 1}
+
+
+def test_apply_rank_decisions_none_keeps_all_with_defaults() -> None:
+    """A malformed/empty ranker response must NOT lose findings."""
+    findings = [{"severity": "critical", "file": "a.py", "line": 1, "title": "t"}]
+    out = _apply_rank_decisions(findings, None, {})
+    assert len(out["findings"]) == 1
+    assert out["findings"][0]["defect_confidence"] == 0.9  # critical default
+    assert out["findings"][0]["primary"] is True
 
 
 def _big_leaf(i: int) -> dict:

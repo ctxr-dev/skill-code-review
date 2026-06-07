@@ -26,6 +26,7 @@ The :data:`INLINE_HANDLERS` mapping at the bottom is what
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -810,6 +811,121 @@ def _pick_winner(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
     return a if a_origin <= b_origin else b
 
 
+def _finding_text(f: dict[str, Any]) -> str:
+    return f"{f.get('title', '')}. {f.get('description', '')}".strip()
+
+
+def _embed_texts(texts: list[str]) -> list[list[float]] | None:
+    """Embed texts via the pluggable ``CTXR_SCR_EMBED_CMD`` hook.
+
+    The command template uses ``{in}`` / ``{out}`` placeholders; it reads a
+    JSON array of strings from ``{in}`` and writes a JSON array of vectors to
+    ``{out}`` (e.g. a Xenova/transformers.js node script). Returns None when no
+    hook is configured or it fails, so the caller falls back to token overlap.
+    """
+    cmd_tmpl = os.environ.get("CTXR_SCR_EMBED_CMD")
+    if not cmd_tmpl:
+        return None
+    import json as _json
+    import shlex
+    import subprocess
+    import tempfile
+
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            ip = Path(td) / "in.json"
+            op = Path(td) / "out.json"
+            ip.write_text(_json.dumps(texts))
+            cmd = cmd_tmpl.replace("{in}", str(ip)).replace("{out}", str(op))
+            res = subprocess.run(shlex.split(cmd), capture_output=True, text=True, timeout=300)
+            if res.returncode != 0 or not op.exists():
+                return None
+            vecs = _json.loads(op.read_text())
+            return vecs if isinstance(vecs, list) and len(vecs) == len(texts) else None
+    except Exception:
+        return None
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    # vectors are L2-normalised by the embedder; strict=False tolerates a bad row
+    return sum(x * y for x, y in zip(a, b, strict=False))
+
+
+def _token_jaccard(a: str, b: str) -> float:
+    ta = set(re.findall(r"[a-z0-9_]+", a.lower()))
+    tb = set(re.findall(r"[a-z0-9_]+", b.lower()))
+    union = len(ta | tb)
+    return len(ta & tb) / union if union else 0.0
+
+
+def _semantic_merge(findings: list[dict[str, Any]], *, sim_threshold: float = 0.80,
+                    jaccard_threshold: float = 0.5) -> list[dict[str, Any]]:
+    """Collapse near-duplicate findings (same bug reported by multiple leaves).
+
+    The legacy (file, line, title) key misses the SAME bug worded differently by
+    different leaves, which inflates the finding count. This pass merges findings
+    in the SAME file whose texts are semantically similar (embeddings if the
+    ``CTXR_SCR_EMBED_CMD`` hook is set, else token-overlap). Union-find; the
+    representative is the highest-severity / highest-confidence member.
+    """
+    n = len(findings)
+    if n < 2:
+        return findings
+    texts = [_finding_text(f) for f in findings]
+    vecs = _embed_texts(texts)
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            fi, fj = findings[i].get("file") or "", findings[j].get("file") or ""
+            if fi != fj:
+                continue
+            li, lj = findings[i].get("line"), findings[j].get("line")
+            # Same exact location = the same issue reported by multiple leaves.
+            same_loc = li is not None and li == lj
+            if vecs is not None:
+                sim_ok = _cosine(vecs[i], vecs[j]) >= sim_threshold
+            else:
+                sim_ok = _token_jaccard(texts[i], texts[j]) >= jaccard_threshold
+            if same_loc or sim_ok:
+                parent[find(i)] = find(j)
+
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+
+    merged: list[dict[str, Any]] = []
+    for members in groups.values():
+        if len(members) == 1:
+            merged.append(findings[members[0]])
+            continue
+        # representative = highest severity, then highest confidence
+        rep = max(members, key=lambda m: (
+            _SEVERITY_RANK.get(findings[m].get("severity", ""), 0),
+            float(findings[m].get("confidence") or 0.0),
+        ))
+        out = dict(findings[rep])
+        flagged: set[str] = set()
+        conf = 0.0
+        for m in members:
+            for s in findings[m].get("flagged_by") or []:
+                if isinstance(s, str):
+                    flagged.add(s)
+            conf = max(conf, float(findings[m].get("confidence") or 0.0))
+        out["flagged_by"] = sorted(flagged)
+        if conf:
+            out["confidence"] = conf
+        out["merged_count"] = len(members)
+        merged.append(out)
+    return merged
+
+
 def handle_collect_findings(ctx: InlineContext) -> dict[str, Any]:
     """Port of collect-findings.mjs."""
     env = _env_from_ctx(ctx)
@@ -863,13 +979,48 @@ def handle_collect_findings(ctx: InlineContext) -> dict[str, Any]:
 
     findings_out.sort(key=_sort_key)
 
+    # Semantic dedup: the (file, line, title) key above misses the SAME bug
+    # reported by different leaves in different words, which inflates the finding
+    # count and tanks precision. Collapse near-duplicates (embeddings via the
+    # CTXR_SCR_EMBED_CMD hook, else token-overlap). This is the #1 noise fix.
+    findings_out = _semantic_merge(findings_out)
+    findings_out.sort(key=_sort_key)
+
+    # Selectivity gate. A thorough FSM review surfaces many real but low-priority
+    # findings; developers (and the benchmark) want the few that matter. Tag each
+    # finding's corroboration + a `primary` flag for the block-worthy core set.
+    # Prefer the specialist's verified `confidence` (>= primary-threshold) when
+    # present; else fall back to severity + corroboration.
+    args_bag = _ensure_dict(env.get("args"))
+    try:
+        prim_t = float(args_bag.get("primary-threshold", 0.75))
+    except (TypeError, ValueError):
+        prim_t = 0.75
+    for f in findings_out:
+        corro = len(f.get("flagged_by") or [])
+        f["corroboration"] = corro
+        conf = f.get("confidence")
+        sev = f.get("severity")
+        if conf is not None:
+            try:
+                f["primary"] = bool(float(conf) >= prim_t)
+            except (TypeError, ValueError):
+                f["primary"] = bool(sev == "critical")
+        else:
+            f["primary"] = bool(sev == "critical" or (sev == "important" and corro >= 2))
+
     severity_counts = {"critical": 0, "important": 0, "minor": 0}
     for f in findings_out:
         sev = f.get("severity")
         if sev in severity_counts:
             severity_counts[sev] += 1
 
-    return {"findings": findings_out, "severity_counts": severity_counts}
+    primary_count = sum(1 for f in findings_out if f.get("primary"))
+    return {
+        "findings": findings_out,
+        "severity_counts": severity_counts,
+        "primary_count": primary_count,
+    }
 
 
 # ===========================================================================
@@ -1299,6 +1450,9 @@ def _build_issue(finding: dict[str, Any], idx: int) -> dict[str, Any]:
         "impact": finding.get("impact"),
         "fix": finding.get("fix"),
         "principle": finding.get("principle"),
+        "primary": bool(finding.get("primary", False)),
+        "corroboration": int(finding.get("corroboration", len(sorted_flagged))),
+        "confidence": finding.get("defect_confidence", finding.get("confidence")),
     }
 
 

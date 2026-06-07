@@ -8,23 +8,52 @@ This file is the per-specialist prompt template. The `dispatch_specialists` FSM 
 
 - **The leaf's full markdown body.** Read every section: `When This Activates`, `Audit Surface`, `Detailed Checks`, `Common False Positives`, `Severity Guidance`, `Authoritative Standards`. The body is your specification.
 - **The Project Profile** — languages, frameworks, monorepo layout, infra. Use it to scope your review and to filter false positives.
-- **The filtered diff** — the unified `git diff` body, scoped to your `activation.file_globs[]` when present, otherwise the full changed-file set. Review ONLY this diff; do not pull in the rest of the codebase.
+- **The filtered diff** — the unified `git diff` body, scoped to your `activation.file_globs[]` when present, otherwise the full changed-file set. This is the SUBJECT of your review: every finding must be about a line this diff added or changed.
 - **Tool results relevant to this leaf** — entries from `tool_results[]` whose `name` matches a tool your leaf declares in its `tools:` frontmatter. Use them as evidence, not as a substitute for your own analysis.
+
+## Cross-file context (read connected files to VERIFY, not to widen scope)
+
+A diff rarely contains enough to confirm or refute a real bug. You MAY (and should, when it changes your verdict) open files **connected to the changed code** to verify a finding before you report it:
+
+- the **definitions** of functions/classes/constants the changed code calls or references (follow imports);
+- the file where a value the changed code consumes is **produced/set** (e.g. trace where a dict key, state field, or argument originates) — this is how you catch missing-key / null / wrong-type / contract bugs that aren't visible in the diff alone;
+- sibling implementations the change should stay consistent with (e.g. the "correct" version of a pattern elsewhere in the repo);
+- the **tests** covering the changed code, to judge whether a new branch is actually exercised.
+
+Use `Read`/`Grep`/`Glob` and `git` for this. Keep the SCOPE of your findings on the diff — cross-file reading is for evidence and confidence, not for reviewing unrelated code. Reading the import-connected file is often the difference between a confident `critical` and a missed bug.
 
 ## Your task
 
 1. Read the leaf's body and identify the audit checks that apply to this diff.
-2. For each check, scan the filtered diff for evidence. Only flag what's actually present.
+2. For each check, scan the filtered diff for evidence. Trace each changed line with these **bug-hunting heuristics** (apply the ones in your lane):
+   - **Data-flow / provenance:** for every value the changed code reads (dict/map key, attribute, arg, env, request field), find where it is set; flag missing keys, `None`/null, wrong type, stale/aliased values, off-by-one, sign/﻿unit errors.
+   - **Error & edge paths:** what happens on empty/zero/negative/huge input, exception, timeout, non-2xx, missing record, concurrent access? Flag unhandled exceptions, swallowed errors, partial writes, check-then-act races, resource leaks.
+   - **Contract & behavior change:** does the change alter an existing contract, remove/ignore a configurable option, change a default, override a prior definition, or make a caching/proxy layer return different data than the real object? Behavioral regressions are real defects even when they look like refactors or config.
+   - **Security:** untrusted input reaching a sink (SQL/shell/template/URL/path), auth/authz gaps, predictable secrets/tokens/state, SSRF/redirect, missing validation at a boundary.
+   - **Tests:** does a changed/added test actually assert the behavior it claims? Is cleanup correct (right key/alias, runs on failure)? Does it leak state? A broken/no-op test is a real defect.
 3. **Authoritative-standards handling:** if the leaf body has an `## Authoritative Standards` section with URLs, fetch each URL for the latest guidance. If a URL is unreachable, fall back to the checklist in the leaf body.
 4. Categorise each finding by severity per the leaf's `Severity Guidance` table:
    - `critical` — blocks merge (security, data loss, correctness).
    - `important` — should fix before merge (SOLID violation, missing tests).
    - `minor` — advisory, does not block (naming, style).
-5. Each finding must reference one of the leaf's declared `dimensions:` (the runner-side gate aggregator binds findings to the 8 release gates by dimension).
+5. Set a `confidence` (0.0-1.0) per finding: how sure you are this is a REAL defect a careful reviewer would fix (after any cross-file verification). High only when you have traced the evidence; lower for "looks suspicious but unverified". This drives the downstream selectivity gate — do not inflate it.
+6. Each finding must reference one of the leaf's declared `dimensions:` (the runner-side gate aggregator binds findings to the 8 release gates by dimension).
+
+> **Favor recall; let confidence carry uncertainty.** Report EVERY plausible
+> defect in your lane, even when you are not fully sure — do NOT stay silent on a
+> suspected real bug. Encode your uncertainty in `confidence` (low for
+> "suspicious but unverified", high only when you traced the evidence), and never
+> inflate severity to compensate. A downstream selectivity gate — NOT you —
+> decides which findings are surfaced as primary, so under-reporting here
+> permanently loses a real bug, while over-reporting at low confidence is cheap.
+> The one thing you should not emit is a pure style/naming nit when your leaf is
+> not about style.
 
 ## Constraints
 
-- Run **blind**. You do not know what other specialists are flagging. Empty findings is a valid result; silence is precision.
+- Run **blind**. You do not know what other specialists are flagging. Reporting
+  the same real bug another specialist also finds is GOOD (it corroborates it at
+  dedup time) — do not self-censor to avoid overlap.
 - Stay within your leaf's audit surface. Do not flag things outside the leaf's checklist — those are other specialists' lanes.
 - Do not paraphrase the leaf body's instructions; follow them directly.
 - **Write your JSON output to the per-leaf output path stated in the dispatch prompt's `--- RESPONSE CONTRACT ---` section.** The runner reads each per-leaf file on `--continue` and aggregates them into `specialist_outputs[]`. Do NOT return JSON inline to the orchestrator — the per-leaf file is the canonical record (resilient to orchestrator-side losses, observable on disk for audit) and the orchestrator does not aggregate.
@@ -49,7 +78,9 @@ The Markdown fence below is for **display purposes only** in this template. The 
       "title": "<short title>",
       "description": "<full description>",
       "impact": "<impact statement>",
-      "fix": "<suggested fix>"
+      "fix": "<suggested fix>",
+      "confidence": 0.9,
+      "verified_via": ["<connected file you read to confirm>"]
     }
   ],
   "skip_reason": "<sentence iff status == skipped>"
@@ -62,6 +93,8 @@ Field rules:
 - `status` — exactly one of `completed`, `failed`, `skipped`. `skipped` REQUIRES `skip_reason`.
 - `severity` — exactly one of `critical`, `important`, `minor` (lowercase).
 - `findings` — array (possibly empty). Each entry has `severity`, `file`, `title` minimum; `line`, `description`, `impact`, `fix` recommended.
+- `confidence` — float 0.0-1.0 (recommended): your verified confidence this is a real defect. Feeds the selectivity gate.
+- `verified_via` — optional list of connected files you read to confirm the finding.
 
 Validation will reject:
 

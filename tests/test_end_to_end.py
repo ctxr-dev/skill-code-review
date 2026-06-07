@@ -72,6 +72,13 @@ def _simulated_worker_output(state_id: str) -> dict[str, Any]:
         }
     if state_id == "tool_discovery":
         return {"tool_results": []}
+    if state_id == "rank_findings":
+        # Neutral ranker worker: re-emit findings (empty on the happy path) +
+        # recomputed severity counts.
+        return {
+            "findings": [],
+            "severity_counts": {"critical": 0, "important": 0, "minor": 0},
+        }
     if state_id == "dispatch_specialists":
         # PR4: loop body output. The simulated single-iteration loop
         # carries one unit's specialist output and flips loop_done.
@@ -177,6 +184,7 @@ def test_drive_skill_through_engine_inline_path(tmp_path: Path) -> None:
         "dispatch_specialists",
         "merge_specialist_outputs",
         "collect_findings",
+        "rank_findings",
         "verify_coverage",
         "synthesize_release_readiness",
         "write_run_directory",

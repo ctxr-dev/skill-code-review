@@ -617,6 +617,15 @@ def _specialist_schema() -> ResponseSchema:
                                         "description": {"type": "string"},
                                         "impact": {"type": "string"},
                                         "fix": {"type": "string"},
+                                        "confidence": {
+                                            "type": "number",
+                                            "minimum": 0,
+                                            "maximum": 1,
+                                        },
+                                        "verified_via": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                        },
                                     },
                                 },
                             },
@@ -1201,7 +1210,51 @@ def _collect_findings() -> State:
             post_validations=[Predicate("len(findings) >= 0")],
         ),
         outputs=["findings", "severity_counts"],
-        transitions=[Transition(to="verify_coverage", when=TransitionKind.always)],
+        transitions=[Transition(to="rank_findings", when=TransitionKind.always)],
+    )
+
+
+def _rank_findings() -> State:
+    """Neutral selectivity + deduper-agent stage (worker / LLM).
+
+    After the deterministic collector dedups findings, this worker re-judges each
+    finding's defect-confidence from a neutral stance (specialist self-confidence
+    is biased), adjudicates any residual suspected duplicates (merge/drop), and
+    marks the block-worthy `primary` set. This is the precision half of the
+    coverage-vs-noise balance: specialists favour recall, this stage selects.
+    """
+    schema = ResponseSchema.model_validate({
+        "schema": {
+            "type": "object",
+            "required": ["findings", "severity_counts"],
+            "properties": {
+                "findings": {"type": "array"},
+                "severity_counts": {"type": "object"},
+            },
+        }
+    })
+    return State(
+        id="rank_findings",
+        purpose=(
+            "Neutrally score each finding's defect-confidence, adjudicate residual "
+            "duplicates, and mark the primary (block-worthy) set."
+        ),
+        preconditions=["findings exists in run state"],
+        worker=Worker(
+            role="finding-ranker",
+            prompt_template=_load_worker_prompt("finding-ranker"),
+            prompt_template_language="markdown",
+            inputs=["findings", "changed_paths", "args"],
+            response_schema=schema,
+        ),
+        outputs=["findings", "severity_counts"],
+        post_validations=[Predicate("len(findings) >= 0")],
+        allowed_tools=[],
+        verifier=_verifier_for("rank_findings"),
+        transitions=[
+            Transition(to="verifier_stuck", when=_verifier_stuck_predicate("rank_findings")),
+            Transition(to="verify_coverage", when=TransitionKind.always),
+        ],
     )
 
 
@@ -1425,6 +1478,7 @@ def build_spec() -> FsmSpec:
             _dispatch_specialists(),
             _merge_specialist_outputs(),
             _collect_findings(),
+            _rank_findings(),
             _verify_coverage(),
             _synthesize_release_readiness(),
             _write_run_directory(),

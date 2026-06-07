@@ -39,6 +39,7 @@ def test_18_states_in_declared_order() -> None:
         "dispatch_specialists",
         "merge_specialist_outputs",
         "collect_findings",
+        "rank_findings",
         "verify_coverage",
         "synthesize_release_readiness",
         "write_run_directory",
@@ -49,7 +50,7 @@ def test_18_states_in_declared_order() -> None:
         "terminal",
     ]
     assert get_state_ids() == expected
-    assert len(fsm.states) == 18
+    assert len(fsm.states) == 19
 
 
 def test_handler_ids_match_inline_handlers_dict() -> None:
@@ -201,6 +202,7 @@ def test_worker_states_have_allowed_tools_pinned() -> None:
             "Bash(which:*)",
             "Read",
         ],
+        "rank_findings": [],
     }
     worker_state_ids = {
         state.id for state in fsm.states if state.worker is not None
@@ -213,10 +215,12 @@ def test_worker_states_have_allowed_tools_pinned() -> None:
         assert got == want, (
             f"{state_id}: allowed_tools drift — got {got}, want {want}"
         )
-    # Worker states other than `llm_trim` must carry a non-empty allowlist.
+    # Worker states other than the pure-reasoning ones (`llm_trim`,
+    # `rank_findings`) must carry a non-empty allowlist.
+    pure_reasoning = {"llm_trim", "rank_findings"}
     for state_id, want in expected.items():
-        if state_id == "llm_trim":
-            assert want == [], "llm_trim allowlist must stay empty"
+        if state_id in pure_reasoning:
+            assert want == [], f"{state_id} allowlist must stay empty"
         else:
             assert len(want) > 0, f"{state_id} allowlist unexpectedly empty"
     # PR4: dispatch_specialists is now a Loop state. Its allowlist lives
@@ -238,7 +242,10 @@ def test_each_worker_has_verifier() -> None:
     happens via the merger's no-missed-file invariant.
     """
     worker_states = [s for s in fsm.states if s.worker is not None]
-    assert len(worker_states) == 4, "spec must ship 4 (non-loop) worker states post-PR4"
+    assert len(worker_states) == 5, (
+        "spec must ship 5 (non-loop) worker states: scan_project, tree_descend, "
+        "llm_trim, tool_discovery, rank_findings"
+    )
     for state in worker_states:
         assert state.verifier is not None, (
             f"worker state {state.id!r} is missing its verifier panel"

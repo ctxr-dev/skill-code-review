@@ -76,6 +76,11 @@ def _simulated_worker_output_zero_picked(state_id: str) -> dict[str, Any]:
         }
     if state_id == "tool_discovery":
         return {"tool_results": []}
+    if state_id == "rank_findings":
+        return {
+            "findings": [],
+            "severity_counts": {"critical": 0, "important": 0, "minor": 0},
+        }
     if state_id == "dispatch_specialists":
         # Should NEVER be reached on the 0-batch path. If we end up here
         # the spec's PR6 short-circuit transition is broken.

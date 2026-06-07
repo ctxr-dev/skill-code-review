@@ -286,3 +286,27 @@ impasse as a yellow chip on the affected state's Sheet.
 * [`reviewers.wiki/`](reviewers.wiki/) — the corpus of ~476 leaf
   reviewers.
 * [`CHANGELOG.md`](CHANGELOG.md) — release history.
+
+## Programmatic runner (production orchestration)
+
+`ctxr_skill_code_review/runner.py::run_review(args, dispatch_worker, dispatch_specialist, ...)`
+drives the FSM in-process and dispatches the per-leaf specialists through a
+**regulated, fault-tolerant thread pool** — the home for parallelism + resilience:
+
+- **Bounded, adaptive parallelism (AIMD).** `_AdaptiveLimiter` keeps the live
+  worker count in `[min_workers, max_workers]`; it halves on a rate-limit signal
+  and grows by one on sustained success (ThreadPoolExecutor does the threads).
+- **Rate-limit tolerant.** A unit that raises `RateLimitError` → multiplicative
+  back-off + retry, and shrinks the pool.
+- **Context-overflow tolerant.** A unit that raises `ContextOverflowError` is
+  sub-sharded (files split in half) and re-dispatched; an unsplittable single
+  file becomes a `failed` unit — never dropped.
+- **100% coverage.** Every planned unit is dispatched; a unit that still fails
+  becomes `status: "failed"` (the merge stage enforces no-missed-file).
+- **Model-agnostic.** The per-state / per-leaf LLM calls are injected hooks
+  (`dispatch_worker` / `dispatch_specialist`, or env `CTXR_SCR_WORKER_DISPATCH` /
+  `CTXR_SCR_SPECIALIST_DISPATCH`).
+
+The LLM-orchestrator path in this SKILL.md and this programmatic runner share the
+same FSM + inline handlers; the runner is the deterministic, parallel,
+fault-tolerant way to drive a review from code.

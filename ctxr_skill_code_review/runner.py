@@ -115,6 +115,25 @@ def _coverage_floor(
     return merged
 
 
+def _inline_fault_detail(res: Any) -> str:
+    """Human-readable cause for an inline-state fault. The bare fault_reason
+    ('validation_failed') is useless in a 50-PR batch — surface the schema errors
+    / failing predicates / detail so a faulted PR says exactly what broke."""
+    parts: list[str] = []
+    val = getattr(res, "validation", None)
+    if val is not None and getattr(val, "errors", None):
+        parts.append("schema: " + "; ".join(str(e) for e in val.errors[:5]))
+    pv = getattr(res, "post_validations", None)
+    if pv is not None and not getattr(pv, "valid", True):
+        failed = [e for e in getattr(pv, "results", []) if not getattr(e, "result", True)]
+        parts.append("predicate: " + "; ".join(
+            f"{getattr(e, 'expression', '?')}({getattr(e, 'error', '') or 'False'})" for e in failed[:5]))
+    detail = getattr(res, "fault_detail", None)
+    if detail:
+        parts.append(str(detail))
+    return " | ".join(parts)[:600] or "(no detail)"
+
+
 def _call_worker_resilient(
     dispatch_worker: WorkerDispatch, state_id: str, inputs: dict[str, Any], *,
     max_retries: int, base_backoff: float, sleep: Callable[[float], None],
@@ -353,7 +372,8 @@ def run_review(
             res = execute_inline(state=st, ctx=ctx(), args=env.get("args", {}),
                                  inputs=env, registry=reg)
             if not res.ok:
-                return RunResult(stats=stats, faulted=True, fault=f"inline:{res.fault_reason}")
+                return RunResult(stats=stats, faulted=True,
+                                 fault=f"inline:{state_id}:{res.fault_reason}:{_inline_fault_detail(res)}")
             outputs = res.outputs
         elif st.kind == StateKind.loop:  # dispatch_specialists
             if not unit_results:

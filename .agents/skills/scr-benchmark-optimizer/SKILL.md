@@ -106,6 +106,24 @@ scripts import it. A `run-id` is one variant/iteration (`default`/`prod`/
 - `results/PROD-REPORT.md` — the leaderboard + analysis. `OBSERVATIONS.md` — every
   bug/friction/finding with a ✅/🛠️/⏳/➖ status board.
 
+## Wiki regeneration: the no-regression gate (HARD)
+
+Any regeneration of `reviewers.wiki` (a corpus or structure change, and the full
+layout-driven rebuild) must clear this gate BEFORE it is promoted:
+
+- Re-run the PRODUCT reviewer on the SAME five pilot codebases used throughout:
+  `cal.com-14943`, `discourse-1`, `grafana-80329`, `keycloak-32918`, `sentry-67876`.
+- Compare against the recorded baseline on BOTH axes and require no regression on
+  either: recall/coverage up-or-equal AND false-positives-per-PR down-or-equal
+  (precision up-or-equal). Better on one axis must not come at the cost of the other.
+- If either axis regresses, do NOT promote the regenerated wiki. Revert or iterate.
+- Record the versioned result (`results/<run-id>/`, `PROD-REPORT.md`). The full-50
+  run and any SET/STRUCTURE change remain human-gated on top of this.
+
+This is the same metric the optimizer already chases (the precision-recall frontier),
+made an explicit promotion precondition: regeneration may only HOLD or IMPROVE the
+frontier, never trade it away.
+
 ## Running a review (the product, every time)
 
 ```bash

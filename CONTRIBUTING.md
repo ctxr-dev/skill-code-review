@@ -50,29 +50,44 @@ The corpus lives in two layers: hand-authored sources at `reviewers.src/`, and t
      - {name: ..., command: ..., purpose: ...}
    ```
 
-2. Run the source validators:
+2. Validate the source corpus against the layout contract (pins + v2 frontmatter)
+   and the skill-llm-wiki corpus checks:
 
    ```bash
-   npm run validate:src        # frontmatter + body shape + dimensions taxonomy
-   npm run test:src            # unit tests covering the parser/validators
+   uv run python scripts/validate_layout.py                 # shape + frontmatter contract
+   node /path/to/skill-llm-wiki/scripts/cli.mjs validate /path/to/skill-code-review/reviewers.src
    ```
 
-3. Rebuild the wiki via `skill-llm-wiki` (sibling project):
+3. Rebuild the wiki LAYOUT-DRIVEN and DETERMINISTIC. `reviewers.layout.yaml` pins
+   each leaf id to its category, so placement is a byte-stable projection (policy
+   such as max_depth/fanout comes from the layout, not flags):
 
    ```bash
    node /path/to/skill-llm-wiki/scripts/cli.mjs build /path/to/skill-code-review/reviewers.src \
-     --quality-mode deterministic --fanout-target 6 --max-depth 5 --soft-dag-parents --accept-dirty
+     --layout-config /path/to/skill-code-review/reviewers.layout.yaml \
+     --quality-mode deterministic --soft-dag-parents --accept-dirty
    ```
 
-4. Validate the rebuilt wiki:
+4. Validate the rebuilt wiki (shape AND build invariants), both 0 errors:
 
    ```bash
    node /path/to/skill-llm-wiki/scripts/cli.mjs validate /path/to/skill-code-review/reviewers.src.wiki
+   uv run python scripts/validate_layout.py --wiki reviewers.src.wiki
    ```
 
-5. Move the produced `reviewers.src.wiki/` over the existing `reviewers.wiki/`, commit both `reviewers.src/` source change and the rebuilt `reviewers.wiki/`.
+5. Benchmark-verify before promoting (HARD no-regression gate): re-run the product
+   reviewer on the five pilot codebases (cal.com-14943, discourse-1, grafana-80329,
+   keycloak-32918, sentry-67876) and confirm recall/coverage up-or-equal AND
+   false-positives-per-PR down-or-equal vs the baseline. See the `scr-benchmark-optimizer`
+   skill. Do not promote on a regression.
 
-The wiki layer handles clustering, slug generation, soft-DAG parents, balance enforcement, and root containment — no manual placement under a subcategory is needed.
+6. Move the produced `reviewers.src.wiki/` over the existing `reviewers.wiki/`, then
+   commit the `reviewers.src/` change, the rebuilt `reviewers.wiki/`, and
+   `reviewers.layout.yaml` together.
+
+The wiki layer handles clustering within the pinned categories, soft-DAG parents,
+balance enforcement, and the nested layout, so no manual placement under a
+subcategory is needed.
 
 ### Updating Phase C framework detection
 
@@ -144,12 +159,13 @@ report-format.md                      Report contract (consumed by handlers, not
 docs/code-reviewer-design.md          Eleven-step orchestrator design rationale (humans only)
 code_review/
   spec.py                             Pydantic FsmSpec literal (state machine + schemas)
-  handlers.py                         9 deterministic inline handlers + report renderer
+  handlers.py                         Deterministic inline-state handlers + report renderer
   install.py                          Idempotent register() one-shot + CLI entry
   workers/*.md                        Per-state worker prompts (LLM-readable, self-contained)
 tests/                                pytest suite
-reviewers.src/                        Source corpus (gitignored)
-reviewers.wiki/                       Wiki-organised corpus — source of truth in repo
+reviewers.src/                        Hand-authored source corpus (TRACKED; the authoring layer)
+reviewers.layout.yaml                 Shape contract: taxonomy + pins + frontmatter contract
+reviewers.wiki/                       Generated tree (layout-driven, deterministic), source of truth in repo
   index.md                            Root index — entries[] of subcategories
   <subcat>/index.md                   Subcategory index — entries[] of leaves
   <subcat>/<leaf>.md                  Specialist reviewer

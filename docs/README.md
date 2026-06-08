@@ -1,32 +1,24 @@
-# skill-code-review — design docs
+# skill-code-review design docs
 
-Reference docs for skill-code-review's architecture and authoring conventions.
+Reference docs for the architecture, the runtime subsystems, and the reviewer-corpus conventions.
 
-## Files in this directory
+## Architecture
 
-- **[`SCHEMA.md`](SCHEMA.md)** — frontmatter + body schema for source corpus files in `reviewers.src/`. Authors editing the corpus follow this.
-- **[`sniper-precision-review-architecture.md`](sniper-precision-review-architecture.md)** — investigation (2026-04-26) into how to use the 476-leaf `reviewers.wiki/` corpus for high-precision multi-specialist review. Synthesised from five parallel sub-agent investigations covering GitHub Copilot mechanics, SOTA AI review tools, multi-agent SE research, and an audit of our own wiki's routing surface. Defines the 6-tier orchestration architecture and the 5-sprint sequencing that drives Phase 5 of `skill-code-review-v2.md`.
+- [code-reviewer-design.md](code-reviewer-design.md): the orchestration narrative and the complete 19-state FSM map. Start here.
 
-## Authoring rules for `reviewers.src/`
+## Runtime subsystems
 
-The source corpus at `reviewers.src/` is gitignored locally — sources are authored, validated, then fed through `skill-llm-wiki build` to produce the tracked `reviewers.wiki/` tree. Authors should:
+- [programmatic-runner.md](programmatic-runner.md): the in-process runner (AIMD concurrency, fault tolerance, coverage floor, degradable workers).
+- [cli-and-dispatch.md](cli-and-dispatch.md): the `review` CLI and the agent-agnostic backends (claude / codex / cursor / anthropic / openai), prompt loading, tier routing.
+- [ranker-and-dedup.md](ranker-and-dedup.md): the two-stage `collect_findings` + `rank_findings` design (the precision lever).
+- [verifier-panel.md](verifier-panel.md): the adversarial verifier panel and `verifier_stuck`.
+- [gate-predicates.md](gate-predicates.md): the eight release-readiness gates and the GO / NO-GO verdict.
+- [benchmarks.md](benchmarks.md): benchmark methodology, the sharded harness, and the no-regression gate.
 
-- **Never hand-edit `reviewers.wiki/`** — it is generated output. Source edits land in `reviewers.src/<id>.md`, then a wiki rebuild propagates them.
-- **One reviewer per file.** Filename must match the `id` in frontmatter (kebab-case).
-- **Follow the body-sectioning contract** defined in [`SCHEMA.md`](SCHEMA.md).
-- **No manual clustering.** Sources are flat; the wiki operators (MERGE/NEST/DESCEND/LIFT) handle all hierarchy at build time.
-- **Frontmatter is the source of truth** for routing — `activation:`, `dimensions:`, `tags:`, `tools:` all feed the orchestrator's tree descent and gate aggregation.
+## Reviewer corpus
 
-## Rebuilding the wiki
+- [SCHEMA.md](SCHEMA.md): the v2 frontmatter + body contract for `reviewers.src/<id>.md`, and the `reviewers.layout.yaml` taxonomy that drives a deterministic wiki build.
 
-```bash
-# From any directory; output lands at <source>.wiki by default
-node ../skill-llm-wiki/scripts/cli.mjs build /absolute/path/to/skill-code-review/reviewers.src \
-  --quality-mode deterministic \
-  --fanout-target 6 \
-  --max-depth 5 \
-  --soft-dag-parents \
-  --accept-dirty
-```
+The corpus has two layers: hand-authored sources at `reviewers.src/` (tracked) and the generated tree at `reviewers.wiki/` produced by the sibling `skill-llm-wiki`. Authors edit only the source layer; never hand-edit `reviewers.wiki/`. Each leaf carries the full v2 frontmatter (`id`, `type`, `focus`, `covers`, `dimensions`, `audit_surface`, `languages`, `tags`, `activation`, `tools`), which is the source of truth for tree descent and gate aggregation. Activation globs must be specific: the broad globs `**/*`, `*`, `**`, `**/**` are forbidden by the layout contract.
 
-After a successful rebuild: validate, then move the produced `reviewers.src.wiki/` over the existing `reviewers.wiki/`. See [`CONTRIBUTING.md`](../CONTRIBUTING.md) for the full workflow.
+For the end-to-end authoring and rebuild workflow (validate, build via `skill-llm-wiki --layout-config reviewers.layout.yaml`, validate the rebuilt tree, promote, then benchmark-verify), see [CONTRIBUTING.md](../CONTRIBUTING.md) and the `scr-reviewers-wiki-authoring` skill.

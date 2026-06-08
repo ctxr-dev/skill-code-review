@@ -16,6 +16,7 @@ from ctxr_skill_code_review.dispatch import (
     _route_tier,
     _strip_nulls,
 )
+from ctxr_skill_code_review.runner import ContextOverflowError, RateLimitError
 
 
 def test_strip_nulls_drops_null_optional_fields() -> None:
@@ -30,7 +31,6 @@ def test_strip_nulls_drops_null_optional_fields() -> None:
     f = out["findings"][0]
     assert "line" not in f and "fix" not in f  # null optionals dropped
     assert f["impact"] == "boom" and f["severity"] == "important"  # real values kept
-from ctxr_skill_code_review.runner import ContextOverflowError, RateLimitError
 
 
 def test_parse_json_empty_or_garbage_is_retryable_not_crash() -> None:

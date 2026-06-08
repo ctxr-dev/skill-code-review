@@ -358,6 +358,7 @@ def make_dispatchers(
                   + f'Return {{"id":"{leaf_id}","status":"completed","findings":[...]}}.')
         out = _parse_json(run(prompt, repo, _route_tier(leaf_id, leaf.get("dimensions"))))
         out.setdefault("id", leaf_id)
-        return _strip_nulls(out)
+        cleaned = _strip_nulls(out)
+        return cleaned if isinstance(cleaned, dict) else out
 
     return dispatch_worker, dispatch_specialist

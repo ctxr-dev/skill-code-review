@@ -156,13 +156,25 @@ BACKENDS: dict[str, AgentRun] = {
 
 
 def _parse_json(text: str) -> dict[str, Any]:
+    """Extract the JSON object from an agent's final text. An empty or
+    unparseable response is a TRANSIENT agent failure (claude -p occasionally
+    returns an empty result), so it surfaces as RateLimitError — the runner's
+    resilient worker / specialist retry then re-attempts instead of the raw
+    JSONDecodeError crashing the whole review. A genuine rate-limit / overflow
+    message in the text is classified first so the right backoff applies."""
     t = text.strip()
+    if not t:
+        raise RateLimitError("empty agent response")
     if t.startswith("```"):
         t = re.sub(r"^```[a-zA-Z]*\n?", "", t).rsplit("```", 1)[0]
     a, b = t.find("{"), t.rfind("}")
     if a >= 0 and b > a:
         t = t[a:b + 1]
-    obj = json.loads(t)
+    try:
+        obj = json.loads(t)
+    except json.JSONDecodeError as exc:
+        _raise_for_signal(text)  # reclassify rate-limit / overflow phrasing
+        raise RateLimitError(f"unparseable agent response: {text.strip()[:160]!r}") from exc
     return obj if isinstance(obj, dict) else {"_raw": obj}
 
 

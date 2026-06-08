@@ -5,13 +5,39 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from ctxr_skill_code_review.dispatch import (
     _apply_rank_decisions,
     _compact_inputs,
     _index_by_id,
+    _parse_json,
     _rehydrate,
     _route_tier,
 )
+from ctxr_skill_code_review.runner import ContextOverflowError, RateLimitError
+
+
+def test_parse_json_empty_or_garbage_is_retryable_not_crash() -> None:
+    """An empty / unparseable agent response must surface as a retryable
+    RateLimitError (the runner retries it), NOT a raw JSONDecodeError that
+    crashes the whole review (the grafana pilot failure)."""
+    with pytest.raises(RateLimitError):
+        _parse_json("")
+    with pytest.raises(RateLimitError):
+        _parse_json("   \n ")
+    with pytest.raises(RateLimitError):
+        _parse_json("I could not complete this request.")
+
+
+def test_parse_json_reclassifies_overflow_phrasing() -> None:
+    with pytest.raises(ContextOverflowError):
+        _parse_json("Error: prompt is too long for the model context window")
+
+
+def test_parse_json_extracts_object_through_fences_and_prose() -> None:
+    assert _parse_json('```json\n{"a": 1}\n```')["a"] == 1
+    assert _parse_json('here you go: {"x": [1,2]} done')["x"] == [1, 2]
 
 
 def test_apply_rank_decisions_attaches_scores_drops_dupes_defaults_missing() -> None:

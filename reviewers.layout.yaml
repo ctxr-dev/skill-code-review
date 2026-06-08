@@ -31,7 +31,7 @@ frontmatter_contract:
       dimensions: [architecture, correctness, documentation, performance, readability, security, tests]
     require_nonempty: [covers, tags, dimensions, audit_surface, languages]
     forbid:
-      activation.file_globs: ["**/*", "*", "**"]   # specific globs only; use the all-code brace glob
+      activation.file_globs: ["**/*", "*", "**", "**/**"]   # specific globs only; use the all-code brace glob
 
 # ── Fixed taxonomy (26 categories; every leaf pinned by id prefix) ──────────────
 taxonomy:

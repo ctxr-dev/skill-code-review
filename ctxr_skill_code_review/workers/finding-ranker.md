@@ -31,9 +31,15 @@ For every finding, emit ONE decision object keyed by its index `i`:
      BEHAVIORAL REGRESSION (removed/ignored config option, changed default,
      overriding definition, silent semantic change); a BROKEN test (no-op cleanup,
      asserts the wrong thing, leaks state); a config/log change that misbehaves in
-     prod.
-   - **MEDIUM (0.5-0.8):** plausibly a real bug but conditional/uncertain, or a
-     clearly impactful perf issue (e.g. O(n^2) on a genuinely hot path at scale).
+     prod. **A read-modify-write or check-then-act that can LOSE an update /
+     increment / write, or double-apply an effect (lost-update / data-integrity
+     race), is HIGH — it is a concrete correctness defect, not "concurrency
+     hardening", even when the racing window looks small.**
+   - **MEDIUM (0.5-0.7, NOT primary):** plausibly a real bug but conditional/
+     uncertain; OR a change whose worst case is **load / cost / throughput rather
+     than wrong output** (a frequency/interval/batch-size change, an O(n^2) or
+     extra-query path) **without evidence it is on a genuinely hot path at real
+     scale** — real, but advisory, not block-worthy. Demote these to MEDIUM.
    - **LOW (0.0-0.3):** NOT a defect — naming/format/docs, duplication/DRY/SoC/
      coupling/maintainability opinions, micro-optimizations, "could add a test"/
      missing-coverage that hides no real bug, speculative suggestions, type-nits.

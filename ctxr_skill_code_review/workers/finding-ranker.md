@@ -31,7 +31,11 @@ For every finding, emit ONE decision object keyed by its index `i`:
      BEHAVIORAL REGRESSION (removed/ignored config option, changed default,
      overriding definition, silent semantic change); a BROKEN test (no-op cleanup,
      asserts the wrong thing, leaks state); a config/log change that misbehaves in
-     prod. **A read-modify-write or check-then-act that can LOSE an update /
+     prod. **An observability defect — routine/expected events logged at ERROR
+     (alarm-fatigue, false alerts, pages on normal operation) or a real error
+     downgraded/swallowed so it is invisible — is a concrete defect and primary-
+     worthy; do NOT treat log-level correctness as cosmetic.** (This is distinct
+     from a load/cost-only change, which stays advisory.) **A read-modify-write or check-then-act that can LOSE an update /
      increment / write, or double-apply an effect (lost-update / data-integrity
      race), is HIGH — it is a concrete correctness defect, not "concurrency
      hardening", even when the racing window looks small.**

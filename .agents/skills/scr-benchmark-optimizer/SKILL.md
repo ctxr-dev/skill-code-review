@@ -60,16 +60,18 @@ on the full 50**, on the frontier (don't trade all recall for precision).
 ## Current standing (measured, honest)
 
 Reviews run through the product runner with `--backend claude`. Measured on the
-**5-PR pilot** (small, noisy, Cubic-favorable):
+**5-PR pilot** (small, noisy, Cubic-favorable), `skill-prod-primary` on the shipped
+deterministic 26-category, 479-leaf wiki (`reviewers.layout.yaml` pins placement):
 
-- baseline → **iter1**: F1 0.46 → **0.64** (precision 0.33 → 0.57, recall held 0.73)
-  via the Cubic-conservative ranker + general specialist recall heuristics.
-- iter2/iter3: principled refinements (lost-update = primary; observability defect =
-  primary; distinct null-deref findings) net-flat on the pilot — **the 5-PR signal is
-  noise-bound** (ranker is stochastic; run-to-run F1 swings ±0.05-0.1, rivalling the
-  tuning deltas).
-- Specialist **recall ceiling 0.82** (9/11 goldens found); skill-prod-primary is #2
-  behind Cubic and ahead of coderabbit/copilot/greptile/bugbot.
+- **Shipped (479-leaf, deterministic wiki):** recall **0.73** (8/11), precision
+  **0.53**, F1 **~0.62**, **~1.4 FP/PR**. Prior emergent baseline: recall 0.73,
+  precision 0.33, F1 0.46, ~3.2 FP/PR. The deterministic cutover plus three added
+  generalized footgun leaves recovered recall to no-worse-than-baseline AND more than
+  halved the noise (3.2 → 1.4 FP/PR), lifting F1 0.46 → 0.62 (see the lesson below).
+- **The 5-PR signal is noise-bound** (the ranker is stochastic; run-to-run F1 swings
+  ±0.05-0.1, rivalling the tuning deltas), so average ≥3 rounds and prefer the full 50.
+- Two goldens remain missed by EVERY wiki (a vague null-state golden and a terse
+  recursion golden): candidates for a future sharpening pass, not blockers.
 
 **The full-50 number is the open question** — the pilot is too small/favorable to
 declare "beat all". A full-50 run is gated on human go-ahead (it crosses the locked
@@ -230,6 +232,30 @@ worker + specialist calls are fault-tolerant (retry/backoff, graceful degradatio
   per-golden rules to chase the pilot: that is over-fitting.
 - **Many "false positives" are real bugs outside the golden set.** Audit before
   suppressing; don't make the product worse to game an incomplete golden set.
+
+## Lesson: a missed golden is often a missing leaf, not just noise
+
+When a no-regression run shows a recall dip, do NOT just tune the ranker (noise).
+Investigate each MISSED golden and ask "does any leaf own this concern?" A golden the
+corpus misses is often a COVERAGE GAP (a missing reviewer for a common bug class), not
+a routing/noise problem. In this cycle the deterministic-wiki cutover dipped recall by
+one golden; investigation found NO dedicated leaf for three common classes, so three
+GENERALIZED footgun leaves were added (footgun-null-and-missing-state CWE-476,
+footgun-unintended-recursion CWE-674, footgun-destructive-query-scope CWE-1284) plus a
+sharpen to footgun-toctou-race for non-atomic counters. Result: recall recovered to
+no-worse-than-baseline AND noise more than halved (3.2 → 1.4 FP/PR), F1 0.46 → 0.62.
+Encode generalized reviewers (a whole bug class), never per-golden rules (over-fitting).
+
+Recipe when a golden is missed:
+
+1. Re-judge the run consistently (one judge model, the Martian rule) so the miss is real.
+2. List the MISSED goldens per PR.
+3. For each, check the corpus for an OWNING leaf (does any reviewer's focus/covers/
+   activation claim this concern?).
+4. For a genuine gap, add a GENERALIZED leaf for the bug class via
+   `scr-reviewers-wiki-authoring` (human-gated SET change); never a per-golden rule.
+5. Re-benchmark through the no-regression gate (recall up-or-equal AND FP/PR
+   down-or-equal); keep only if it holds or improves the frontier, else revert.
 
 ## Before any commit to skill-code-review
 

@@ -57,6 +57,11 @@ add a leaf for a one-off, for style/taste, or to chase a single benchmark golden
 (over-fitting). Adding/removing/restructuring the SET needs a written, statistically
 justified proposal and human confirmation.
 
+When the benchmark shows a missed golden, first ask **"does any leaf own this
+concern?"** before adjusting routing or ranking. If the honest answer is no, that is a
+genuine gap and warrants a new GENERALIZED leaf (a reusable heuristic), not a tuning
+tweak.
+
 ## Authored v2 frontmatter — every field and WHY it matters
 
 ```yaml
@@ -240,4 +245,13 @@ A corpus change is not done until it is benchmark-checked:
 - **General heuristics generalise; per-golden rules over-fit.** Encode reusable
   patterns (unset-state, tool-format, lost-update, shadowed-definition, observability
   defect), not benchmark-specific answers.
+- **Close coverage gaps with generalized leaves, not noise-tuning (proven).** The
+  benchmark loop surfaced goldens that NO leaf owned. Rather than tune noise, three
+  generalized correctness leaves were authored to close the gaps:
+  `footgun-null-and-missing-state` (unguarded null/missing state),
+  `footgun-unintended-recursion` (recursion and re-entrancy, including a cache/wrapper
+  calling its own public API instead of the inner delegate), and
+  `footgun-destructive-query-scope` (DELETE/UPDATE with a missing or too-broad
+  predicate, data loss). They are generalized footgun reviewers (reusable heuristics),
+  not benchmark-specific rules, and they recovered recall while keeping noise low.
 - **Never hand-edit `reviewers.wiki/`**; always regenerate from `reviewers.src/`.

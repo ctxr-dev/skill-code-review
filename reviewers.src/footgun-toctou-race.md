@@ -12,6 +12,7 @@ covers:
 - mkdir followed by write without handling concurrent creation
 - stat followed by open allowing symlink race between the two calls
 - Database read-check-write without row-level lock or CAS
+- Non-atomic counter or retry-count increment (read field, write field+1) that loses concurrent updates instead of an atomic DB increment
 - isFile/isDirectory check before file operation without atomic alternative
 - Temp file name generated then created non-atomically
 dimensions:
@@ -24,6 +25,7 @@ audit_surface:
 - os.mkdir() followed by file write in new directory
 - os.stat() followed by os.open() allowing symlink replacement
 - SELECT check then UPDATE without row lock or CAS
+- field = field + 1 read in application code then written back instead of an atomic increment (Prisma { increment: 1 }, SQL SET x = x + 1, UPDATE ... RETURNING)
 - if (!map.containsKey(k)) map.put(k, v) without atomic alternative
 - Temp filename generated then opened without O_EXCL
 - tryLock() checked then lock-dependent operation without holding lock
@@ -123,6 +125,7 @@ Activates when diffs perform a check on some state (file exists, permission gran
 - [ ] **Read-check-update without lock**: flag `SELECT balance WHERE id = ?; if balance >= amount: UPDATE balance = balance - amount`. Between the SELECT and UPDATE, another transaction can debit the same balance. Use `SELECT ... FOR UPDATE` (pessimistic lock), `UPDATE ... WHERE balance >= amount` (atomic conditional), or optimistic concurrency (version column)
 - [ ] **Inventory double-spend**: flag `if (inventory > 0) { inventory--; ship(); }` without atomicity. Two concurrent requests both see inventory = 1 and both ship, resulting in -1 inventory. Use `UPDATE inventory SET count = count - 1 WHERE count > 0` and check affected rows
 - [ ] **Insert-if-not-exists race**: flag `SELECT COUNT(*) WHERE key = ?; if count == 0: INSERT`. Two concurrent requests both see count = 0 and both insert. Use `INSERT ... ON CONFLICT DO NOTHING`, `MERGE`, or unique constraints with upsert
+- [ ] **Lost update on a counter (read-modify-write)**: flag `x = row.count + 1` (or `retryCount: record.retryCount + 1`) computed in application code from a previously read value and written back. Under concurrency two readers both see the same value and one increment is lost. Use an atomic database increment (`{ increment: 1 }` in Prisma, `SET count = count + 1` in SQL, `$inc` in Mongo) so the read and write happen in one operation. This applies equally in a catch/retry block that re-increments the same field
 
 ### In-Memory TOCTOU
 <!-- activation: keywords=["containsKey", "contains", "get", "put", "putIfAbsent", "computeIfAbsent", "getOrDefault", "synchronized", "lock", "ConcurrentHashMap", "compareAndSet", "CAS"] -->

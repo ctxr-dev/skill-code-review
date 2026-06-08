@@ -20,7 +20,7 @@
 
 It coordinates a team of specialised code reviewers selected from a wiki of ~476 leaves at `reviewers.wiki/`. The flow: parse arguments, scan the project, descend the wiki tree to select relevant specialists, dispatch them in parallel, collect findings, verify coverage, and produce a unified report with a GO/NO-GO verdict.
 
-The orchestrator does NOT review code itself, it scans, routes, collects, deduplicates, verifies, and reports.
+The orchestrator does NOT review code itself: it scans, routes, collects, deduplicates, verifies, and reports.
 
 ## Runtime contract
 
@@ -186,7 +186,7 @@ Map detected dependency names to semantic categories using this table. Categorie
 | graphql | graphql, @apollo/server, type-graphql, graphql-yoga, strawberry-graphql |
 | grpc | @grpc/grpc-js, grpcio, tonic, protobuf |
 
-A `web` framework on the diff makes leaves under web/api/security clusters higher-priority candidates; a `state` library makes frontend/state-management clusters higher-priority. The wiki's leaves directly cover these frameworks (`fw-react.md`, `fw-django-rails.md`, etc.), they get activated by the leaf-level `activation:` gate during Step 3.
+A `web` framework on the diff makes leaves under web/api/security clusters higher-priority candidates; a `state` library makes frontend/state-management clusters higher-priority. The wiki's leaves directly cover these frameworks (`fw-react.md`, `fw-django-rails.md`, etc.); they get activated by the leaf-level `activation:` gate during Step 3.
 
 ### Project Profile Output
 
@@ -330,7 +330,7 @@ Build the prompt with:
 
 Structured JSON:
 
-```json
+```text
 {
  "tier": "<trivial|lite|full|sensitive>",
  "cap": <K>,
@@ -494,7 +494,7 @@ The shard prefix derives from the hash, not the timestamp, so timestamp-clustere
 
 ### Manifest schema (`manifest.json`)
 
-```json
+```text
 {
  "run_id": "<YYYYMMDD>-<HHMMSS>-<hash7>",
  "timestamp": "<ISO-8601>",

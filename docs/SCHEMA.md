@@ -17,7 +17,7 @@ covers:                             # 3 to 15 granular bullets (used for similar
   - "..."
 audit_surface:                      # 10 to 20 high-signal review items
   - "..."
-languages: [<list> | all]           # "all" or a non-empty list of language codes
+languages: all                      # the scalar string "all", OR a non-empty list like [python, typescript]
 tags: [<topical tags>]              # topical routing tags, at least one
 activation:                         # how the orchestrator decides to load this reviewer
   file_globs: ["**/*.py", ...]      # SPECIFIC globs only (see forbidden globs below)
@@ -39,7 +39,7 @@ tools:                              # OPTIONAL external linters / SAST
 - **Non-empty required:** `covers`, `tags`, `dimensions`, `audit_surface`, `languages`.
 - **`languages`** is either the string `"all"` or a non-empty list.
 - **`tools`** is optional; each entry needs `name` and `purpose` (both non-empty), `command` optional.
-- **Forbidden activation globs:** `activation.file_globs` may not contain `**/*`, `*`, `**`, or `**/**`. Use specific globs or the all-code brace glob. Broad globs defeat routing and are rejected by the contract.
+- **Forbidden activation globs:** `activation.file_globs` may not contain `**/*`, `*`, `**`, or `**/**`. Use specific globs, or the all-code brace glob `**/*.{py,pyi,ts,tsx,js,jsx,mjs,cjs,go,rs,java,kt,rb,swift,cs,php,cpp,cc,c,h,hpp,scala,ex,exs,erl,clj,dart,lua,r,m,sh,sql}` (the canonical string is `CODE_GLOB` in [scripts/fix_broad_globs.py](../scripts/fix_broad_globs.py)). Broad globs defeat routing and are rejected by the contract.
 
 ## `reviewers.layout.yaml` (the shape contract)
 

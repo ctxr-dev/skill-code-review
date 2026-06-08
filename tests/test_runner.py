@@ -223,6 +223,28 @@ def _worker(state_id: str, inputs: dict[str, Any]) -> dict[str, Any]:
     raise KeyError(state_id)
 
 
+def test_tool_discovery_failure_degrades_not_faults(tmp_path: Any) -> None:
+    """A persistent outage of the best-effort tool_discovery worker degrades to
+    empty tool_results and the review still reaches terminal — it does NOT fault
+    the whole PR (the sentry iter1 failure mode)."""
+    def worker(state_id: str, inputs: dict[str, Any]) -> dict[str, Any]:
+        if state_id == "tool_discovery":
+            raise RateLimitError("claude timeout")  # persistent
+        return _worker(state_id, inputs)
+
+    def spec(unit: dict[str, Any], shared: dict[str, Any]) -> dict[str, Any]:
+        return {"id": unit["leaf_id"], "status": "completed",
+                "findings": [{"severity": "important", "file": (unit.get("files") or ["x.py"])[0],
+                              "line": 1, "title": f"bug {unit['leaf_id']}", "confidence": 0.9}]}
+
+    res = run_review({"project_root": str(tmp_path), "base": "B", "head": "H"},
+                     dispatch_worker=worker, dispatch_specialist=spec,
+                     max_workers=4, max_retries=1, base_backoff=0.0, sleep=lambda _s: None)
+    assert not res.faulted, res.fault  # degraded, not faulted
+    assert res.stats.degraded_workers >= 1
+    assert res.verdict in ("GO", "CONDITIONAL", "NO-GO")
+
+
 def test_run_review_drives_fsm_to_terminal(tmp_path: Any) -> None:
     def spec(unit: dict[str, Any], shared: dict[str, Any]) -> dict[str, Any]:
         return {"id": unit["leaf_id"], "status": "completed",

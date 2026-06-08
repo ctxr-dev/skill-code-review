@@ -65,6 +65,16 @@ class RunnerStats:
     min_concurrency_seen: int = 0
     max_concurrency_seen: int = 0
     coverage_floor_used: int = 0
+    degraded_workers: int = 0
+
+
+# Best-effort worker states: a transient outage degrades to a safe fallback
+# output and the review continues, rather than faulting the whole PR. Only
+# stages whose absence the downstream FSM tolerates belong here. tool_discovery
+# is explicitly best-effort (tools=silent skips missing toolchains anyway).
+_DEGRADABLE_WORKERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+    "tool_discovery": lambda _env: {"tool_results": []},
+}
 
 
 _FLOOR_PREFIXES = ("lang-", "fw-", "sec-", "footgun-", "orm-", "reliability-", "data-")
@@ -405,8 +415,14 @@ def run_review(
                     dispatch_worker, state_id, inputs, max_retries=max_retries,
                     base_backoff=base_backoff, sleep=sleep, stats=stats)
             except (RateLimitError, ContextOverflowError) as exc:
-                return RunResult(stats=stats, faulted=True,
-                                 fault=f"worker:{state_id}:{type(exc).__name__}:{exc}")
+                fallback = _DEGRADABLE_WORKERS.get(state_id)
+                if fallback is None:
+                    return RunResult(stats=stats, faulted=True,
+                                     fault=f"worker:{state_id}:{type(exc).__name__}:{exc}")
+                # Best-effort worker (e.g. tool_discovery): degrade, don't fault the
+                # whole review on a transient outage of a non-critical stage.
+                stats.degraded_workers += 1
+                outputs = fallback(env)
             outputs = _coverage_floor(state_id, inputs, outputs, env, stats)
 
         adv = engine_advance(fsm, ctx(), outputs)

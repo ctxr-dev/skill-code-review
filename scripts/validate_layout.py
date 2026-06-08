@@ -3,6 +3,7 @@
 
 Standalone (not part of the code_review package): the wiki SHAPE contract enforcer.
 Codes (mirror the eventual skill-llm-wiki build-driver):
+  LAYOUT-CONFIG     a pin rule is malformed (not exactly one matcher key)
   LAYOUT-UNPINNED   a leaf id matches no pin (and policy.unpinned == reject)
   LAYOUT-CONTRACT   frontmatter contract violation (required/enum/nonempty/forbid)
   LAYOUT-TAXONOMY   built wiki has a top-level dir not in the taxonomy (wiki mode)
@@ -39,6 +40,29 @@ class Finding:
 
 def _load_layout() -> dict:
     return yaml.safe_load(LAYOUT.read_text())
+
+
+def _check_pins(taxonomy: list[dict]) -> list[Finding]:
+    """Each pin rule must specify exactly one matcher: id | id_prefix | id_glob.
+
+    Mirrors the skill-llm-wiki build driver, which rejects multi-matcher rules
+    at load time. Allowing several keys in one rule makes precedence implicit
+    (category_for here, and ruleMatches there, would silently first-match), so
+    a malformed rule is a hard error in both validators.
+    """
+    out: list[Finding] = []
+    matchers = ("id", "id_prefix", "id_glob")
+    for cat in taxonomy:
+        for j, rule in enumerate(cat.get("pin", [])):
+            keys = [k for k in matchers if k in rule]
+            tgt = f"{cat['id']} pin[{j}]"
+            if not keys:
+                out.append(Finding("error", "LAYOUT-CONFIG", tgt,
+                                   "needs one of id / id_prefix / id_glob"))
+            elif len(keys) > 1:
+                out.append(Finding("error", "LAYOUT-CONFIG", tgt,
+                                   f"has {len(keys)} matchers ({', '.join(keys)}); use exactly one"))
+    return out
 
 
 def category_for(leaf_id: str, taxonomy: list[dict]) -> str | None:
@@ -141,6 +165,7 @@ def main() -> int:
     contract = layout.get("frontmatter_contract", {})
     cat_ids = {c["id"] for c in taxonomy}
     findings: list[Finding] = []
+    findings.extend(_check_pins(taxonomy))
 
     for f in _leaf_files(target):
         post = frontmatter.load(f)

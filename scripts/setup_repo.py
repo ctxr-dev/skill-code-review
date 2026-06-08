@@ -2,10 +2,11 @@
 """Materialize a benchmark PR's repo so `git diff BASE..HEAD` == the PR diff
 the competitors actually reviewed (the three-dot / merge-base diff).
 
-Approach (see OBSERVATIONS #8): the fork's baseRefOid drifts ahead, so we
-deepen the head branch by its PR-commit count and use BASE = head~n_commits
-(the branch point). We sanity-check the resulting file set against
-`gh pr diff --name-only`; on mismatch we deepen further, then flag it.
+Approach (see OBSERVATIONS #8): the fork's baseRefOid drifts ahead, so we compute
+the true branch point as `BASE = git merge-base(base_oid, head)` on a blobless
+clone (which carries the full commit/tree graph). We sanity-check the resulting
+file set against `gh pr diff --name-only`. `n_commits` (the PR's commit count) is
+recorded as metadata only — it is NOT used to select the base.
 
 Writes the effective diff base back into bench-index.json as `base_diff`
 (+ `n_commits`, `diff_ok`) so the driver passes the correct base.

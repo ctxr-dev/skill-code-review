@@ -129,6 +129,9 @@ def _check_contract(lid: str, meta: dict, contract: dict) -> list[Finding]:
 def main() -> int:
     report = "--report" in sys.argv
     wiki_idx = sys.argv.index("--wiki") if "--wiki" in sys.argv else -1
+    if wiki_idx >= 0 and wiki_idx + 1 >= len(sys.argv):
+        sys.stderr.write("usage: validate_layout.py [--wiki <dir>] [--report]  (--wiki needs a path)\n")
+        return 2
     wiki = Path(sys.argv[wiki_idx + 1]) if wiki_idx >= 0 else None
     target = wiki if wiki else (REPO / "reviewers.src")
 

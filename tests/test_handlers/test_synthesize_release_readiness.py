@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ctxr_skill_code_review.handlers import handle_synthesize_release_readiness
+from code_review.handlers import handle_synthesize_release_readiness
 
 
 def test_no_picks_all_gates_na_verdict_go(make_ctx) -> None:  # type: ignore[no-untyped-def]

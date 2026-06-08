@@ -30,8 +30,8 @@ from ctxr.fsm.core.engine import execute_inline
 from ctxr.fsm.core.inline_registry import InlineHandlerRegistry
 from ctxr.fsm.core.models import RunCtx
 
-from ctxr_skill_code_review.handlers import INLINE_HANDLERS
-from ctxr_skill_code_review.spec import SPEC_ID, fsm
+from code_review.handlers import INLINE_HANDLERS
+from code_review.spec import SPEC_ID, fsm
 
 
 def _simulated_worker_output_zero_picked(state_id: str) -> dict[str, Any]:

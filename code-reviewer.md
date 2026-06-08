@@ -7,16 +7,16 @@
 > producing un-auditable, non-deterministic, no-manifest reports.
 
 This skill is driven by an FSM declared in
-[`ctxr_skill_code_review/spec.py`](ctxr_skill_code_review/spec.py) and
+[`code_review/spec.py`](code_review/spec.py) and
 executed by [`ctxr-fsm`](https://github.com/ctxr-dev/fsm) (Python). The
 runtime contract is code:
 
 | Layer | File |
 |---|---|
-| State machine | [`ctxr_skill_code_review/spec.py`](ctxr_skill_code_review/spec.py) |
-| Inline-state handlers | [`ctxr_skill_code_review/handlers.py`](ctxr_skill_code_review/handlers.py) |
-| Worker prompts | [`ctxr_skill_code_review/workers/*.md`](ctxr_skill_code_review/workers/) |
-| Installer (registers spec + handlers) | [`ctxr_skill_code_review/install.py`](ctxr_skill_code_review/install.py) |
+| State machine | [`code_review/spec.py`](code_review/spec.py) |
+| Inline-state handlers | [`code_review/handlers.py`](code_review/handlers.py) |
+| Worker prompts | [`code_review/workers/*.md`](code_review/workers/) |
+| Installer (registers spec + handlers) | [`code_review/install.py`](code_review/install.py) |
 | Report shape (consumed by code) | [`report-format.md`](report-format.md) |
 | Gate predicates (consumed by code) | [`release-readiness.md`](release-readiness.md) |
 

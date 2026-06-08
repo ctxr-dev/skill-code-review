@@ -57,8 +57,8 @@ If adding a framework that the orchestrator doesn't yet recognise from manifests
 ## Before Every Commit
 
 ```bash
-uv run ruff check ctxr_skill_code_review/ tests/
-uv run mypy ctxr_skill_code_review/
+uv run ruff check code_review/ tests/
+uv run mypy code_review/
 uv run pytest
 ```
 

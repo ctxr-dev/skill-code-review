@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from ctxr_skill_code_review.handlers import (
+from code_review.handlers import (
     _enumerate_wiki_leaves,
     _evaluate_activation,
     _minimatch,
@@ -154,7 +154,7 @@ def test_handle_activate_leaves_handles_missing_wiki(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, make_ctx
 ) -> None:  # type: ignore[no-untyped-def]
     """A skill_root without reviewers.wiki/ returns an empty list, no crash."""
-    from ctxr_skill_code_review import handlers as h
+    from code_review import handlers as h
 
     monkeypatch.setattr(h, "_resolve_skill_root", lambda: tmp_path)
     ctx = make_ctx(

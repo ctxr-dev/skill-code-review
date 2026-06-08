@@ -1,8 +1,8 @@
 """One-shot installer for the skill-code-review FSM spec + inline handlers.
 
 The skill ships a Pydantic :class:`~ctxr.fsm.FsmSpec` in
-:mod:`ctxr_skill_code_review.spec` and a dict of inline-state callables
-in :mod:`ctxr_skill_code_review.handlers`. Both must be registered with
+:mod:`code_review.spec` and a dict of inline-state callables
+in :mod:`code_review.handlers`. Both must be registered with
 the local ctxr-fsm project DB BEFORE the first ``fsm.start_run`` call
 for this spec; otherwise the engine cannot resolve worker schemas or
 look up inline handlers at advance time.
@@ -11,7 +11,7 @@ look up inline handlers at advance time.
 the same spec body at the same version is a no-op) and the inline-handler
 registry layer (re-registration overwrites the existing entry with the
 same callable — semantically a no-op). The CLI entry
-``python -m ctxr_skill_code_review.install`` calls :func:`register` once
+``python -m code_review.install`` calls :func:`register` once
 and emits a small JSON envelope on stdout summarising what happened.
 """
 
@@ -26,9 +26,9 @@ from typing import Any
 from ctxr.fsm.core import get_default_registry
 from ctxr.fsm.sqlite import Project
 
-from ctxr_skill_code_review.handlers import INLINE_HANDLERS
-from ctxr_skill_code_review.spec import SPEC_ID, fsm
-from ctxr_skill_code_review.verifier_handler import install_verifier_handler
+from code_review.handlers import INLINE_HANDLERS
+from code_review.spec import SPEC_ID, fsm
+from code_review.verifier_handler import install_verifier_handler
 
 
 def _resolve_db_path(project_db: Path | str | None) -> Path:
@@ -147,7 +147,7 @@ def register(
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry point — ``python -m ctxr_skill_code_review.install``.
+    """CLI entry point — ``python -m code_review.install``.
 
     Reads no flags today; honours ``CTXR_FSM_DB`` from the environment.
     Prints the :func:`register` envelope as pretty-printed JSON for

@@ -19,7 +19,7 @@ required (currently the manifest writer's stable hashing — the user-
 facing report.json is pretty-printed with ``indent=2`` to match v2.5.1).
 
 The :data:`INLINE_HANDLERS` mapping at the bottom is what
-:mod:`ctxr_skill_code_review.install` hands to
+:mod:`code_review.install` hands to
 :meth:`~ctxr.fsm.InlineHandlerRegistry.register_many`.
 """
 
@@ -714,7 +714,7 @@ def _resolve_skill_root() -> Path:
     The .mjs port computed this via ``fileURLToPath(import.meta.url)``
     walking up two levels from the inline-state file. Python's
     ``__file__`` gives us the same fixpoint: this module lives at
-    ``ctxr_skill_code_review/handlers.py``; the skill root is its
+    ``code_review/handlers.py``; the skill root is its
     grandparent.
     """
     return Path(__file__).resolve().parent.parent

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from ctxr_skill_code_review.handlers import (
+from code_review.handlers import (
     _legacy_run_id_for,
     _run_dir_path,
     build_report_payload,

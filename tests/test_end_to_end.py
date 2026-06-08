@@ -26,8 +26,8 @@ from ctxr.fsm.core.engine import execute_inline
 from ctxr.fsm.core.inline_registry import InlineHandlerRegistry
 from ctxr.fsm.core.models import RunCtx
 
-from ctxr_skill_code_review.handlers import INLINE_HANDLERS
-from ctxr_skill_code_review.spec import SPEC_ID, fsm
+from code_review.handlers import INLINE_HANDLERS
+from code_review.spec import SPEC_ID, fsm
 
 
 def _simulated_worker_output(state_id: str) -> dict[str, Any]:
@@ -224,7 +224,7 @@ def test_pr4_plan_then_merge_seven_leaves_batch_size_three(tmp_path: Path) -> No
     """
     from ctxr.fsm.core import InlineContext
 
-    from ctxr_skill_code_review.handlers import (
+    from code_review.handlers import (
         handle_merge_specialist_outputs,
         handle_plan_specialist_batches,
     )
@@ -311,7 +311,7 @@ def test_fix_b_orchestrator_drains_25_leaf_dispatch_no_units_lost(
     """
     from ctxr.fsm.core import InlineContext
 
-    from ctxr_skill_code_review.handlers import (
+    from code_review.handlers import (
         handle_merge_specialist_outputs,
         handle_plan_specialist_batches,
     )
@@ -397,7 +397,7 @@ def test_fix_b_partial_drain_after_first_batch_raises_diagnostic(
     """
     from ctxr.fsm.core import InlineContext
 
-    from ctxr_skill_code_review.handlers import (
+    from code_review.handlers import (
         DispatchLoopExitedEarlyError,
         handle_merge_specialist_outputs,
         handle_plan_specialist_batches,
@@ -466,7 +466,7 @@ def test_pr4_huge_leaf_splits_into_subbatches(tmp_path: Path) -> None:
     """One leaf with 200 files at the default token budget -> >= 2 sub-batches."""
     from ctxr.fsm.core import InlineContext
 
-    from ctxr_skill_code_review.handlers import handle_plan_specialist_batches
+    from code_review.handlers import handle_plan_specialist_batches
 
     files = [f"src/big/f{i}.py" for i in range(200)]
     picked = [

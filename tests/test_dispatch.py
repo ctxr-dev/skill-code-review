@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from ctxr_skill_code_review.dispatch import (
+from code_review.dispatch import (
     _apply_rank_decisions,
     _compact_inputs,
     _index_by_id,
@@ -16,7 +16,7 @@ from ctxr_skill_code_review.dispatch import (
     _route_tier,
     _strip_nulls,
 )
-from ctxr_skill_code_review.runner import ContextOverflowError, RateLimitError
+from code_review.runner import ContextOverflowError, RateLimitError
 
 
 def test_strip_nulls_drops_null_optional_fields() -> None:

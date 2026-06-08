@@ -57,7 +57,7 @@ LlmDispatcher = Callable[[str, dict[str, Any]], str]
 The orchestrator (or test harness) installs an instance of this type
 either by setting the ``CTXR_LLM_VERIFIER_DISPATCH`` env var to a
 dotted ``package.module:callable`` path, or by importing
-:mod:`ctxr_skill_code_review.verifier_handler` and assigning
+:mod:`code_review.verifier_handler` and assigning
 :data:`_DISPATCHER` directly. The returned string MUST be parseable as
 JSON matching ``{"verdict": "passed"|"rejected", "reason": str}``.
 """
@@ -115,7 +115,7 @@ def _get_renderer() -> PromptRenderer:
 def load_verifier_prompt(name: str) -> str:
     """Read a verifier prompt ``.md`` from the bundled :mod:`verifiers` package."""
     return (
-        resources.files("ctxr_skill_code_review.verifiers")
+        resources.files("code_review.verifiers")
         .joinpath(f"{name}.md")
         .read_text(encoding="utf-8")
     )

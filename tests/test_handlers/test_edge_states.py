@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ctxr_skill_code_review.handlers import (
+from code_review.handlers import (
     handle_short_circuit_exit,
     handle_stage_a_empty,
 )

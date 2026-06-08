@@ -39,7 +39,7 @@ satisfy) applied to skill startup.
 Then register this skill's spec + inline handlers once per project:
 
 ```bash
-uv run python -m ctxr_skill_code_review.install
+uv run python -m code_review.install
 ```
 
 The installer prints a small JSON envelope summarising the result:
@@ -269,7 +269,7 @@ commit. To watch these in real time:
 
 When the same worker state hits the consecutive-rejection cap
 (currently **3**, defined as
-`ctxr_skill_code_review.handlers._VERIFIER_REJECTION_LIMIT`), the
+`code_review.handlers._VERIFIER_REJECTION_LIMIT`), the
 orchestrator drives the run into the inline `verifier_stuck` state.
 That state emits a `degraded_run` envelope which
 `synthesize_release_readiness` consumes to lower the verdict (a
@@ -289,7 +289,7 @@ impasse as a yellow chip on the affected state's Sheet.
 
 ## Programmatic runner (production orchestration)
 
-`ctxr_skill_code_review/runner.py::run_review(args, dispatch_worker, dispatch_specialist, ...)`
+`code_review/runner.py::run_review(args, dispatch_worker, dispatch_specialist, ...)`
 drives the FSM in-process and dispatches the per-leaf specialists through a
 **regulated, fault-tolerant thread pool** — the home for parallelism + resilience:
 

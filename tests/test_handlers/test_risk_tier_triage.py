@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ctxr_skill_code_review.handlers import handle_risk_tier_triage
+from code_review.handlers import handle_risk_tier_triage
 
 
 def test_trivial_single_file_small_diff_no_risk(make_ctx) -> None:  # type: ignore[no-untyped-def]

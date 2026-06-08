@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ctxr_skill_code_review.handlers import handle_collect_findings
+from code_review.handlers import handle_collect_findings
 
 
 def test_empty_inputs(make_ctx) -> None:  # type: ignore[no-untyped-def]

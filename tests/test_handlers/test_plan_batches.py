@@ -21,7 +21,7 @@ from typing import Any
 
 from ctxr.fsm.core import InlineContext
 
-from ctxr_skill_code_review.handlers import handle_plan_specialist_batches
+from code_review.handlers import handle_plan_specialist_batches
 
 
 def _ctx(

@@ -14,8 +14,8 @@ on staged Python files.
 ## Before every commit
 
 ```bash
-uv run ruff check ctxr_skill_code_review/ tests/
-uv run mypy ctxr_skill_code_review/
+uv run ruff check code_review/ tests/
+uv run mypy code_review/
 uv run pytest
 ```
 
@@ -81,7 +81,7 @@ Adding a framework that the orchestrator doesn't yet recognise from manifests re
 ### FSM authoring
 
 The orchestrator's flow is defined as a Pydantic `FsmSpec` literal at
-[`ctxr_skill_code_review/spec.py`](ctxr_skill_code_review/spec.py).
+[`code_review/spec.py`](code_review/spec.py).
 The engine that consumes this spec lives in the standalone
 [`ctxr-fsm`](https://github.com/ctxr-dev/fsm) Python package,
 referenced from `pyproject.toml::dependencies` as
@@ -108,9 +108,9 @@ the sources block in `pyproject.toml` (e.g. drop the
    correct position (entry state is the first list element only by
    convention; `entry=` controls the actual entry id).
 3. If the state is `inline=…`, add the handler callable to
-   `ctxr_skill_code_review/handlers.py` and register it in
+   `code_review/handlers.py` and register it in
    `INLINE_HANDLERS`. If it is a worker, drop a new prompt template
-   under `ctxr_skill_code_review/workers/<role>.md`.
+   under `code_review/workers/<role>.md`.
 4. Run `uv run pytest tests/test_spec.py` — the spec module's
    structural tests catch missing handler registrations, malformed
    transitions, and shape regressions.
@@ -125,8 +125,8 @@ whole tree.
 
 ```bash
 uv run pytest tests/                          # spec + handler + install + e2e tests
-uv run ruff check ctxr_skill_code_review/ tests/
-uv run mypy ctxr_skill_code_review/
+uv run ruff check code_review/ tests/
+uv run mypy code_review/
 ```
 
 These three pass before any commit. Source-corpus validation for
@@ -142,7 +142,7 @@ code-reviewer.md                      Runtime-contract stub (redirect to SKILL.m
 release-readiness.md                  8-gate predicate reference (consumed by handlers, not LLMs)
 report-format.md                      Report contract (consumed by handlers, not LLMs)
 docs/code-reviewer-design.md          Eleven-step orchestrator design rationale (humans only)
-ctxr_skill_code_review/
+code_review/
   spec.py                             Pydantic FsmSpec literal (state machine + schemas)
   handlers.py                         9 deterministic inline handlers + report renderer
   install.py                          Idempotent register() one-shot + CLI entry

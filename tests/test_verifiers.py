@@ -30,9 +30,9 @@ from ctxr.fsm.core.verifier import (
     set_verifier_handler,
 )
 
-from ctxr_skill_code_review import verifier_handler as vh_module
-from ctxr_skill_code_review.spec import fsm
-from ctxr_skill_code_review.verifier_handler import (
+from code_review import verifier_handler as vh_module
+from code_review.spec import fsm
+from code_review.verifier_handler import (
     install_verifier_handler,
     llm_verifier_handler,
     load_verifier_prompt,

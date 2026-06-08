@@ -63,6 +63,6 @@ benchmark run, optimization, or fix changes how the skill works or how it compar
 
 ## Before any commit
 
-`uv run ruff check ctxr_skill_code_review/ tests/` · `uv run mypy
-ctxr_skill_code_review/` · `uv run pytest` — all green. Corpus changes additionally
+`uv run ruff check code_review/ tests/` · `uv run mypy
+code_review/` · `uv run pytest` — all green. Corpus changes additionally
 require the `skill-llm-wiki` validate pass and the benchmark check above.

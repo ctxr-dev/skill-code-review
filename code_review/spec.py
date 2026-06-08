@@ -6,9 +6,9 @@ v2 behaviour 1:1:
 
 * 5 worker states (``scan_project``, ``tree_descend``, ``llm_trim``,
   ``tool_discovery``, ``dispatch_specialists``) dispatch sub-agents
-  with the prompt templates under :mod:`ctxr_skill_code_review.workers`.
+  with the prompt templates under :mod:`code_review.workers`.
 * 9 inline states run server-side via registered Python callables in
-  :mod:`ctxr_skill_code_review.handlers` (``risk_tier_triage``,
+  :mod:`code_review.handlers` (``risk_tier_triage``,
   ``activate_leaves``, ``collect_findings``, ``verify_coverage``,
   ``synthesize_release_readiness``, ``write_run_directory``,
   ``emit_stdout``, ``short_circuit_exit``, ``stage_a_empty``).
@@ -22,7 +22,7 @@ predicate-DSL expressions the Python engine evaluates
 mechanical and documented inline next to each ``_predicate(...)`` call.
 
 This module is import-safe — registering the spec with a Project
-requires a separate call (see :func:`ctxr_skill_code_review.install.register`).
+requires a separate call (see :func:`code_review.install.register`).
 """
 
 from __future__ import annotations
@@ -136,7 +136,7 @@ def _load_worker_prompt(name: str) -> str:
     installed (editable, wheel, sdist).
     """
     return (
-        resources.files("ctxr_skill_code_review.workers")
+        resources.files("code_review.workers")
         .joinpath(f"{name}.md")
         .read_text(encoding="utf-8")
     )
@@ -149,7 +149,7 @@ def _load_verifier_prompt(name: str) -> str:
     verifier templates declared on each worker State's ``verifier`` field.
     """
     return (
-        resources.files("ctxr_skill_code_review.verifiers")
+        resources.files("code_review.verifiers")
         .joinpath(f"{name}.md")
         .read_text(encoding="utf-8")
     )
@@ -768,7 +768,7 @@ def _verifier_stuck_schema() -> ResponseSchema:
     """PR5 — schema for the verifier_stuck impasse record.
 
     Emitted when a worker state has rejected the verifier panel
-    :data:`ctxr_skill_code_review.handlers._VERIFIER_REJECTION_LIMIT`
+    :data:`code_review.handlers._VERIFIER_REJECTION_LIMIT`
     times in a row. Carries the stuck state id + rejection count so the
     audit trail and the fsm UI's per-state Sheet can render exactly
     which gate gave up. ``degraded_run`` flips True so

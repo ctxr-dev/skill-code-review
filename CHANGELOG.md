@@ -73,7 +73,7 @@ This is a **major** breaking change. The two breaking facets:
 
 1. **Runtime dependency.** Consumers no longer install `@ctxr/fsm`
    from npm. They install `ctxr-fsm` from PyPI (a Python package) and
-   run `python -m ctxr_skill_code_review.install` once per project to
+   run `python -m code_review.install` once per project to
    wire the spec + handlers into the local `.ctxr-fsm/fsm.db`.
 2. **Invocation shape.** The legacy `--start` / `--continue` shell
    loop, the `scripts/run-review.mjs` entrypoint, the `.fsmrc.json`
@@ -90,15 +90,15 @@ byte-identical to v2.5.1 for the same fixture inputs.
 - `pyproject.toml` declaring `ctxr-skill-code-review` (PyPI name); v3
   dev sibling-links `ctxr-fsm` from `../fsm/` per Principle 2 (manual
   publish + file: sibling).
-- `ctxr_skill_code_review/spec.py` — Pydantic `FsmSpec` literal
+- `code_review/spec.py` — Pydantic `FsmSpec` literal
   (15 states + 8 worker schemas + 9 inline states + 1 terminal).
-- `ctxr_skill_code_review/handlers.py` — 9 deterministic Python
+- `code_review/handlers.py` — 9 deterministic Python
   inline handlers ported from `scripts/inline-states/*.mjs` (~1,600 LOC
   combined Node → ~1,200 LOC Python, including the report-renderer).
-- `ctxr_skill_code_review/workers/` — the 5 worker prompt `.md` files
+- `code_review/workers/` — the 5 worker prompt `.md` files
   bundled inside the wheel via `importlib.resources`.
-- `ctxr_skill_code_review/install.py` — idempotent `register()` +
-  `python -m ctxr_skill_code_review.install` CLI entry.
+- `code_review/install.py` — idempotent `register()` +
+  `python -m code_review.install` CLI entry.
 - `tests/` — pytest suite (73 tests) covering spec structure, every
   inline handler, the install one-shot, and an end-to-end run through
   the engine with simulated worker outputs.
@@ -111,7 +111,7 @@ byte-identical to v2.5.1 for the same fixture inputs.
   `assert-fresh-run.mjs`, `build-index-src.mjs`,
   `validate-body-shape.mjs`, `validate-dimensions.mjs`).
 - `fsm/code-reviewer.fsm.yaml` (content ported to `spec.py`).
-- `fsm/workers/*.md` (moved to `ctxr_skill_code_review/workers/`,
+- `fsm/workers/*.md` (moved to `code_review/workers/`,
   unchanged in body).
 - `.fsmrc.json` (replaced by the `ctxr-fsm spec register` discipline
   + the always-on `.skill-code-review` storage-root convention).

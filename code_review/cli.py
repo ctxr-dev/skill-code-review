@@ -2,7 +2,7 @@
 pool) with the headless-``claude`` dispatch backend. Orchestration lives in
 runner.py; prompts live in workers/*.md; this only wires them together.
 
-    python -m ctxr_skill_code_review.cli review \
+    python -m code_review.cli review \
         --repo <path> --base <sha> --head <sha> --run-dir <out> [--max-workers 8]
 """
 from __future__ import annotations

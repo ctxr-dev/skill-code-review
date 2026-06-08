@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ctxr_skill_code_review.runner import (
+from code_review.runner import (
     ContextOverflowError,
     RateLimitError,
     RunnerStats,

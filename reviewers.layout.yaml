@@ -1,0 +1,119 @@
+# reviewers.layout.yaml — the SHAPE CONTRACT for reviewers.wiki.
+#
+# This file DRIVES the skill-llm-wiki build (`build --layout-config`): leaf
+# placement is a deterministic projection of leaf `id` through the pins below, not
+# emergent clustering. Adding a leaf is then a one-file diff. It is ALSO the
+# contract the standalone validator (scripts/validate_layout.py) enforces in CI.
+#
+# Rules:
+#  - Every leaf id maps to exactly one category via the first matching pin
+#    (id > id_prefix > id_glob; taxonomy order = precedence).
+#  - `unpinned: reject` => a leaf matching no pin fails validation/build. Keep pin
+#    coverage complete (the validator reports any unpinned id).
+#  - Category dir name = the category `id`; `purpose` becomes its index focus
+#    (stable, never an emergent slug).
+layout_version: 1
+
+policy:
+  max_depth: 2              # root -> category -> (optional) subcategory -> leaf
+  fanout_target: 8         # advisory landing size for any clustering within a category
+  fanout_hard_max: 34      # validator/build hard-fail if any node exceeds this
+  unpinned: reject         # every leaf MUST match a pin
+  on_unknown_leaf: error
+
+# Frontmatter contract every leaf must satisfy (enforced independently of placement).
+# Until the v2 backfill lands (Phase 4) the validator runs these in --report mode.
+frontmatter_contract:
+  leaf:
+    required: [id, type, focus, covers, dimensions, audit_surface, languages, tags, activation]
+    enums:
+      type: [primary, overlay, universal]
+      dimensions: [architecture, correctness, documentation, performance, readability, security, tests]
+    require_nonempty: [covers, tags, dimensions, audit_surface, languages]
+    forbid:
+      activation.file_globs: ["**/*", "*", "**"]   # specific globs only; use the all-code brace glob
+
+# ── Fixed taxonomy (26 categories; every leaf pinned by id prefix) ──────────────
+taxonomy:
+  - id: languages
+    purpose: "Language-specific bugs, idioms, and footguns (per programming language)."
+    pin: [{id_prefix: "lang-"}]
+  - id: frameworks
+    purpose: "Framework-specific pitfalls (web, backend, UI, ORM, and app frameworks)."
+    pin: [{id_prefix: "fw-"}]
+  - id: security
+    purpose: "Vulnerability classes, authn/authz, secrets, cryptography, web-session safety."
+    pin: [{id_prefix: "sec-"}, {id_prefix: "crypto-"}, {id_prefix: "cookie-"}]
+  - id: compliance-privacy
+    purpose: "Regulatory and privacy obligations (GDPR/PCI/HIPAA, PII/PHI handling, consent)."
+    pin: [{id_prefix: "compliance-"}]
+  - id: design-patterns
+    purpose: "Correct application of design patterns (creational, structural, behavioral)."
+    pin: [{id_prefix: "pattern-"}]
+  - id: antipatterns-smells
+    purpose: "Design anti-patterns and code smells that signal latent defects or rot."
+    pin: [{id_prefix: "antipattern-"}, {id_prefix: "smell-"}]
+  - id: architecture
+    purpose: "Architectural styles, boundaries, and domain-driven design structure."
+    pin: [{id_prefix: "arch-"}, {id_prefix: "ddd-"}]
+  - id: principles
+    purpose: "Engineering principles (SOLID, DRY, KISS, fail-fast, separation of concerns)."
+    pin: [{id_prefix: "principle-"}]
+  - id: domains
+    purpose: "Vertical-domain reviewers (fintech, healthcare, e-commerce, etc.)."
+    pin: [{id_prefix: "domain-"}]
+  - id: correctness-footguns
+    purpose: "Language-agnostic correctness footguns (null/time/money/off-by-one/encoding)."
+    pin: [{id_prefix: "footgun-"}]
+  - id: concurrency
+    purpose: "Concurrency and parallelism defects (races, deadlocks, atomicity, ordering)."
+    pin: [{id_prefix: "conc-"}]
+  - id: reliability
+    purpose: "Resilience and failure handling (timeouts, retries, circuit breakers, idempotency)."
+    pin: [{id_prefix: "reliability-"}]
+  - id: data-stores
+    purpose: "Databases, ORMs, and schema migrations (queries, indexing, transactions)."
+    pin: [{id_prefix: "db-"}, {id_prefix: "orm-"}, {id_prefix: "migration-"}]
+  - id: data-architecture
+    purpose: "Data modeling, partitioning, streaming, and pipeline architecture."
+    pin: [{id_prefix: "data-"}]
+  - id: cloud
+    purpose: "Cloud-provider services and managed-resource configuration (AWS/GCP/Azure)."
+    pin: [{id_prefix: "cloud-"}]
+  - id: infrastructure
+    purpose: "Infrastructure-as-code, Kubernetes, and container configuration."
+    pin: [{id_prefix: "iac-"}, {id_prefix: "k8s-"}, {id_prefix: "container-"}]
+  - id: cicd-build
+    purpose: "CI/CD pipelines, build systems, release, and pull-request hygiene."
+    pin: [{id_prefix: "cicd-"}, {id_prefix: "ci-"}, {id_prefix: "build-"}, {id_prefix: "pr-"}]
+  - id: frontend
+    purpose: "Frontend UX, accessibility, i18n, browser, graphics, and rendering."
+    pin: [{id_prefix: "fe-"}, {id_prefix: "a11y-"}, {id_prefix: "i18n-"}, {id_prefix: "xr-"},
+          {id_prefix: "browser-"}, {id_prefix: "graphics-"}, {id_prefix: "game-"}]
+  - id: mobile-platform
+    purpose: "Mobile, embedded, OS-level, and WASM platform concerns."
+    pin: [{id_prefix: "mob-"}, {id_prefix: "os-"}, {id_prefix: "embedded-"}, {id_prefix: "wasm-"}]
+  - id: ai-ml
+    purpose: "AI/ML and LLM application concerns (prompts, eval, data, agents, safety)."
+    pin: [{id_prefix: "ai-"}]
+  - id: testing
+    purpose: "Test strategy, coverage, flakiness, and QA discipline."
+    pin: [{id_prefix: "test-"}, {id_prefix: "qa-"}]
+  - id: observability
+    purpose: "Metrics, logging, tracing, alerting, analytics, experimentation, incidents."
+    pin: [{id_prefix: "obs-"}, {id_prefix: "analytics-"}, {id_prefix: "experimentation-"},
+          {id_prefix: "incident-"}, {id_prefix: "feature-"}]
+  - id: performance
+    purpose: "Performance and efficiency (hot paths, allocation, caching, complexity)."
+    pin: [{id_prefix: "perf-"}]
+  - id: api-networking
+    purpose: "API design, networking, messaging, email, notifications, and edge."
+    pin: [{id_prefix: "api-"}, {id_prefix: "net-"}, {id_prefix: "email-"}, {id_prefix: "notification-"},
+          {id_prefix: "search-"}, {id_prefix: "edge-"}, {id_prefix: "event-"}]
+  - id: documentation
+    purpose: "Documentation, comments, changelogs, and conventional commit hygiene."
+    pin: [{id_prefix: "doc-"}, {id_prefix: "conventional-"}, {id_prefix: "author-"}]
+  - id: tooling
+    purpose: "External tooling, modernization, glue/integration, CLIs, licensing, artifacts."
+    pin: [{id_prefix: "tool-"}, {id_prefix: "modern-"}, {id_prefix: "glue-"}, {id_prefix: "cli-"},
+          {id_prefix: "licensing-"}, {id_prefix: "export-"}, {id_prefix: "jupyter-"}, {id_prefix: "binary-"}]

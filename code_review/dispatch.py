@@ -1,4 +1,4 @@
-"""Agent-agnostic dispatch backends for :mod:`ctxr_skill_code_review.runner`.
+"""Agent-agnostic dispatch backends for :mod:`code_review.runner`.
 
 The runner is model-agnostic; this wires the per-worker / per-specialist LLM call
 to whatever agent the user has — **Claude Code, Codex, Cursor, or a raw API** —
@@ -49,7 +49,7 @@ _OUTPUT_RULE = (
 
 
 def _load_prompt(role: str) -> str:
-    return resources.files("ctxr_skill_code_review.workers").joinpath(f"{role}.md").read_text(encoding="utf-8")
+    return resources.files("code_review.workers").joinpath(f"{role}.md").read_text(encoding="utf-8")
 
 
 def _raise_for_signal(text: str) -> None:

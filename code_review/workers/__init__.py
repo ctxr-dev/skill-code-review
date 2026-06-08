@@ -4,7 +4,7 @@ This subpackage exists purely so :func:`importlib.resources.files`
 can resolve the `.md` prompt files at runtime regardless of how the
 package was installed (editable, wheel, sdist). The module itself
 intentionally exposes no public API; consumers should call
-:func:`ctxr_skill_code_review.spec._load_worker_prompt` to fetch a
+:func:`code_review.spec._load_worker_prompt` to fetch a
 prompt body by name.
 """
 

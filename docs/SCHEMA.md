@@ -23,7 +23,7 @@ activation:                         # how the orchestrator decides to load this 
   file_globs: ["**/*.py", ...]      # SPECIFIC globs only (see forbidden globs below)
   keyword_matches: [...]
   structural_signals: [...]
-  escalation_from: [<reviewer-ids>] # escalation-only leaves
+  escalation_from: [<leaf-ids>]     # fixed-point chain: also fire when a listed leaf activated
 tools:                              # OPTIONAL external linters / SAST
   - name: <tool-name>
     purpose: <what it checks>        # required when tools[] is present

@@ -1,13 +1,16 @@
 #!/usr/bin/env python
-"""Build a per-PR judge input from the NEW product-runner `prod` reviews.
+"""Build a per-PR judge input from a product-runner review of one run-id.
 
-Candidates come from runs/<pr>/prod/.skill-code-review/**/report.json (the
-real product runner output). Emits:
+Usage: build_judge_input_prod.py <pr_id> <run_id>   (run_id e.g. prod | iter1)
+Candidates come from that run's report via the sharded layout
+`paths.run_dir(run_id, pr_id)/.skill-code-review/**/report.json`
+(tmp/runs/<run-id>/<ab>/<pr>/...). Emits:
   - skill-prod          : every issue (honest, FP-heavy headline)
   - skill-prod-primary  : issues flagged primary=True (rank-stage selectivity)
   - skill-prod-scoped   : correctness/security leaves at critical|important
 Competitor candidate sets are copied from the committed Opus-4.5 candidates so
-score.py compares apples-to-apples against the same judge.
+score.py compares apples-to-apples against the same judge. Output goes to
+`paths.judge_input_path(run_id, pr_id)`.
 """
 from __future__ import annotations
 

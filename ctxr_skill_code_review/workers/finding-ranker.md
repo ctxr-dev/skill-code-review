@@ -41,8 +41,29 @@ For every finding, emit ONE decision object keyed by its index `i`:
    refactor or config. Pure maintainability/style is LOW even if valid.
 
 2. **Mark `primary`** = `defect_confidence >= primary_threshold` (default 0.75;
-   read `args.primary-threshold` if present). Primary findings are the
-   block-worthy lead set; the rest remain in the report as advisory.
+   read `args.primary-threshold` if present). Primary is the BLOCK-THIS-PR lead
+   set — model a senior reviewer who will only hard-block on the few defects that
+   genuinely must be fixed before merge. Be deliberately selective:
+
+   - Reserve HIGH confidence (>= threshold → primary) for a defect that produces
+     **demonstrably wrong behavior, a crash, data loss, or an exploitable security
+     hole on an input the changed code will actually receive** — i.e. THE bug(s) of
+     this PR. A concrete failing input or a definite contract/behavior break.
+   - Push to MEDIUM (0.5-0.7, NOT primary) the findings that are *real but
+     secondary*: defensive hardening against unlikely inputs, missing-encoding /
+     missing-parameter / missing-validation that the surrounding system or provider
+     tolerates today, added-error-path robustness, "no test / no justification /
+     magic number" observations, and perf concerns without evidence of a hot path
+     at real scale. These stay in the report as advisory — you are demoting, not
+     dropping them.
+   - **Selectivity self-check:** real PRs carry ~1-4 block-worthy defects. If you
+     marked more than ~4 primary, you are being too generous: re-rank and keep
+     primary only for the most certain, highest-impact ones; demote the rest to
+     advisory. Quantity of primaries is a precision cost — spend it sparingly.
+   - Never demote a CONCRETE correctness/security/data-loss bug just because it is
+     an edge case (a `KeyError` on a missing key, a null-deref on an unset state,
+     a wrong row deleted) — those are exactly what blocks a PR. Edge-ness lowers
+     neither severity nor primary status for a concrete defect.
 
 3. **Adjudicate residual duplicates (deduper role).** The collector already merged
    exact-location and high-similarity duplicates, but SUSPECTED duplicates may

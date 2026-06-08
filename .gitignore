@@ -30,3 +30,6 @@ build/
 # logs
 logs
 .ctxr-fsm
+
+# Benchmark harness (scr-benchmark-optimizer): data + measurement scratch, never committed.
+tmp/

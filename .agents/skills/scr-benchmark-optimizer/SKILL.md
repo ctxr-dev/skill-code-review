@@ -1,152 +1,211 @@
 ---
 name: scr-benchmark-optimizer
-version: 1.0.0
+version: 2.0.0
 description: >
-  Self-improvement loop for skill-code-review: benchmark it against competitors
-  on the open Greptile/Martian code-review benchmark, diagnose recall/precision
-  losses, and apply PROVEN mechanical optimizations to the FSM + reviewers until
-  it sits on (or above) the precision-recall frontier — high bug coverage AND low
-  noise. Re-runnable across many iterations; every run is a versioned experiment.
+  Self-improvement loop for skill-code-review: benchmark it against competing AI
+  code reviewers on the open Greptile/Martian benchmark, diagnose recall/precision
+  losses, and apply PROVEN optimizations to the FSM, dispatch, and reviewer prompts
+  until it sits on (or above) the precision-recall frontier — high bug coverage AND
+  low noise. Reviews run through the PRODUCT runner (the Python FSM + adaptive
+  ThreadPoolExecutor), never a throwaway harness. Every run is a versioned
+  experiment; never stop on a regression; never restructure reviewers.wiki without
+  human confirmation.
 audience: ai-agents
 when_to_use: >
   Use whenever you want to measure or improve skill-code-review's bug-finding
-  quality vs competitors, after changing reviewers/handlers/prompts, or to
+  quality vs competitors, after changing reviewers/handlers/dispatch/prompts, or to
   continue the optimization loop from the last versioned experiment.
 ---
 
 # scr-benchmark-optimizer
 
 The discipline that keeps `skill-code-review` measurably better than competing AI
-code reviewers. It is a closed loop: **measure → diagnose → improve (mechanically)
-→ re-measure → record a versioned experiment → compare**. Never stop on a
-regression; never apply an unproven heuristic; never change `reviewers.wiki`
-structure without explicit human confirmation.
+code reviewers. A closed loop: **measure (via the product) → judge consistently →
+diagnose → improve → re-measure → record a versioned experiment → compare.** Never
+stop on a regression; never apply an unproven heuristic; never change the SET or
+STRUCTURE of `reviewers.wiki` without explicit human confirmation.
 
-## The target (what "winning" means)
+## The benchmark and what "winning" means
 
-The open benchmark (`withmartian/code-review-benchmark`, 50 PRs / 5 repos / ~136
-human golden bugs) scores every finding that does NOT match a golden bug as a
-false positive. So the goal is the **precision-recall frontier**: catch the bugs
-(recall) while emitting few non-bug findings (precision). Land **between the
-noisiest competitor and the most accurate** — beat the noisy engines (CodeRabbit,
-Greptile, Copilot, Bugbot) on BOTH axes, and close on the leader (Cubic).
+`withmartian/code-review-benchmark` (MIT): 50 bug-fix PRs across 5 repos
+(Sentry/py, Grafana/go, Cal.com/ts, Discourse/rb, Keycloak/java), ~136
+human-verified golden comments, and committed competitor candidate sets judged by
+three models. The judge rule: a finding is a **true positive** only if it matches a
+golden; **every non-golden finding is a false positive** (a deliberately harsh
+precision metric). So the goal is the **precision-recall frontier**: catch the
+goldens (recall) while emitting few non-golden findings (precision).
 
-Baseline competitors (validated vs the committed Opus-4.5 judge):
-Cubic 0.91/0.77 (F1 0.83) · Macroscope 0.45/0.83 · Bugbot 0.55/0.43 ·
-CodeRabbit 0.64/0.35 · Copilot 0.55/0.30 · Greptile-v4-1 0.45/0.31.
+**The real bar is the FULL 50, not a sub-slice.** Committed full-50 leaderboard
+(Opus-4.5 judge), top tools:
 
-Current skill standing (baked, 5-PR pilot): **recall 0.818 / precision 0.692 /
-F1 0.75** — dominates CodeRabbit, Greptile, Copilot, Bugbot; beats Macroscope on
-F1; at the high-precision setting it is on the frontier (precision > Cubic's).
-The remaining gap to Cubic is **recall** (2 of 11 goldens were not found by any
-specialist = reviewer COVERAGE, not noise).
+| tool | recall | precision | F1 |
+|---|---|---|---|
+| **cubic-v2** | 0.69 | 0.56 | **0.62** |
+| qodo-extended-v2 | 0.61 | 0.55 | 0.58 |
+| augment | 0.61 | 0.47 | 0.54 |
+| macroscope | 0.44 | 0.48 | 0.46 |
+| bugbot | 0.44 | 0.47 | 0.45 |
+| greptile-v4-1 | 0.48 | 0.40 | 0.44 |
+| coderabbit (full) | ~0.40 | ~0.35 | ~0.40 |
 
-## The harness (gitignored, under `ctxr-dev/tmp/`)
+**Cubic is the leader at F1 0.62 — and it is NOT a precision wizard:** ~3.5
+findings/PR (mid-pack), and it carries false positives too. Its edge is *framing
+accuracy* on the golden distribution. Beating "all competitors" means **F1 > 0.62
+on the full 50**, on the frontier (don't trade all recall for precision).
 
-- `bench/` — clone of the benchmark. `bench-index.json` — 50 PRs with the
-  **merge-base** diff (NEVER use `baseRefOid..head`; it includes drift — see
-  OBSERVATIONS #8). `setup_repo.py` rebuilds a PR's repo at the correct base.
-- `driver/driver.py` — resumable IN-PROCESS FSM driver (engine + real inline
-  handlers; no MCP cosignature friction). `review_workflow.js` drives a full
-  review per PR with per-leaf parallel specialists + model routing.
-- `driver/optimize_workflow.js` (label TP/FP + golden-blind defect-score),
-  `sweep.py` / `dedup_sweep.py` (threshold sweep, embedding dedup),
-  `analyze.py` (diagnose recall/precision losses), `rank_workflow.js`
-  (LLM dedup+rank), `judge_workflow.js` (one consistent judge), `score.py`.
-- `embed/embed.mjs` — Xenova (`all-mpnet-base-v2`) embedder; used for finding
-  dedup and (reserved) fast wiki routing.
-- `experiments/` — **versioned experiment MD files** (`exp.py record|compare`),
-  YAML frontmatter carries the headline stats so you compare WITHOUT reading
-  bodies; bodies preserve full detail for deep debugging.
-- `OBSERVATIONS.md` — every bug/friction/divergence with a ✅/🛠️/⏳/➖ status board.
-- `results/REPORT.md` — the current leaderboard + analysis.
+> Do NOT chase the 5-PR pilot number. The pilot (one PR/repo) is a **Cubic-favorable
+> slice** where Cubic scores ~0.83; the full 50 is the honest 0.62. Optimize for the
+> full set.
+
+## Current standing (measured, honest)
+
+Reviews run through the product runner with `--backend claude`. Measured on the
+**5-PR pilot** (small, noisy, Cubic-favorable):
+
+- baseline → **iter1**: F1 0.46 → **0.64** (precision 0.33 → 0.57, recall held 0.73)
+  via the Cubic-conservative ranker + general specialist recall heuristics.
+- iter2/iter3: principled refinements (lost-update = primary; observability defect =
+  primary; distinct null-deref findings) net-flat on the pilot — **the 5-PR signal is
+  noise-bound** (ranker is stochastic; run-to-run F1 swings ±0.05-0.1, rivalling the
+  tuning deltas).
+- Specialist **recall ceiling 0.82** (9/11 goldens found); skill-prod-primary is #2
+  behind Cubic and ahead of coderabbit/copilot/greptile/bugbot.
+
+**The full-50 number is the open question** — the pilot is too small/favorable to
+declare "beat all". A full-50 run is gated on human go-ahead (it crosses the locked
+5-repo pilot scope and is token-heavy).
+
+## The harness (gitignored, under `skill-code-review/tmp/`)
+
+The benchmark harness lives INSIDE the skill repo at `skill-code-review/tmp/`
+(gitignored) — it travels with the skill it benchmarks. Reviews are driven by the
+**product**, not a throwaway orchestrator. The tmp tree holds only benchmark DATA
+and MEASUREMENT scripts, and every output dir is **nested/sharded** (the product's
+`.skill-code-review/<yyyy>/<mm>/<dd>/<ab>/<rest5>/` tree + content-addressed
+`specialists/<ab>/<rest5>/`) so no single directory accumulates thousands of
+entries (filesystem bottleneck). Contents:
+
+- `bench/` — clone of the benchmark. `bench-index.json` — per-PR metadata with the
+  **merge-base** diff (`base_diff`): use `git merge-base(base,head)`, NEVER
+  `baseRefOid..head` (it includes drift — OBSERVATIONS #8). `driver/setup_repo.py`
+  materialises a PR's repo at the correct base.
+- `runs/<pr>/<variant>/` — one run dir per (PR, variant); each review writes
+  `.skill-code-review/<date>/<shard>/report.json` there.
+- `driver/build_judge_input_prod.py <pr> <variant>` — extract candidates from a run's
+  report.json (skill-prod / skill-prod-primary / skill-prod-scoped) + competitor
+  candidate sets → `judge/_input_<variant>_<pr>.json`.
+- `driver/score.py` — aggregate per-(PR,tool) verdicts into a leaderboard.
+- `driver/rerank.py <pr> <src> <out>` — **fast ranker-only loop**: re-run the
+  product's `rank_findings` worker on an existing review's findings (isolates a
+  finding-ranker.md change without re-rolling specialists; ~1 call/PR).
+- `results/PROD-REPORT.md` — the current leaderboard + analysis. `OBSERVATIONS.md` —
+  every bug/friction/finding with a ✅/🛠️/⏳/➖ status board.
+
+## Running a review (the product, every time)
+
+```bash
+cd skill-code-review
+export GITHUB_TOKEN="$(gh auth token)"          # specialists/workers read the repo
+export CTXR_SCR_CALL_TIMEOUT=600                 # per-agent-call ceiling (env-tunable)
+uv run python -m ctxr_skill_code_review.cli review \
+  --repo tmp/repos/<pr> --base <base_diff> --head <head> \
+  --run-dir tmp/runs/<pr>/<variant> --backend claude --max-workers 8 --clean
+```
+
+`--backend` is agent-agnostic (`claude` | `codex` | `cursor` | `anthropic` |
+`openai`). `--clean` wipes the run dir's `.skill-code-review` for a fresh,
+cache-free run. The runner drives the FSM in-process with an adaptive thread pool;
+worker + specialist calls are fault-tolerant (retry/backoff, graceful degradation).
 
 ## The loop (one iteration)
 
-1. **Measure.** Run `review_workflow.js` over the PR set (5-PR pilot first; full
-   50 to confirm). Each review: scan → activate → tree-descend → trim →
-   tool-discovery → **dispatch_specialists (loop, ALL files sharded — 100%
-   coverage)** → collect (dedup + selectivity) → gates → report.
-2. **Judge once, consistently.** `judge_workflow.js` (one model, Martian rule);
-   validate it reproduces the committed competitor numbers before trusting it.
-3. **Diagnose.** Label each finding TP/FP (golden-aware) + score defect-confidence
-   (golden-blind); `analyze.py` shows under-rated goldens (recall loss) and
-   over-rated non-goldens (precision loss). `sweep.py` finds the best threshold.
-4. **Improve — MECHANICAL only** (see Principles). Re-bake.
-5. **Re-measure + record.** `exp.py record vNN <name> --json <stats>`; then
-   `exp.py compare`. Keep the change only if it moves the frontier; else revert.
-6. **Escalate if blocked.** If the only remaining gain needs a different reviewer
-   set/structure (a COVERAGE problem), STOP and propose a `reviewers.wiki`
-   restructure (proven statistical methods only) for human confirmation.
+1. **Measure.** Run the product CLI over the PR set (5-PR pilot to iterate; full 50
+   to declare). 100% diff coverage: every changed file is sharded into specialist
+   units. Stays fault-free (see robustness below).
+2. **Judge once, consistently.** `build_judge_input_prod.py` per PR, then judge
+   (one model = the session, Martian rule) into `judge/<variant>_<pr>.json`. Reuse
+   committed competitor verdicts (same judge model) for apples-to-apples.
+3. **Diagnose.** Per PR, which goldens were MISSED (recall loss → specialist depth or
+   leaf coverage) and which non-goldens were marked `primary` (precision loss →
+   ranker). Distinguish "real bug outside the golden set" (benchmark incompleteness)
+   from "noise" (genuine over-reporting).
+4. **Improve.** Edit the right layer (see Levers). Gate green (ruff + mypy + pytest).
+5. **Re-measure + record.** For a ranker-only change, use `rerank.py` (fast) and
+   average ≥3 rounds (the ranker is stochastic). For a specialist/routing change,
+   re-run the full review. Record a versioned result; keep only changes that move the
+   frontier; else revert.
+6. **Escalate if blocked.** If the only remaining gain needs a different reviewer SET
+   or STRUCTURE (a COVERAGE problem), STOP and propose a `reviewers.wiki` change
+   (proven statistical methods only) for human confirmation — and follow the
+   `scr-reviewers-wiki-authoring` skill.
 
-## Principles (the architecture contract)
+## Where to optimize (levers, by symptom)
 
-1. **100% coverage, always.** The FSM loop shards EVERY changed file into
-   dispatch units across iterations — 10 files or 1000, review them all. Never
-   drop a file. The planner's `total_files_planned` is asserted at merge.
-2. **Regulated parallelism (ThreadPoolExecutor / batched fan-out).** Dispatch
-   specialists in bounded parallel batches; scale the worker count DOWN on rate
-   limits / context pressure and back UP when healthy. Orchestration lives in the
-   FSM loop layer, not in individual reviewers.
-3. **Deterministic, big-data-safe collection.** `collect_findings` is pure Python
-   — it aggregates arbitrarily large finding sets without loading them into any
-   agent context. Findings are persisted per-leaf (one file per unit) and merged
-   algorithmically.
-4. **Two-stage dedup.** (a) Deterministic clustering by location + embedding
-   cosine (or token-overlap fallback) collapses obvious duplicates; (b) a
-   **deduper AGENT always adjudicates SUSPECTED/borderline clusters** (join /
-   keep-separate / drop) — never silently merge distinct bugs, never silently
-   keep triplicates. The final report may be large; that is fine.
-5. **Never overflow context.** Specialists get only their file slice + room to
-   read connected files; if a slice is too big, sub-shard it (the planner does)
-   or have the specialist delegate to its own sub-agent and return a wrapped
-   conclusion. The collector/deduper never ingest the whole corpus at once.
-6. **Fault tolerance.** Tolerate context-overflow (sub-shard, retry smaller) and
-   rate limits (backoff + dynamic worker count). A failed unit becomes a
-   `status: failed` row, not a lost file.
-7. **Sharper specialists.** Each specialist applies bug-hunting heuristics
-   (data-flow/provenance, error/edge paths, contract/behavior change, security,
-   test-validity) and **reads import-connected files** (where a consumed value is
-   set, the definition of a called fn, the covering tests) to VERIFY before
-   reporting. Emits a per-finding `confidence`. Reports DEFECTS, not style
-   opinions. Silence is precision.
-8. **Selectivity, not suppression.** Rank findings by defect `confidence`;
-   surface a `primary` (block-worthy) set above a threshold and keep the rest as
-   advisory. Do NOT drop real bugs to game precision — rank them.
-9. **Embeddings (Xenova, biggest practical model).** For finding dedup AND for
-   fast `reviewers.wiki` routing (embed leaves + the diff, retrieve top-K by
-   cosine instead of long LLM tree-scans). Proven, deterministic, cheap.
-10. **Wiki structure is human-gated.** Mechanical FSM/prompt/handler changes are
-    free. Any change to the SET or STRUCTURE of reviewers in `reviewers.wiki`
-    requires a written proposal (justified by a proven statistical method) and
-    explicit human confirmation before editing.
-11. **Versioned experiments.** Every run/iteration is an `experiments/vNN-*.md`
-    with frontmatter stats; compare across versions via frontmatter only; keep
-    the full body for debugging. Update `OBSERVATIONS.md` status checkmarks.
+- **Precision (too many non-golden primaries):** `workers/finding-ranker.md`. Make
+  `primary` the block-this-PR set; demote real-but-secondary findings (defensive
+  hardening, load/cost-only perf, no-test/magic-number) to advisory. Keep CONCRETE
+  correctness/security bugs primary even when edge-case. The ranker emits compact
+  per-index decisions; the runner re-attaches scores (`dispatch._apply_rank_decisions`).
+- **Recall (a golden no specialist surfaced):** `workers/specialist.md`. Add GENERAL
+  bug-hunting heuristics (unset/missing-state null-deref; external-tool argument
+  format/units; shadowed/duplicate definitions; cache-recursing-through-self). Emit
+  ONE finding per distinct root cause — never bundle a None-deref with a KeyError.
+- **Routing (right leaves not picked):** `workers/tree-descender.md` /
+  `trim-candidates.md` (metadata-only, no file reads) — and leaf `focus`/`activation`
+  in the wiki (the `scr-reviewers-wiki-authoring` skill). Beware broad `**/*` globs:
+  they over-activate and bias routing toward generic leaves.
+- **Coverage (no leaf exists for a bug class):** a reviewers.wiki change — human-gated.
 
-## What has been baked (mechanical, tests green)
+## Architecture contract (baked into the product)
 
-- `workers/specialist.md`: heuristics + import-connected-file verification +
-  per-finding `confidence` + precision discipline.
-- `spec.py`: `confidence` / `verified_via` on the specialist finding schema.
-- `handlers.collect_findings`: `_semantic_merge` (embedding dedup via
-  `CTXR_SCR_EMBED_CMD` hook, else location+token-overlap) + confidence-based
-  `primary` selection; `_build_issue` surfaces `primary`/`corroboration`/`confidence`.
+1. **100% coverage, always.** The dispatch loop shards EVERY changed file into units
+   — 10 files or 1000, review them all; a failed unit is a `status: failed` row, not
+   a lost file.
+2. **Regulated parallelism.** `runner.py` dispatches specialists through an adaptive
+   `ThreadPoolExecutor` (AIMD: halve workers on rate-limit, +1 on success, bounded).
+3. **Deterministic, big-data-safe collection.** `collect_findings` is pure Python;
+   per-leaf findings are persisted and merged algorithmically — never one giant agent
+   context.
+4. **Two-stage dedup.** Deterministic location + embedding/token clustering, then a
+   neutral **ranker/deduper agent** adjudicates residual duplicates (compact
+   decisions only). Never silently merge distinct bugs.
+5. **Never overflow context.** Worker inputs are compacted (heavy leaf fields stripped
+   for the prompt, rehydrated by id afterward); overflow sub-shards and retries.
+6. **Fault tolerance.** Worker AND specialist calls retry rate-limit/overflow with
+   backoff; an empty/unparseable agent reply is retryable; best-effort stages (e.g.
+   `tool_discovery`) DEGRADE instead of faulting; null optional fields are stripped
+   before schema validation. A flaky routing worker can never zero a review (the
+   deterministic coverage floor).
+7. **Sharper specialists, neutral ranker.** Specialists favor recall (report every
+   plausible defect with a `confidence`); the ranker is the precision gate
+   (`primary` selection). Selectivity, not suppression — demote, don't drop.
+8. **Agent-agnostic + prompt-externalised.** All prompts live in `workers/*.md`
+   (never hardcoded in Python); any backend (claude/codex/cursor/api) works.
+9. **Wiki structure is human-gated.** Mechanical FSM/dispatch/prompt changes are
+   free. Any change to the SET or STRUCTURE of `reviewers.wiki` needs a written,
+   statistically-justified proposal and human confirmation — see
+   `scr-reviewers-wiki-authoring`.
+10. **Versioned experiments.** Every run is recorded with headline stats; compare
+    across versions; update `OBSERVATIONS.md` status checkmarks.
 
-- `rank_findings` FSM stage (worker, 19-state spec): neutral defect-confidence
-  scoring + **deduper-agent** adjudication of residual duplicates + `primary`
-  selection, with its own verifier panel. Makes the shipped FSM natively produce
-  the frontier result. (Principle 4b ✅)
+## Hard-won lessons (do not regress these)
 
-## Still open (next levers — see OBSERVATIONS.md)
-
-- ThreadPoolExecutor with dynamic scaling + rate-limit/overflow fault tolerance
-  baked into the loop layer (Principle 2, 6) — req #27/#30.
-- Recall to beat Cubic: APPROVED `reviewers.wiki` restructure — embedding
-  dense-retrieval routing + MMR selection + coverage-gap domain leaves (e.g.
-  media/image-processing), pilot-validated. See WIKI-RESTRUCTURE-PROPOSAL.md.
-- Fresh validation pilots: confirm the native `rank_findings` stage reproduces
-  F1 0.75, then the wiki routing's recall gain.
+- **Drive reviews ONLY through the product** (`cli.py` / `runner.py`). Never build a
+  parallel review orchestrator in `tmp/`. tmp holds DATA + MEASUREMENT only.
+- **Keep all prompts in `workers/*.md`.** Read them; never inline prompt text in
+  Python.
+- **Worker inputs must not be truncated.** Truncating `activated_leaves` at a char
+  cap cut the array mid-list and silently dropped the alphabetically-late
+  (lang-/sec-/footgun-/crypto-) leaves → only generic antipatterns routed. Compact
+  per-leaf (drop `covers`/`audit_surface`), never truncate the SET.
+- **Routing workers decide from metadata, not files.** An agentic wiki-file-reading
+  tree-descender/tool-runner is 6-8 min and times out; reading the brief metadata is
+  ~1 min.
+- **The ranker is stochastic.** At 5 PRs the noise rivals the deltas — average ≥3
+  rounds (use `rerank.py`) and prefer the full 50 for a stable signal. Don't add
+  per-golden rules to chase the pilot: that is over-fitting.
+- **Many "false positives" are real bugs outside the golden set.** Audit before
+  suppressing; don't make the product worse to game an incomplete golden set.
 
 ## Before any commit to skill-code-review
 
@@ -155,4 +214,6 @@ uv run ruff check ctxr_skill_code_review/ tests/
 uv run mypy ctxr_skill_code_review/
 uv run pytest
 ```
-All three must pass. Wiki changes additionally require the human-confirmed plan.
+
+All three must pass. A `reviewers.wiki` change additionally requires the
+human-confirmed proposal and the `scr-reviewers-wiki-authoring` build/validate flow.

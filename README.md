@@ -1,134 +1,110 @@
-# Code Review Skill (v3 — Python ctxr-fsm port)
+# skill-code-review
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Powered by ctxr-fsm](https://img.shields.io/badge/powered%20by-ctxr--fsm-purple)](https://github.com/ctxr-dev/fsm)
+An AI code-review skill built to solve the problem every reviewer trades against:
+**catch the real bugs (recall) without burying them in noise (precision).** It
+does this with a deterministic state machine that routes a diff to the few
+specialist reviewers that matter, runs them in parallel, collects their findings
+algorithmically, and lets a neutral ranker decide the block-worthy few — producing
+a `GO` / `CONDITIONAL` / `NO-GO` verdict.
 
-Multi-specialist code-review skill driven by a 15-state FSM and a
-corpus of ~476 wiki-organised leaf reviewers. Selects specialists
-that match the project profile + diff, runs them in parallel,
-integrates external linters, and produces a `GO` / `CONDITIONAL` /
-`NO-GO` verdict.
+## Why it works
 
-**v3 reshapes the runtime.** The Node orchestrator
-(`scripts/run-review.mjs`) is gone. The skill is now a Python package
-that hands a Pydantic `FsmSpec` + 9 inline handlers + 5 worker prompts
-to [`ctxr-fsm`](https://github.com/ctxr-dev/fsm). The LLM drives the
-run through `fsm.start_run` + `fsm.get_brief` + `fsm.commit_outputs`
-over MCP. Behaviourally identical to v2.5.1 — same FSM, same
-inline handlers, same worker prompts, same corpus, byte-identical
-`report.md` for the same fixture.
+Most reviewers are one prompt over a whole diff: they either over-report (noise) or
+miss bugs outside their attention. This skill separates the concerns:
 
-## Quick start
-
-```bash
-# 1. Make sure ctxr-fsm is ready in this project (idempotent, <500ms warm).
-uv run ctxr-fsm ensure --json
-
-# 2. Register the skill's spec + inline handlers.
-uv run python -m ctxr_skill_code_review.install
-```
-
-Then in your MCP-capable client (Claude Code, Codex CLI), load
-[`SKILL.md`](SKILL.md) and follow its bootstrap + run procedure.
-
-## Prerequisites
-
-- Python ≥ 3.12 with `uv` (or `pip` + venv).
-- `ctxr-fsm` ≥ 0.2.0 (Python; PyPI). The skill pulls the
-  `[sqlite]` extra automatically.
-- An MCP-capable client (Claude Code, Codex CLI, Cursor, …) wired to
-  the `ctxr-fsm` MCP server.
-- Git repository with commits to review.
-
-## Architecture
-
-```text
-skill-code-review/
-├── SKILL.md                              # Entry point — bootstrap + run loop
-├── ctxr_skill_code_review/
-│   ├── spec.py                           # FsmSpec literal (15 states + 8 schemas)
-│   ├── handlers.py                       # 9 deterministic inline handlers
-│   ├── install.py                        # register() one-shot + CLI
-│   └── workers/
-│       ├── project-scanner.md
-│       ├── tree-descender.md
-│       ├── trim-candidates.md
-│       ├── tool-runner.md
-│       └── specialist.md
-├── reviewers.wiki/                       # ~476 leaf reviewers (unchanged from v2.x)
-├── tests/                                # pytest
-├── code-reviewer.md                      # 11-step orchestrator design doc
-├── release-readiness.md                  # 8-gate predicate reference
-├── report-format.md                      # Manifest + report schema
-└── CHANGELOG.md
-```
+- **Wiki-routed expertise.** A corpus of ~470 leaf reviewers (`reviewers.wiki/`),
+  each an expert on one concern (a language, framework, security class, footgun,
+  reliability pattern). A diff activates only the relevant leaves, so every line is
+  reviewed by a specialist that knows what to look for — not a generalist.
+- **100% coverage, in parallel.** Every changed file is sharded into review units
+  and dispatched concurrently through an adaptive thread pool. Ten files or a
+  thousand — all reviewed; a failed unit is recorded, never silently dropped.
+- **Deterministic collection + neutral ranking.** Findings are merged
+  algorithmically (location + embedding dedup), then a neutral ranker — which has no
+  stake in any finding — scores each by defect confidence and marks the
+  block-worthy `primary` set. Recall lives in the specialists; precision lives in
+  the ranker. Selectivity, not suppression: secondary findings stay as advisory.
+- **Fault-tolerant + agent-agnostic.** Rate-limits, timeouts, and context overflow
+  retry/back-off or degrade gracefully; the same review runs on Claude, Codex,
+  Cursor, or a raw Anthropic/OpenAI API.
 
 ## How it works
 
-The FSM walks 15 states; the LLM only sees the 5 worker states
-(everything else advances server-side):
+A diff flows through a 19-state FSM (the [`ctxr-fsm`](https://github.com/ctxr-dev/fsm)
+engine). Deterministic steps run as inline Python; the reasoning steps are LLM
+workers; the specialist fan-out is a parallel loop:
 
-1. **scan_project** (worker) — Build a Project Profile from manifests + repo state.
-2. **risk_tier_triage** (inline) — Bucket the diff: trivial / lite / full / sensitive → cap 3 / 8 / 20 / 30.
-3. **activate_leaves** (inline) — Run the activation gate over every wiki leaf.
-4. **tree_descend** (worker) — Semantic descent through subcategory focus strings.
-5. **llm_trim** (worker) — Pick K = cap leaves with one-sentence justifications.
-6. **tool_discovery** (worker) — Run external linters declared by picked leaves.
-7. **dispatch_specialists** (worker) — Parallel fan-out, one sub-agent per leaf.
-8. **collect_findings** (inline) — Deduplicate by (file, line, normalised title).
-9. **verify_coverage** (inline) — Build per-file coverage matrix; flag < 2-specialist files.
-10. **synthesize_release_readiness** (inline) — 8-gate predicate aggregation; verdict.
-11. **write_run_directory** (inline) — Write `manifest.json` + `report.md` + `report.json`.
-12. **emit_stdout** (inline) — Print the report; emit `Manifest:` pointer.
-13. Two edge states: `short_circuit_exit` (trivial + no signal → GO) and
-    `stage_a_empty` (no candidates on a non-trivial diff → CONDITIONAL).
-14. **terminal** — End of FSM.
+`scan project` → `triage risk tier` → `activate leaves` (deterministic gate over
+the corpus) → `tree-descend` + `trim` (pick the relevant leaves from metadata) →
+`tool discovery` (optional linters) → **`dispatch specialists`** (parallel, one
+sub-agent per leaf-unit, 100% file coverage) → `collect findings` (dedup) →
+**`rank findings`** (neutral confidence + `primary` selection) → `verify coverage`
+→ `synthesize verdict` (8 release gates) → write report.
 
-## Report format
+The orchestration (FSM driving + adaptive `ThreadPoolExecutor` + agent dispatch)
+lives in the Python package; every reviewer/worker prompt lives in a `.md` file.
+See [`SKILL.md`](SKILL.md) for the full state choreography.
 
-Every review produces (markdown or JSON):
-
-- **Verdict** — `GO` / `CONDITIONAL` / `NO-GO`
-- **SOLID Compliance** — principle-by-principle status
-- **Issues** — clickable `[file:line](file#Lline)` links, severity,
-  specialist, impact, fix
-- **Tool Results** — pass/fail/skipped per external linter
-- **Specialist Results** — per-reviewer status with issue counts
-- **Release Gates** — 8-gate assessment
-- **Coverage Matrix** — files × specialists
-
-See [`report-format.md`](report-format.md) for the full schema.
-
-## Development
+## Run a review
 
 ```bash
-# Install editable + dev extras (sibling-links ../fsm/ via uv.sources).
-uv sync --all-extras
-
-# Run the test suite.
-uv run pytest
-
-# Lint + type-check.
-uv run ruff check ctxr_skill_code_review/ tests/
-uv run mypy ctxr_skill_code_review/
-
-# Try the installer against a tmp DB.
-uv run python -m ctxr_skill_code_review.install
+# In the repo you want to review:
+python -m ctxr_skill_code_review.cli review \
+  --repo . --base <base-sha> --head <head-sha> \
+  --run-dir . --backend claude
 ```
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the reviewer-authoring
-procedure (the `reviewers.wiki/` corpus + the `reviewers.src/`
-authoring pipeline).
+`--backend` is one of `claude` (default), `codex`, `cursor`, `anthropic`, `openai`.
+Useful flags: `--max-workers N` (concurrency), `--tools silent|skip` (external
+linters), `--clean` (fresh run). The report is written under
+`<run-dir>/.skill-code-review/…` and printed to stdout.
 
-## v2 → v3 migration
+Alternatively, drive it from an MCP-capable client via [`SKILL.md`](SKILL.md)
+(bootstrap `ctxr-fsm`, `install`, then the FSM run loop).
 
-v2.x stays reachable on npm under `@ctxr/skill-code-review`; the v2
-shape continues to work for any pinned consumer. v3 is a new
-distribution channel (PyPI / `ctxr-fsm`) and requires switching to
-the Python install procedure documented in [`SKILL.md`](SKILL.md).
-See [`CHANGELOG.md`](CHANGELOG.md#300---python-port-w14f) for the
-full migration narrative.
+## How it compares (benchmark)
 
-## License
+Measured on the open [`withmartian/code-review-benchmark`](https://github.com/withmartian/code-review-benchmark)
+(50 bug-fix PRs across 5 repos/languages, ~136 human-verified "golden" bugs). The
+judge is strict: a finding counts only if it matches a golden bug, and **every
+non-golden finding is a false positive** — so this rewards catching real bugs while
+staying quiet. Full-50 numbers (committed competitor sets, same judge):
+
+| reviewer | recall | precision | F1 |
+|---|---|---|---|
+| Cubic (leader) | 0.69 | 0.56 | **0.62** |
+| Qodo-extended | 0.61 | 0.55 | 0.58 |
+| Augment | 0.61 | 0.47 | 0.54 |
+| Macroscope | 0.44 | 0.48 | 0.46 |
+| Bugbot | 0.44 | 0.47 | 0.45 |
+| Greptile | 0.48 | 0.40 | 0.44 |
+| CodeRabbit | 0.40 | 0.35 | 0.40 |
+
+**What this means.** No tool is both high-recall and high-precision — that is the
+unsolved compromise. The leader, Cubic, sits at F1 0.62 by being *balanced* (~3.5
+findings/PR), not by being conservative. This skill targets the same frontier:
+on a 5-PR pilot its `primary` set reaches **recall 0.73 / precision 0.57** —
+second only to Cubic on recall and ahead of CodeRabbit, Copilot, Greptile, and
+Bugbot — with the headline gap to Cubic being precision, much of which is the
+skill surfacing *real bugs the golden set simply does not list* (the harsh metric
+penalises thoroughness). A full-50 head-to-head is the definitive test and is the
+next milestone; the optimization loop that drives it is the
+[`scr-benchmark-optimizer`](.agents/skills/scr-benchmark-optimizer/SKILL.md) skill.
+
+## Report
+
+Each review emits markdown + JSON: the verdict, findings by severity with clickable
+`file:line` links (title, impact, fix, originating specialist, `primary` flag),
+external tool results, per-specialist results, the 8 release gates, and a
+file×specialist coverage matrix. Schema: [`report-format.md`](report-format.md).
+
+## More
+
+- [`SKILL.md`](SKILL.md) — entry point: bootstrap + the FSM run loop.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — dev setup, FSM authoring, the reviewer
+  corpus pipeline.
+- Extending the reviewer corpus — the
+  [`scr-reviewers-wiki-authoring`](.agents/skills/scr-reviewers-wiki-authoring/SKILL.md)
+  skill (frontmatter, activation, build/validate, what makes a good leaf).
 
 MIT — see [`LICENSE`](LICENSE).

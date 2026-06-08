@@ -39,15 +39,24 @@ benchmark run, optimization, or fix changes how the skill works or how it compar
 ## Reviewer-corpus stewardship (never degrade)
 
 - Extend `reviewers.wiki` ONLY via the [`scr-reviewers-wiki-authoring`](../skills/scr-reviewers-wiki-authoring/SKILL.md)
-  skill: author in `reviewers.src/`, regenerate with `skill-llm-wiki`
-  (deterministic), validate, promote, commit both layers. **Never hand-edit the
-  generated `reviewers.wiki/` or hand-place a leaf.**
-- Activation globs are SPECIFIC, never `**/*`; `focus` is one sharp line; bodies
-  carry concrete bug-hunting heuristics + explicit "Common False Positives".
-- Every corpus change is **benchmark-verified** (frontier-or-better; record the
-  versioned result) before it is kept. A change to the SET or STRUCTURE of reviewers
-  is **human-gated** — written, statistically-justified proposal + explicit
-  confirmation.
+  skill: author in the TRACKED `reviewers.src/`, regenerate with `skill-llm-wiki`
+  `--layout-config reviewers.layout.yaml` (a deterministic, pinned projection),
+  validate, promote, commit all layers. **Never hand-edit the generated
+  `reviewers.wiki/` or hand-place a leaf.**
+- `reviewers.layout.yaml` is the SHAPE CONTRACT (26-category taxonomy, pin grammar,
+  `unpinned: reject`, the v2 frontmatter_contract). `scripts/validate_layout.py`
+  enforces it (run it on `reviewers.src` and, after a rebuild, `--wiki`). A new id
+  prefix needs a pin added to the layout first, or the unpinned leaf is rejected.
+- Activation globs are SPECIFIC, never `**/*` (the layout contract forbids the broad
+  globs); `focus` is one sharp line; bodies carry concrete bug-hunting heuristics
+  plus explicit "Common False Positives".
+- The NO-REGRESSION gate (HARD) on ANY wiki regeneration: re-run the PRODUCT reviewer
+  on the SAME five benchmark codebases (cal.com-14943, discourse-1, grafana-80329,
+  keycloak-32918, sentry-67876) and confirm BOTH recall/coverage up-or-equal AND
+  false-positives-per-PR down-or-equal vs the recorded baseline. If either axis
+  regresses, do NOT promote. Record the versioned result. A change to the SET or
+  STRUCTURE of reviewers (and any full corpus regeneration) is additionally
+  human-gated: a written, statistically-justified proposal plus explicit sign-off.
 - Encode GENERAL review principles, not per-benchmark-golden rules (over-fitting).
 
 ## Benchmark harness location & layout

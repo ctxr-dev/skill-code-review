@@ -34,9 +34,9 @@ adding one well.
 
 ## The two layers (never edit the generated one)
 
-- `reviewers.src/<id>.md` — **hand-authored source.** The ONLY layer you edit.
-  Gitignored in this repo; if it is absent, restore/obtain it before authoring —
-  do NOT author against the generated tree.
+- `reviewers.src/<id>.md` is the **hand-authored source.** The ONLY layer you edit.
+  It is TRACKED in this repo (the canonical authoring layer); edit it directly and
+  never author against the generated tree.
 - `reviewers.wiki/` — **generated tree**, produced from `reviewers.src/` by
   [`skill-llm-wiki`](https://github.com/ctxr-dev/skill-llm-wiki). It handles
   clustering, slug/subcategory placement, soft-DAG parents, balance, depth, and the
@@ -174,29 +174,37 @@ silence is precision; the neutral ranker decides what blocks.**
 Author in `reviewers.src/`, then regenerate the wiki (sibling `../skill-llm-wiki/`):
 
 ```bash
-# 1. Validate the source corpus (frontmatter + body shape + dimensions taxonomy).
-npm run validate:src && npm run test:src
-#    (these wrap skill-llm-wiki; equivalently:
-#     node ../skill-llm-wiki/scripts/cli.mjs validate ./reviewers.src )
+# 1. Validate the source corpus shape against the layout contract
+#    (pins + frontmatter contract; standalone, zero new deps).
+uv run python scripts/validate_layout.py
+#    plus the skill-llm-wiki corpus checks:
+node ../skill-llm-wiki/scripts/cli.mjs validate ./reviewers.src
 
-# 2. Rebuild the wiki — DETERMINISTIC mode (byte-stable output).
+# 2. Rebuild the wiki LAYOUT-DRIVEN + DETERMINISTIC (byte-stable, pinned placement).
+#    reviewers.layout.yaml DRIVES placement: each leaf id projects to its pinned
+#    category, so the policy (max_depth, fanout) comes from the layout, not flags.
 node ../skill-llm-wiki/scripts/cli.mjs build "$(pwd)/reviewers.src" \
-  --quality-mode deterministic --fanout-target 6 --max-depth 5 \
-  --soft-dag-parents --accept-dirty           # writes reviewers.src.wiki/
+  --layout-config "$(pwd)/reviewers.layout.yaml" \
+  --quality-mode deterministic --soft-dag-parents --accept-dirty   # writes reviewers.src.wiki/
 
-# 3. Validate the rebuilt wiki (must be 0 errors).
+# 3. Validate the rebuilt wiki (must be 0 errors), shape AND build invariants.
 node ../skill-llm-wiki/scripts/cli.mjs validate "$(pwd)/reviewers.src.wiki"
+uv run python scripts/validate_layout.py --wiki reviewers.src.wiki
 
 # 4. Promote (atomic) and commit BOTH layers together.
 mv reviewers.wiki /tmp/reviewers.wiki.bak
 mv reviewers.src.wiki reviewers.wiki
-git add reviewers.src/ reviewers.wiki/
+git add reviewers.src/ reviewers.wiki/ reviewers.layout.yaml
 ```
 
-The build owns clustering, subcategory placement, depth/fanout balance, and the
-nested layout — that is why you never hand-place or hand-edit the wiki. If you add a
-framework the orchestrator does not detect from manifests, also update the framework
-table in `docs/code-reviewer-design.md` so the Project Profile carries the signal.
+The build owns clustering only WITHIN the pinned categories, plus depth/fanout
+balance and the nested layout, which is why you never hand-place or hand-edit the
+wiki. With `unpinned: reject` and full pin coverage the tree IS the layout: a rebuild
+is byte-identical and adding a leaf is a one-file diff. If you add a framework the
+orchestrator does not detect from manifests, also update the framework table in
+`docs/code-reviewer-design.md` so the Project Profile carries the signal. If you add
+a new id prefix, add a pin for it in `reviewers.layout.yaml` first (otherwise the
+build/validator reject the unpinned leaf).
 
 ## Verify the change did not degrade (the gate)
 
@@ -204,13 +212,20 @@ A corpus change is not done until it is benchmark-checked:
 
 1. Code gate: `uv run ruff check code_review/ tests/ && uv run mypy
    code_review/ && uv run pytest`.
-2. Routing check: run a review (via the product, see scr-benchmark-optimizer) on a
+2. Shape gate: `uv run python scripts/validate_layout.py` and, after a rebuild,
+   `--wiki reviewers.src.wiki`, both 0 errors, plus skill-llm-wiki `validate`.
+3. Routing check: run a review (via the product, see scr-benchmark-optimizer) on a
    diff the new leaf should cover; confirm the leaf is picked and its specialist
-   fires — and confirm you did NOT inflate the candidate set on unrelated diffs
-   (broad-glob regression).
-3. Benchmark check: re-run the affected pilot PR(s), judge, and confirm recall/
-   precision did not regress (frontier-or-better). Record the versioned result.
-4. Human gate: SET/STRUCTURE changes ship only with the confirmed proposal.
+   fires, and confirm you did NOT inflate the candidate set on unrelated diffs
+   (broad-glob regression) or inflate the strong-routed fraction.
+4. No-regression gate (HARD, applies to ANY wiki regeneration): re-run the PRODUCT
+   reviewer on the SAME five benchmark codebases (cal.com-14943, discourse-1,
+   grafana-80329, keycloak-32918, sentry-67876) and confirm BOTH axes are better or
+   at least no worse than the recorded baseline: recall/coverage up-or-equal AND
+   false-positives-per-PR down-or-equal. If either axis regresses, do NOT promote.
+   Record the versioned result. See [scr-benchmark-optimizer](../scr-benchmark-optimizer/SKILL.md).
+5. Human gate: SET/STRUCTURE changes (and any full corpus regeneration) ship only
+   with the confirmed proposal and human sign-off.
 
 ## Lessons baked in (do not regress — proven across 16 commits)
 

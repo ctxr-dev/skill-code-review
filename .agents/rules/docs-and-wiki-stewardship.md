@@ -59,7 +59,20 @@ benchmark run, optimization, or fix changes how the skill works or how it compar
   `specialists/<ab>/<rest5>/`). Never let a single directory accumulate thousands of
   entries (filesystem bottleneck). New large-fan-out outputs adopt the same sharding.
 - Drive reviews ONLY through the product (`cli.py` / `runner.py`); `tmp/` holds
-  benchmark DATA + MEASUREMENT scripts only — never a parallel review orchestrator.
+  regenerable DATA only — never a parallel review orchestrator.
+
+## Scripts discipline
+
+- **Durable dev tooling lives in tracked `scripts/`** (corpus + benchmark harness),
+  NEVER in fragile gitignored `tmp/`, and NEVER inside the `code_review` runtime
+  package. `tmp/` is data the user may delete at any time.
+- Every script in `scripts/` is documented in the [`scr-scripts`](../skills/scr-scripts/SKILL.md)
+  cookbook: what it does, when/why to run it, its exact invocation, and the
+  sequence it belongs in. **Adding a script without a row (and a cookbook if it is
+  part of a sequence) in `scr-scripts` is a stewardship violation.** Consult
+  `scr-scripts` before running a script so you never run the wrong one or skip a step.
+- Mutating scripts default to a dry run; pass `--apply` only after reading the
+  dry-run summary.
 
 ## Before any commit
 

@@ -17,6 +17,10 @@ follow the canonical file above — it is the single source of truth. In brief:
   `reviewers.src/`, regenerate via skill-llm-wiki, validate, promote, commit both).
   Never hand-edit the generated wiki. Specific activation globs (never `**/*`).
   Benchmark-verify every corpus change; SET/STRUCTURE changes are human-gated.
-- **Harness** lives at `skill-code-review/tmp/` (gitignored), nested/sharded layout
-  to avoid an fs bottleneck; drive reviews only through the product.
+- **Harness** lives at `skill-code-review/tmp/` (gitignored DATA only), nested/sharded
+  layout to avoid an fs bottleneck; drive reviews only through the product.
+- **Scripts**: durable dev tooling lives in tracked `scripts/` (never `tmp/`, never the
+  `code_review` package); every script is documented in the
+  [`scr-scripts`](../skills/scr-scripts/SKILL.md) cookbook — consult it before running
+  one, and add a row when you add a script. Mutating scripts dry-run unless `--apply`.
 - Before any commit: `ruff` + `mypy` + `pytest` green.

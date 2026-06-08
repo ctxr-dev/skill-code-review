@@ -273,6 +273,19 @@ def _apply_rank_decisions(
     return {"findings": out, "severity_counts": sev_counts}
 
 
+def _strip_nulls(obj: Any) -> Any:
+    """Recursively drop null-valued keys. LLMs often emit optional fields as
+    ``null`` (e.g. a completed specialist with ``"skip_reason": null``); the merge
+    schema requires those be a string or ABSENT, and an explicit null fails
+    validation and faults the whole review. Absent is always schema-safe for an
+    optional field, so dropping nulls is the safe normalisation."""
+    if isinstance(obj, dict):
+        return {k: _strip_nulls(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, list):
+        return [_strip_nulls(v) for v in obj]
+    return obj
+
+
 def _route_tier(leaf_id: str, dimensions: list[str] | None) -> str:
     dims = dimensions or []
     if "security" in dims or "correctness" in dims:
@@ -345,6 +358,6 @@ def make_dispatchers(
                   + f'Return {{"id":"{leaf_id}","status":"completed","findings":[...]}}.')
         out = _parse_json(run(prompt, repo, _route_tier(leaf_id, leaf.get("dimensions"))))
         out.setdefault("id", leaf_id)
-        return out
+        return _strip_nulls(out)
 
     return dispatch_worker, dispatch_specialist

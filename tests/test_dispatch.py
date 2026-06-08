@@ -14,7 +14,22 @@ from ctxr_skill_code_review.dispatch import (
     _parse_json,
     _rehydrate,
     _route_tier,
+    _strip_nulls,
 )
+
+
+def test_strip_nulls_drops_null_optional_fields() -> None:
+    """A completed specialist emitting skip_reason: null must not fault the merge
+    (schema wants string-or-absent). Nulls are dropped recursively."""
+    out = _strip_nulls({
+        "id": "lang-python", "status": "completed", "skip_reason": None,
+        "findings": [{"severity": "important", "file": "a.py", "title": "x",
+                      "line": None, "fix": None, "impact": "boom"}],
+    })
+    assert "skip_reason" not in out
+    f = out["findings"][0]
+    assert "line" not in f and "fix" not in f  # null optionals dropped
+    assert f["impact"] == "boom" and f["severity"] == "important"  # real values kept
 from ctxr_skill_code_review.runner import ContextOverflowError, RateLimitError
 
 

@@ -4,10 +4,13 @@
 > step-by-step intent narrative for the FSM-driven orchestrator. It is **not**
 > a runtime spec, and an LLM running the skill must **not** read it: the
 > runtime contract is code (see the table below), and the LLM-facing entry
-> point is `../SKILL.md` at the repo root. v3 drives the FSM through
-> `ctxr-fsm` (Python), the LLM is the orchestrator, not the runner; the
-> runner is gone. If you arrived here while running a review, stop and
-> re-read `SKILL.md`, you are on the wrong path.
+> point is `../SKILL.md` at the repo root. v3 builds the review on the
+> `ctxr-fsm` (Python) state machine. The legacy Node review runner is gone;
+> a review executes either through the LLM-orchestrated FSM (the LLM drives
+> the MCP `fsm.*` surface) or through the in-process Python runner
+> (`python -m code_review.cli review ...`, see [programmatic-runner.md](programmatic-runner.md)).
+> If you arrived here while running a review, stop and re-read `SKILL.md`,
+> you are on the wrong path.
 >
 > The eleven Steps below describe what each FSM state *does* in human terms.
 > Each Step carries a callout naming its FSM state id and the handler / worker
@@ -453,7 +456,7 @@ Gate verdict rule: PASS if every gate-tagged Critical and Important finding is r
 
 See `release-readiness.md` (project root) for the full audit checklist per gate.
 
-**Step 9 outputs:** `gates[]`, list of `{ number, name, status, contributing_leaves[], blocker_count }`; `verdict`, one of `GO`, `CONDITIONAL`, `NO-GO`.
+**Step 9 outputs:** `gates[]`, list of `{ number, name, status, contributing_leaves[], blocker_count }`; `verdict`. The `synthesize_release_readiness` handler emits only `GO` or `NO-GO` (`NO-GO` if any gate FAILs or the hard coverage rule is violated, else `GO`). `CONDITIONAL` is a valid report verdict but is produced by edge/degraded states (for example `stage_a_empty`), not by this gate computation.
 
 ---
 

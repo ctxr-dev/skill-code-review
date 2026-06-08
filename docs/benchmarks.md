@@ -4,7 +4,7 @@
 
 ## Dataset and judge
 
-- **Dataset:** [`withmartian/code-review-benchmark`](https://github.com/code-review-benchmark) (open). Each entry is a bug-fix PR with human-verified golden comments. The pilot snapshot uses 5 PRs (one per repo): `cal.com-14943`, `discourse-1`, `grafana-80329`, `keycloak-32918`, `sentry-67876`. The benchmark's full set of 50 PRs is the **target** set for a declarative result, not a measured-and-committed one here.
+- **Dataset:** [`withmartian/code-review-benchmark`](https://github.com/withmartian/code-review-benchmark) (open). Each entry is a bug-fix PR with human-verified golden comments. The pilot snapshot uses 5 PRs (one per repo): `cal.com-14943`, `discourse-1`, `grafana-80329`, `keycloak-32918`, `sentry-67876`. The benchmark's full set of 50 PRs is the **target** set for a declarative result, not a measured-and-committed one here.
 - **Judge:** an Opus model, applied strictly under the Martian rule: a finding is a **true positive only if it matches a golden comment**; **every non-golden finding is a false positive**. This is a deliberately harsh precision metric. The judge input is assembled by [scripts/build_judge_input_prod.py](../scripts/build_judge_input_prod.py) and verdicts are aggregated by [scripts/score.py](../scripts/score.py).
 
 ## Harness layout (sharded tmp)

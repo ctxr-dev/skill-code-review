@@ -49,7 +49,7 @@ See [`SKILL.md`](SKILL.md) for the full state choreography.
 
 ```bash
 # In the repo you want to review:
-python -m ctxr_skill_code_review.cli review \
+python -m code_review.cli review \
   --repo . --base <base-sha> --head <head-sha> \
   --run-dir . --backend claude
 ```

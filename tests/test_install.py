@@ -6,9 +6,9 @@ from pathlib import Path
 
 from ctxr.fsm.core import get_default_registry
 
-from ctxr_skill_code_review.handlers import INLINE_HANDLERS
-from ctxr_skill_code_review.install import register
-from ctxr_skill_code_review.spec import SPEC_ID
+from code_review.handlers import INLINE_HANDLERS
+from code_review.install import register
+from code_review.spec import SPEC_ID
 
 
 def test_register_returns_envelope(tmp_path: Path) -> None:

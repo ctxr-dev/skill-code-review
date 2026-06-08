@@ -17,11 +17,11 @@ from typing import Any
 import pytest
 from ctxr.fsm.core import InlineContext
 
-from ctxr_skill_code_review.handlers import (
+from code_review.handlers import (
     DispatchLoopExitedEarlyError,
     handle_merge_specialist_outputs,
 )
-from ctxr_skill_code_review.sharding import shard_path
+from code_review.sharding import shard_path
 
 
 def _ctx(
@@ -295,7 +295,7 @@ def test_aggregate_size_guard_truncates_lowest_severity_finding(
 ) -> None:
     """PR5: at-or-above the budget -> drop lowest-severity findings."""
     # Force a tiny budget so the guard fires on a small fixture.
-    import ctxr_skill_code_review.handlers as handlers_mod
+    import code_review.handlers as handlers_mod
 
     monkeypatch.setattr(handlers_mod, "_AGGREGATE_OUTPUT_BUDGET_BYTES", 800)
 
@@ -370,7 +370,7 @@ def test_aggregate_size_guard_never_drops_a_whole_leaf(
     vs-merger union invariant continues to hold. We push the budget
     impossibly low and verify both leaves still appear in the output.
     """
-    import ctxr_skill_code_review.handlers as handlers_mod
+    import code_review.handlers as handlers_mod
 
     monkeypatch.setattr(handlers_mod, "_AGGREGATE_OUTPUT_BUDGET_BYTES", 1)
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from ctxr_skill_code_review.handlers import (
+from code_review.handlers import (
     _apply_scope_filters,
     _parse_gate_filter,
     _parse_severity_threshold,

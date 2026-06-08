@@ -1,4 +1,4 @@
-"""Tests for ``ctxr_skill_code_review.sharding``.
+"""Tests for ``code_review.sharding``.
 
 Covers determinism, segment-length contracts, the upper-bound guard
 (sum(levels) > 64), the leaf-name semantics of ``shard_path``, and a
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from ctxr_skill_code_review.sharding import shard_path, shard_segments
+from code_review.sharding import shard_path, shard_segments
 
 
 def test_shard_segments_deterministic() -> None:

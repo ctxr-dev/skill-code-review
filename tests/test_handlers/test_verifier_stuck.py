@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from ctxr_skill_code_review.handlers import (
+from code_review.handlers import (
     _VERIFIER_REJECTION_LIMIT,
     _bump_verifier_rejection_counts,
     _is_verifier_stuck,
@@ -216,8 +216,8 @@ def test_end_to_end_verifier_stuck_still_produces_report(
 
 def test_verifier_stuck_state_is_wired_into_spec() -> None:
     """The 18th state has the right id + handler binding."""
-    from ctxr_skill_code_review.handlers import INLINE_HANDLERS
-    from ctxr_skill_code_review.spec import HandlerId, build_spec
+    from code_review.handlers import INLINE_HANDLERS
+    from code_review.spec import HandlerId, build_spec
 
     spec = build_spec()
     state_ids = [s.id for s in spec.states]

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ctxr_skill_code_review.handlers import handle_verify_coverage
+from code_review.handlers import handle_verify_coverage
 
 
 def test_no_picked_leaves_no_findings_all_files_gap(make_ctx) -> None:  # type: ignore[no-untyped-def]

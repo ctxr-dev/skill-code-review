@@ -79,27 +79,32 @@ declare "beat all". A full-50 run is gated on human go-ahead (it crosses the loc
 
 The benchmark harness lives INSIDE the skill repo at `skill-code-review/tmp/`
 (gitignored) — it travels with the skill it benchmarks. Reviews are driven by the
-**product**, not a throwaway orchestrator. The tmp tree holds only benchmark DATA
-and MEASUREMENT scripts, and every output dir is **nested/sharded** (the product's
-`.skill-code-review/<yyyy>/<mm>/<dd>/<ab>/<rest5>/` tree + content-addressed
-`specialists/<ab>/<rest5>/`) so no single directory accumulates thousands of
-entries (filesystem bottleneck). Contents:
+**product**, not a throwaway orchestrator. `tmp/` holds **only benchmark DATA**
+(regenerable, safe to delete); every durable harness/driver script lives in the
+tracked `skill-code-review/scripts/` dir (NOT in `tmp/`, NOT in the `code_review`
+package). **Every output dir is run-id + pr-shard nested** (`shard` = first 2 hex of
+`sha256(pr_id)`) so no directory ever accumulates thousands of entries (filesystem
+bottleneck) — `scripts/paths.py` is the single source of the layout; all driver
+scripts import it. A `run-id` is one variant/iteration (`default`/`prod`/
+`iter1`/…). Layout:
 
-- `bench/` — clone of the benchmark. `bench-index.json` — per-PR metadata with the
-  **merge-base** diff (`base_diff`): use `git merge-base(base,head)`, NEVER
-  `baseRefOid..head` (it includes drift — OBSERVATIONS #8). `driver/setup_repo.py`
-  materialises a PR's repo at the correct base.
-- `runs/<pr>/<variant>/` — one run dir per (PR, variant); each review writes
-  `.skill-code-review/<date>/<shard>/report.json` there.
-- `driver/build_judge_input_prod.py <pr> <variant>` — extract candidates from a run's
-  report.json (skill-prod / skill-prod-primary / skill-prod-scoped) + competitor
-  candidate sets → `judge/_input_<variant>_<pr>.json`.
-- `driver/score.py` — aggregate per-(PR,tool) verdicts into a leaderboard.
-- `driver/rerank.py <pr> <src> <out>` — **fast ranker-only loop**: re-run the
-  product's `rank_findings` worker on an existing review's findings (isolates a
+- `tmp/repos/<ab>/<pr>/` — materialised repo (shared across runs); `scripts/setup_repo.py`
+  writes here at the **merge-base** diff (`base_diff` from `bench-index.json`; use
+  `git merge-base(base,head)`, NEVER `baseRefOid..head` — OBSERVATIONS #8).
+- `tmp/runs/<run-id>/<ab>/<pr>/` — one review's output (its `.skill-code-review/<yyyy>/
+  <mm>/<dd>/<ab>/<rest5>/` tree + `run.log`).
+- `tmp/judge/<run-id>/<ab>/<pr>.json` (+ `_input_<pr>.json`) — judge verdicts/inputs.
+- `tmp/results/<run-id>/` — per-run leaderboard/metrics. `bench/` — benchmark clone.
+- `scripts/build_judge_input_prod.py <pr> <run-id>` — extract candidates (skill-prod /
+  skill-prod-primary / skill-prod-scoped) + competitor sets → `judge/<run-id>/<ab>/
+  _input_<pr>.json`.
+- `scripts/score.py <run-id>` — aggregate per-(PR,tool) verdicts → `results/<run-id>/`.
+- `scripts/rerank.py <pr> <src-run-id> <out-run-id>` — **fast ranker-only loop**: re-run
+  the product's `rank_findings` worker on an existing review's findings (isolates a
   finding-ranker.md change without re-rolling specialists; ~1 call/PR).
-- `results/PROD-REPORT.md` — the current leaderboard + analysis. `OBSERVATIONS.md` —
-  every bug/friction/finding with a ✅/🛠️/⏳/➖ status board.
+- `scripts/migrate_tmp.py` — one-shot migrator to this layout (idempotent, `--apply`).
+- `results/PROD-REPORT.md` — the leaderboard + analysis. `OBSERVATIONS.md` — every
+  bug/friction/finding with a ✅/🛠️/⏳/➖ status board.
 
 ## Running a review (the product, every time)
 
@@ -107,9 +112,10 @@ entries (filesystem bottleneck). Contents:
 cd skill-code-review
 export GITHUB_TOKEN="$(gh auth token)"          # specialists/workers read the repo
 export CTXR_SCR_CALL_TIMEOUT=600                 # per-agent-call ceiling (env-tunable)
-uv run python -m ctxr_skill_code_review.cli review \
-  --repo tmp/repos/<pr> --base <base_diff> --head <head> \
-  --run-dir tmp/runs/<pr>/<variant> --backend claude --max-workers 8 --clean
+uv run python -m code_review.cli review \
+  --repo tmp/repos/<ab>/<pr> --base <base_diff> --head <head> \
+  --run-dir tmp/runs/<run-id>/<ab>/<pr> --backend claude --max-workers 8 --clean
+# (compute <ab>/<pr> paths via scripts/paths.py: repo_dir(pr) / run_dir(run_id, pr))
 ```
 
 `--backend` is agent-agnostic (`claude` | `codex` | `cursor` | `anthropic` |
@@ -210,8 +216,8 @@ worker + specialist calls are fault-tolerant (retry/backoff, graceful degradatio
 ## Before any commit to skill-code-review
 
 ```bash
-uv run ruff check ctxr_skill_code_review/ tests/
-uv run mypy ctxr_skill_code_review/
+uv run ruff check code_review/ tests/
+uv run mypy code_review/
 uv run pytest
 ```
 

@@ -202,8 +202,8 @@ table in `docs/code-reviewer-design.md` so the Project Profile carries the signa
 
 A corpus change is not done until it is benchmark-checked:
 
-1. Code gate: `uv run ruff check ctxr_skill_code_review/ tests/ && uv run mypy
-   ctxr_skill_code_review/ && uv run pytest`.
+1. Code gate: `uv run ruff check code_review/ tests/ && uv run mypy
+   code_review/ && uv run pytest`.
 2. Routing check: run a review (via the product, see scr-benchmark-optimizer) on a
    diff the new leaf should cover; confirm the leaf is picked and its specialist
    fires — and confirm you did NOT inflate the candidate set on unrelated diffs

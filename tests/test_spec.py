@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from ctxr_skill_code_review.handlers import INLINE_HANDLERS
-from ctxr_skill_code_review.spec import (
+from code_review.handlers import INLINE_HANDLERS
+from code_review.spec import (
     SPEC_ID,
     SPEC_VERSION,
     build_spec,

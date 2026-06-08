@@ -48,7 +48,7 @@ tools:                              # OPTIONAL external linters / SAST
 - **policy:** `max_depth: 2` (root, category, optional subcategory, leaf), `fanout_target: 8` (advisory), `fanout_hard_max: 34` (hard-fail), `unpinned: reject` (every leaf must match a pin), `on_unknown_leaf: error`.
 - **taxonomy:** 26 fixed categories, each pinned by an `id_prefix` (for example `lang-` to `languages`, `sec-`/`crypto-`/`cookie-` to `security`, `fw-` to `frameworks`). The category `id` is the directory name; its `purpose` becomes the index focus (a stable string, never an emergent slug).
 - **pin grammar:** exactly one of `id`, `id_prefix`, or `id_glob` per rule; taxonomy order is precedence. Keep pin coverage complete so no id is unpinned.
-- **frontmatter_contract:** the required / enum / non-empty / forbid rules listed above live here, so the contract has a single source of truth.
+- **frontmatter_contract:** the declarative rules (the `required` field list, the `type` / `dimensions` `enums`, `require_nonempty`, and the `forbid` glob list) live here. A few structural rules are enforced in `validate_layout.py` code rather than the YAML: the `languages` shape (the string `"all"` or a non-empty list) and the `tools` entry shape (`{name, purpose, command?}`). So changing a required field, an enum, or a forbidden glob is a YAML edit; changing the languages/tools shape is a validator-code change.
 
 Because placement is pinned, the build is byte-stable: `skill-llm-wiki build --layout-config reviewers.layout.yaml` plus a re-run produce identical trees, and a new leaf adds exactly one file.
 

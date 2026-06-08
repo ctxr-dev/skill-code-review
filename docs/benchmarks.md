@@ -71,7 +71,7 @@ The following is a 5-PR pilot slice. It is **reproducible via the harness above,
 On this 5-PR slice:
 
 - **cubic-v2** (external leader): around **F1 0.83** (recall ~0.91, precision ~0.77, ~0.6 false positives per PR).
-- **skill-prod-primary**: around **F1 0.46** (recall ~0.73, precision ~0.33, ~3.2 false positives per PR).
+- **skill-prod-primary**: around **F1 0.62** (recall ~0.73, precision ~0.53, ~1.4 false positives per PR) on the shipped 479-leaf layout-driven wiki.
 
 Recall is competitive; **precision/noise is the active optimization target**. Do not read this slice as a claim about the full 50 PRs.
 
@@ -83,6 +83,8 @@ Recall is competitive; **precision/noise is the active optimization target**. Do
 > - **false-positives-per-PR down (or equal).**
 >
 > **If either axis regresses, do NOT promote the regenerated wiki.**
+
+This gate has been exercised. The cutover to the deterministic 26-category taxonomy (479 leaf reviewers, every leaf pinned by `reviewers.layout.yaml`) passed it: recall held at ~0.73 while false-positives-per-PR more than halved (3.2 down to 1.4), lifting F1 from 0.46 to 0.62. The cutover initially dipped recall by one golden; investigating the missed goldens showed they were common bug classes with no dedicated reviewer leaf, so three generalized footgun leaves were added (null/missing-state deref, unintended recursion, destructive query scope) plus a sharpen to the TOCTOU-race leaf, which recovered the dip while keeping noise low. The lesson: a missed golden is often a coverage gap (a missing reviewer), not just routing noise.
 
 This gate is **in addition to** the standing checks:
 

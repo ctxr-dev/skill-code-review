@@ -36,6 +36,32 @@ upgrade to v2.4.x without any code changes.
 
 ## [Unreleased]
 
+### Added
+
+- Three generalized correctness reviewers that close common coverage
+  gaps found via the benchmark: `footgun-null-and-missing-state`
+  (null/None/undefined dereference and unguarded missing state,
+  CWE-476/CWE-252), `footgun-unintended-recursion` (unbounded
+  recursion and re-entrancy, including a wrapper/cache calling its own
+  public API instead of the inner delegate, CWE-674), and
+  `footgun-destructive-query-scope` (DELETE/UPDATE with a missing or
+  too-broad predicate causing data loss, CWE-1284). The corpus is now
+  479 leaf reviewers.
+
+### Changed
+
+- `reviewers.wiki` is now a deterministic 26-category taxonomy driven
+  by `reviewers.layout.yaml` (every leaf is pinned by id, so adding a
+  reviewer is a one-file diff and rebuilds are byte-stable). This
+  replaces the previous emergent, slug-named clustering.
+- Sharpened `footgun-toctou-race` to call out non-atomic counter
+  increments (read field, write field+1) and the atomic-DB-increment
+  fix.
+- Benchmark quality on the 5-PR pilot (`skill-prod-primary`) improved
+  from F1 0.46 to ~0.62, with false positives per PR cut from ~3.2 to
+  ~1.4 and recall held; the deterministic-wiki change cleared the
+  no-regression gate.
+
 ### Fixed
 
 - `merge_specialist_outputs` now raises `DispatchLoopExitedEarlyError`

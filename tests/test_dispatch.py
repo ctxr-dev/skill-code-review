@@ -4,6 +4,7 @@ fields stripped for the prompt."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -15,6 +16,7 @@ from code_review.dispatch import (
     _rehydrate,
     _route_tier,
     _strip_nulls,
+    make_dispatchers,
 )
 from code_review.runner import ContextOverflowError, RateLimitError
 
@@ -143,3 +145,36 @@ def test_route_tier_correctness_security_to_strong() -> None:
     assert _route_tier("sec-csrf", ["security"]) == "strong"
     assert _route_tier("lang-python", None) == "strong"
     assert _route_tier("antipattern-copy-paste", ["readability"]) == "cheap"
+
+
+def test_dispatch_specialist_stamps_real_wall_ms(tmp_path: Path) -> None:
+    """The specialist closure stamps a REAL measured wall_ms on its output, which
+    supersedes any LLM-self-reported runtime_ms in the agent JSON."""
+    def fake_backend(prompt: str, cwd: str, tier: str) -> str:
+        # The agent self-reports a (hallucinated) runtime_ms; the runner must
+        # override it with a measured wall_ms key.
+        return json.dumps({"id": "lang-python", "status": "completed",
+                           "runtime_ms": 999999, "findings": []})
+
+    _worker, dispatch_specialist = make_dispatchers(
+        str(tmp_path), tmp_path, base="B", head="H", backend=fake_backend)
+    out = dispatch_specialist(
+        {"leaf_id": "lang-python", "files": ["a.py"]},
+        {"picked_leaves": [{"id": "lang-python", "dimensions": ["correctness"]}]})
+    assert "wall_ms" in out
+    assert isinstance(out["wall_ms"], int)
+    assert out["wall_ms"] >= 0
+
+
+def test_dispatch_worker_ranker_stamps_wall_ms(tmp_path: Path) -> None:
+    """The ranker closure stamps wall_ms on its decisions output too."""
+    def fake_backend(prompt: str, cwd: str, tier: str) -> str:
+        return json.dumps({"decisions": [{"i": 0, "defect_confidence": 0.9, "primary": True}]})
+
+    dispatch_worker, _spec = make_dispatchers(
+        str(tmp_path), tmp_path, base="B", head="H", backend=fake_backend)
+    out = dispatch_worker("rank_findings", {
+        "findings": [{"severity": "critical", "file": "a.py", "line": 1, "title": "t"}],
+        "args": {}})
+    assert isinstance(out.get("wall_ms"), int)
+    assert out["wall_ms"] >= 0

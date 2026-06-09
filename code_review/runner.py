@@ -66,6 +66,14 @@ class RunnerStats:
     max_concurrency_seen: int = 0
     coverage_floor_used: int = 0
     degraded_workers: int = 0
+    # Forward timing telemetry. The product runner drives the FSM in-process and
+    # never persists a journal, so per-state timing is measured LIVE here. Each
+    # stage_timings row is {scope, name, iteration_n, wall_ms}: scope is the FSM
+    # state kind (inline/loop/worker/advance), name is the FSM state_id, and
+    # wall_ms is real perf_counter wall-clock. total_wall_ms brackets the whole
+    # run_review body.
+    total_wall_ms: int = 0
+    stage_timings: list[dict[str, Any]] = field(default_factory=list)
 
 
 # Best-effort worker states: a transient outage degrades to a safe fallback
@@ -327,6 +335,53 @@ def _resolve_env_hook(var: str) -> Any:
     return getattr(importlib.import_module(mod), attr)
 
 
+def _record_stage(
+    stats: RunnerStats, scope: str, name: str, iteration_n: int | None, t0: float,
+) -> None:
+    """Append one measured per-state timing row. Wall time is real perf_counter
+    elapsed since ``t0``, rounded to whole milliseconds. There is no FSM journal
+    to backfill from, so this is the only place per-state timing is captured."""
+    stats.stage_timings.append({
+        "scope": scope,
+        "name": name,
+        "iteration_n": iteration_n,
+        "wall_ms": int((time.perf_counter() - t0) * 1000),
+    })
+
+
+def _per_specialist_timings(
+    unit_results: dict[tuple[str, int], dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Collect the per-specialist measured wall_ms (stamped by dispatch.py on each
+    specialist output) keyed by leaf_id. tokens stay null on the claude -p CLI
+    path (it reports no billed usage); they fill in on the API backend."""
+    out: list[dict[str, Any]] = []
+    for (leaf_id, _sub), result in sorted(unit_results.items()):
+        out.append({
+            "leaf_id": leaf_id,
+            "wall_ms": result.get("wall_ms"),
+            "tokens_in": result.get("tokens_in"),
+            "tokens_out": result.get("tokens_out"),
+        })
+    return out
+
+
+def _timings_artifact(
+    stats: RunnerStats, unit_results: dict[tuple[str, int], dict[str, Any]],
+    run_t0: float,
+) -> dict[str, Any]:
+    """Assemble the structured timings payload the write_run_directory handler
+    persists as timings.json. ``whole_review_ms`` is the elapsed-so-far at the
+    moment the artifact is built (write_run_directory runs near the end of the
+    run, so this captures the bulk of the wall time even though total_wall_ms is
+    only finalised in run_review's finally)."""
+    return {
+        "whole_review_ms": int((time.perf_counter() - run_t0) * 1000),
+        "stage_timings": [dict(row) for row in stats.stage_timings],
+        "specialists": _per_specialist_timings(unit_results),
+    }
+
+
 @dataclass
 class RunResult:
     verdict: Any = None
@@ -372,72 +427,95 @@ def run_review(
         return RunCtx(run_id=run_id, fsm_id=SPEC_ID, current_state=state_id,
                       iteration_n=iteration_n, env=env)
 
-    for _ in range(_MAX_STEPS):
-        st = fsm.get_state(state_id)
-        if st.kind == StateKind.terminal:
-            return RunResult(verdict=env.get("verdict"), run_dir_path=env.get("run_dir_path"),
-                             findings=env.get("findings", []), stats=stats)
+    # Bracket the whole run_review body for total_wall_ms. Every RunResult below
+    # carries this same `stats` object by reference, so stamping total_wall_ms in
+    # the finally is reflected on whichever RunResult was returned.
+    _run_t0 = time.perf_counter()
+    try:
+        for _ in range(_MAX_STEPS):
+            st = fsm.get_state(state_id)
+            if st.kind == StateKind.terminal:
+                return RunResult(verdict=env.get("verdict"), run_dir_path=env.get("run_dir_path"),
+                                 findings=env.get("findings", []), stats=stats)
 
-        if st.kind == StateKind.inline:
-            res = execute_inline(state=st, ctx=ctx(), args=env.get("args", {}),
-                                 inputs=env, registry=reg)
-            if not res.ok:
-                return RunResult(stats=stats, faulted=True,
-                                 fault=f"inline:{state_id}:{res.fault_reason}:{_inline_fault_detail(res)}")
-            outputs = res.outputs
-        elif st.kind == StateKind.loop:  # dispatch_specialists
-            if not unit_results:
-                units = [u for b in (env.get("specialist_batches") or []) for u in b.get("units", [])]
-                shared = {k: env.get(k) for k in ("project_profile", "changed_paths",
-                                                  "tool_results", "picked_leaves", "args")}
-                unit_results = _dispatch_units(
-                    units, shared, dispatch_specialist, max_workers=max_workers,
-                    min_workers=min_workers, max_retries=max_retries,
-                    base_backoff=base_backoff, sleep=sleep, stats=stats)
-            batch_index = iteration_n or 1
-            batches = env.get("specialist_batches") or []
-            batch = batches[batch_index - 1] if batch_index - 1 < len(batches) else {"units": []}
-            iter_outputs = [
-                {"leaf_id": u["leaf_id"], "sub_index": u["sub_index"],
-                 "specialist_output": unit_results.get(
-                     (u["leaf_id"], int(u["sub_index"])),
-                     {"id": u["leaf_id"], "status": "failed", "findings": [],
-                      "skip_reason": "no result"})}
-                for u in batch.get("units", [])
-            ]
-            outputs = {"batch_index": batch_index, "iter_outputs": iter_outputs,
-                       "loop_done": batch_index == env.get("total_batches", batch_index)}
-            env["loop_iters"].append(outputs)
-        else:  # worker
-            inputs = {k: env.get(k) for k in (st.worker.inputs if st.worker else [])}
-            try:
-                outputs = _call_worker_resilient(
-                    dispatch_worker, state_id, inputs, max_retries=max_retries,
-                    base_backoff=base_backoff, sleep=sleep, stats=stats)
-            except (RateLimitError, ContextOverflowError) as exc:
-                fallback = _DEGRADABLE_WORKERS.get(state_id)
-                if fallback is None:
+            if st.kind == StateKind.inline:
+                # Hand the live timing snapshot to write_run_directory so it can
+                # persist timings.json next to manifest.json. The product runner
+                # never writes an FSM journal, so this in-process channel is the
+                # only way the persisted artifact sees per-state/per-specialist
+                # wall time.
+                if state_id == "write_run_directory":
+                    env["timings"] = _timings_artifact(stats, unit_results, _run_t0)
+                _t0 = time.perf_counter()
+                res = execute_inline(state=st, ctx=ctx(), args=env.get("args", {}),
+                                     inputs=env, registry=reg)
+                _record_stage(stats, "inline", state_id, iteration_n, _t0)
+                if not res.ok:
                     return RunResult(stats=stats, faulted=True,
-                                     fault=f"worker:{state_id}:{type(exc).__name__}:{exc}")
-                # Best-effort worker (e.g. tool_discovery): degrade, don't fault the
-                # whole review on a transient outage of a non-critical stage.
-                stats.degraded_workers += 1
-                outputs = fallback(env)
-            outputs = _coverage_floor(state_id, inputs, outputs, env, stats)
+                                     fault=f"inline:{state_id}:{res.fault_reason}:{_inline_fault_detail(res)}")
+                outputs = res.outputs
+            elif st.kind == StateKind.loop:  # dispatch_specialists
+                _t0 = time.perf_counter()
+                if not unit_results:
+                    units = [u for b in (env.get("specialist_batches") or []) for u in b.get("units", [])]
+                    shared = {k: env.get(k) for k in ("project_profile", "changed_paths",
+                                                      "tool_results", "picked_leaves", "args")}
+                    unit_results = _dispatch_units(
+                        units, shared, dispatch_specialist, max_workers=max_workers,
+                        min_workers=min_workers, max_retries=max_retries,
+                        base_backoff=base_backoff, sleep=sleep, stats=stats)
+                batch_index = iteration_n or 1
+                batches = env.get("specialist_batches") or []
+                batch = batches[batch_index - 1] if batch_index - 1 < len(batches) else {"units": []}
+                iter_outputs = [
+                    {"leaf_id": u["leaf_id"], "sub_index": u["sub_index"],
+                     "specialist_output": unit_results.get(
+                         (u["leaf_id"], int(u["sub_index"])),
+                         {"id": u["leaf_id"], "status": "failed", "findings": [],
+                          "skip_reason": "no result"})}
+                    for u in batch.get("units", [])
+                ]
+                outputs = {"batch_index": batch_index, "iter_outputs": iter_outputs,
+                           "loop_done": batch_index == env.get("total_batches", batch_index)}
+                env["loop_iters"].append(outputs)
+                _record_stage(stats, "loop", state_id, iteration_n, _t0)
+            else:  # worker
+                _t0 = time.perf_counter()
+                inputs = {k: env.get(k) for k in (st.worker.inputs if st.worker else [])}
+                try:
+                    outputs = _call_worker_resilient(
+                        dispatch_worker, state_id, inputs, max_retries=max_retries,
+                        base_backoff=base_backoff, sleep=sleep, stats=stats)
+                except (RateLimitError, ContextOverflowError) as exc:
+                    fallback = _DEGRADABLE_WORKERS.get(state_id)
+                    if fallback is None:
+                        _record_stage(stats, "worker", state_id, iteration_n, _t0)
+                        return RunResult(stats=stats, faulted=True,
+                                         fault=f"worker:{state_id}:{type(exc).__name__}:{exc}")
+                    # Best-effort worker (e.g. tool_discovery): degrade, don't fault the
+                    # whole review on a transient outage of a non-critical stage.
+                    stats.degraded_workers += 1
+                    outputs = fallback(env)
+                outputs = _coverage_floor(state_id, inputs, outputs, env, stats)
+                _record_stage(stats, "worker", state_id, iteration_n, _t0)
 
-        adv = engine_advance(fsm, ctx(), outputs)
-        if adv.kind == "fault":
-            return RunResult(stats=stats, faulted=True,
-                             fault=f"advance:{adv.reason}:{adv.errors}")
-        if adv.kind == "loop_continue":
-            iteration_n = adv.iteration_n
+            _adv_t0 = time.perf_counter()
+            adv = engine_advance(fsm, ctx(), outputs)
+            _record_stage(stats, "advance", state_id, iteration_n, _adv_t0)
+            if adv.kind == "fault":
+                return RunResult(stats=stats, faulted=True,
+                                 fault=f"advance:{adv.reason}:{adv.errors}")
+            if adv.kind == "loop_continue":
+                iteration_n = adv.iteration_n
+                env = {**env, **outputs}
+                continue
             env = {**env, **outputs}
-            continue
-        env = {**env, **outputs}
-        if adv.kind == "terminal":
-            state_id = "terminal"
-            continue
-        state_id = adv.next_state or "terminal"
-        iteration_n = None
+            if adv.kind == "terminal":
+                state_id = "terminal"
+                continue
+            state_id = adv.next_state or "terminal"
+            iteration_n = None
 
-    return RunResult(stats=stats, faulted=True, fault="max_steps_exceeded")
+        return RunResult(stats=stats, faulted=True, fault="max_steps_exceeded")
+    finally:
+        stats.total_wall_ms = int((time.perf_counter() - _run_t0) * 1000)

@@ -258,3 +258,52 @@ def test_run_review_drives_fsm_to_terminal(tmp_path: Any) -> None:
     assert res.verdict in ("GO", "CONDITIONAL", "NO-GO")
     assert res.run_dir_path
     assert res.stats.dispatched >= 2  # both picked leaves dispatched (100% coverage)
+
+
+def test_runner_stats_carries_stage_timings_defaults() -> None:
+    """RunnerStats carries the forward timing fields with safe defaults (an empty
+    list, not a shared mutable default)."""
+    a, b = RunnerStats(), RunnerStats()
+    assert a.total_wall_ms == 0
+    assert a.stage_timings == []
+    a.stage_timings.append({"scope": "inline", "name": "x", "iteration_n": None, "wall_ms": 1})
+    assert b.stage_timings == []  # field(default_factory=list): not shared across instances
+
+
+def test_run_review_measures_stage_timings_and_writes_timings_json(tmp_path: Any) -> None:
+    """run_review measures per-state wall time LIVE and persists a timings.json
+    artifact next to manifest.json carrying whole_review_ms + stage_timings +
+    per-specialist measured wall_ms."""
+    import json
+    from pathlib import Path
+
+    def spec(unit: dict[str, Any], shared: dict[str, Any]) -> dict[str, Any]:
+        return {"id": unit["leaf_id"], "status": "completed", "wall_ms": 7,
+                "findings": [{"severity": "important", "file": (unit.get("files") or ["x.py"])[0],
+                              "line": 1, "title": f"bug {unit['leaf_id']}", "confidence": 0.9}]}
+
+    storage = str(tmp_path / ".skill-code-review")
+    res = run_review({"project_root": str(tmp_path), "base": "B", "head": "H",
+                      "storage_root": storage},
+                     dispatch_worker=_worker, dispatch_specialist=spec,
+                     max_workers=4, base_backoff=0.0, sleep=lambda _s: None)
+    assert not res.faulted, res.fault
+    # total_wall_ms is finalised (the finally always runs) and stage rows captured.
+    assert res.stats.total_wall_ms >= 0
+    assert len(res.stats.stage_timings) > 0
+    row = res.stats.stage_timings[0]
+    assert set(row) == {"scope", "name", "iteration_n", "wall_ms"}
+    assert row["scope"] in {"inline", "loop", "worker", "advance"}
+
+    # The persisted timings.json sits next to manifest.json.
+    tj_files = list(Path(storage).rglob("timings.json"))
+    assert len(tj_files) == 1
+    doc = json.loads(tj_files[0].read_text())
+    assert isinstance(doc["whole_review_ms"], int)
+    assert len(doc["stage_timings"]) > 0
+    leaves = {s["leaf_id"]: s for s in doc["specialists"]}
+    assert leaves  # at least one specialist row
+    # per-specialist measured wall_ms is carried; tokens stay null on the CLI path.
+    any_leaf = next(iter(leaves.values()))
+    assert "wall_ms" in any_leaf
+    assert any_leaf["tokens_in"] is None and any_leaf["tokens_out"] is None

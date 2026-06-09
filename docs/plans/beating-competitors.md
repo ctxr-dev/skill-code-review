@@ -283,6 +283,55 @@ flowchart TD
     REC -. AgentResult .- PROV
 ```
 
+### 5.8 Timing telemetry (forward only, no journal to backfill)
+
+The product runner drives the FSM in-process (`runner.py` `run_review`) and never
+persists an FSM journal, so per-state timing CANNOT be reconstructed after the
+fact. It must be measured LIVE, the same way cost is. The implementation is
+forward only and surgical:
+
+- **`RunnerStats.stage_timings` + `total_wall_ms`** (`runner.py`): `stage_timings`
+  is a list of `{scope, name, iteration_n, wall_ms}` rows, where `scope` is the
+  FSM state kind (`inline` / `loop` / `worker` / `advance`), `name` is the FSM
+  `state_id`, and `wall_ms` is real `time.perf_counter()` wall clock.
+  `total_wall_ms` brackets the whole `run_review` body. Both surface on
+  `RunResult.stats` and print in `cli.py`.
+- **`perf_counter` hooks**: each per state branch of the `run_review` loop (the
+  inline `execute_inline`, the loop `dispatch_specialists`, the worker
+  `_call_worker_resilient`, and `engine_advance`) is bracketed and appended to
+  `stage_timings`; the whole body is bracketed for `total_wall_ms` in a `finally`
+  so every return path (terminal, fault, max steps) carries the measurement.
+- **Per agent `wall_ms`** (`dispatch.py`): each dispatch closure stamps a REAL
+  measured `wall_ms` on its output (specialist `run()`, the ranker `run()`, and
+  the generic worker `run()`). This real wall time SUPERSEDES the only on disk
+  per agent `runtime_ms` (the specialist JSON), which is LLM self reported and
+  HALLUCINATED and must not be trusted.
+- **The `timings.json` artifact**: the `write_run_directory` handler writes a
+  `timings.json` next to `manifest.json` carrying `whole_review_ms`, the
+  `stage_timings`, and per specialist `{leaf_id, wall_ms, tokens_in, tokens_out}`.
+  The runner hands its live timing snapshot to the handler through `env` (there is
+  no journal channel). Do NOT parse the untimestamped `run.log`.
+- **The `timings` table + status/source columns** (`benchmarks/experiments.py`):
+  columns `(run_id, pr_id, scope, name, wall_ms, tokens_in, tokens_out,
+  started_at, ended_at, n_calls, status, source)` with `scope` in
+  `process | fsm_state | agent | stage` and `status` in
+  `measured | self_reported | estimated`. The `status` and `source` columns keep
+  unreliable backfill (the hallucinated self reported `runtime_ms`) from poisoning
+  the rankings: only `status='measured'` rows are trustworthy.
+- **`scripts/ingest_timings.py`** (dry run by default, `--apply` writes): walks
+  `tmp/runs/<run-id>/<ab>/<pr>/`, reads each `timings.json`, and inserts
+  `status='measured'` rows (`source=runner`). The historical base-r* rounds cannot
+  be backfilled as measured data; an optional `--include-self-reported` path
+  ingests the hallucinated specialist `runtime_ms` flagged
+  `status='self_reported'`, `source='specialist_json'`, and is low value.
+- **`experiments.py slowest`**: ranks the slowest stages by total wall time
+  (`GROUP BY scope, name ORDER BY total_ms DESC`), measured only by default so the
+  unreliable rows never enter the ranking.
+
+**Tokens caveat**: on the `claude -p` CLI path the provider reports no billed
+usage, so `tokens_in` / `tokens_out` stay null and that is expected; they fill in
+on the API backend (`anthropic` / `openai`), where billed usage is available.
+
 ---
 
 ## 6. THE DEVELOPMENT METHODOLOGY (the anti-chaos engine)

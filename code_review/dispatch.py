@@ -22,6 +22,7 @@ import tempfile
 from collections.abc import Callable
 from importlib import resources
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from .runner import ContextOverflowError, RateLimitError, SpecialistDispatch, WorkerDispatch
@@ -323,14 +324,20 @@ def make_dispatchers(
                                      "args": inputs.get("args") or {}}, default=str)[:_WORKER_INPUT_CAP]
                        + '\n```\n\n## OUTPUT CONTRACT\nReturn ONLY {"decisions":[...]} as '
                        + "described above — no prose, no markdown fences, no file writes.\n")
+            _t0 = perf_counter()
             parsed = _parse_json(run(rprompt, repo, "cheap"))
-            decisions = parsed.get("decisions") if isinstance(parsed, dict) else None
-            return _apply_rank_decisions(findings, decisions, inputs.get("args") or {})
+            ranked = _apply_rank_decisions(
+                findings, parsed.get("decisions") if isinstance(parsed, dict) else None,
+                inputs.get("args") or {})
+            ranked["wall_ms"] = int((perf_counter() - _t0) * 1000)
+            return ranked
         compact = _compact_inputs(inputs)
         prompt = (_load_prompt(_ROLE_BY_STATE[state_id])
                   + f"\n\n## RUN INPUTS (review base {base}..head {head} in this repo)\n"
                   + "```json\n" + json.dumps(compact, default=str)[:_WORKER_INPUT_CAP] + "\n```" + _OUTPUT_RULE)
+        _t0 = perf_counter()
         out = _parse_json(run(prompt, repo, "cheap"))
+        out["wall_ms"] = int((perf_counter() - _t0) * 1000)
         # Rehydrate the heavy leaf fields we stripped for the prompt, keyed by id
         # off the deterministic source set, so downstream sees complete leaves.
         if state_id == "tree_descend" and isinstance(out.get("stage_a_candidates"), list):
@@ -356,7 +363,12 @@ def make_dispatchers(
                   + "## PROJECT\n```json\n" + json.dumps(shared.get("project_profile") or {}, default=str)[:4000]
                   + "\n```" + _OUTPUT_RULE
                   + f'Return {{"id":"{leaf_id}","status":"completed","findings":[...]}}.')
+        _t0 = perf_counter()
         out = _parse_json(run(prompt, repo, _route_tier(leaf_id, leaf.get("dimensions"))))
+        # Real measured wall_ms supersedes the LLM-self-reported (hallucinated)
+        # runtime_ms in the specialist JSON. tokens stay null on the claude -p CLI
+        # path (no billed usage); they fill in on the API backend.
+        out["wall_ms"] = int((perf_counter() - _t0) * 1000)
         out.setdefault("id", leaf_id)
         cleaned = _strip_nulls(out)
         return cleaned if isinstance(cleaned, dict) else out

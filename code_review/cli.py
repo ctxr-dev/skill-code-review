@@ -40,6 +40,7 @@ def cmd_review(a: argparse.Namespace) -> int:
     summary = {
         "faulted": res.faulted, "fault": res.fault, "verdict": res.verdict,
         "run_dir_path": res.run_dir_path, "n_findings": len(res.findings),
+        "total_wall_ms": res.stats.total_wall_ms,
         "stats": vars(res.stats),
     }
     print(json.dumps(summary, indent=2, default=str))

@@ -222,6 +222,63 @@ def test_dead_end_hash_is_stable_and_normalized(tracker: ModuleType) -> None:
     assert a != c
 
 
+def test_init_creates_timings_table(db_conn: sqlite3.Connection) -> None:
+    names = {
+        r[0]
+        for r in db_conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    assert "timings" in names
+    db_conn.close()
+
+
+def test_timings_table_and_slowest_round_trip(
+    tracker: ModuleType, db_conn: sqlite3.Connection
+) -> None:
+    """Measured timing rows round-trip, slowest aggregates by (scope, name) and
+    ranks by total wall time, and self_reported rows are excluded by default."""
+    # Two PRs, same agent -> aggregated across PRs.
+    tracker.upsert_timing(db_conn, {
+        "run_id": "r1", "pr_id": "pr-a", "scope": "agent", "name": "lang-python",
+        "wall_ms": 500, "source": "runner"})
+    tracker.upsert_timing(db_conn, {
+        "run_id": "r1", "pr_id": "pr-b", "scope": "agent", "name": "lang-python",
+        "wall_ms": 700, "source": "runner"})
+    tracker.upsert_timing(db_conn, {
+        "run_id": "r1", "pr_id": "pr-a", "scope": "process", "name": "whole_review",
+        "wall_ms": 2000, "source": "runner"})
+    # A self_reported (hallucinated) row must NOT pollute the measured ranking.
+    tracker.upsert_timing(db_conn, {
+        "run_id": "r1", "pr_id": "pr-a", "scope": "agent", "name": "noisy-leaf",
+        "wall_ms": 999999, "status": "self_reported", "source": "specialist_json"})
+
+    # n_calls + status default correctly.
+    row = db_conn.execute(
+        "SELECT n_calls, status FROM timings WHERE name = 'lang-python' AND pr_id = 'pr-a'"
+    ).fetchone()
+    assert row["n_calls"] == 1
+    assert row["status"] == "measured"
+
+    measured = tracker.slowest_timings(db_conn, top=10)
+    names = [r["name"] for r in measured]
+    assert "noisy-leaf" not in names  # self_reported excluded by default
+    by_name = {r["name"]: r for r in measured}
+    assert by_name["whole_review"]["total_ms"] == 2000  # ranked first
+    assert measured[0]["name"] == "whole_review"
+    # lang-python aggregates across the two PRs.
+    assert by_name["lang-python"]["prs"] == 2
+    assert by_name["lang-python"]["calls"] == 2
+    assert by_name["lang-python"]["total_ms"] == 1200
+
+    # all-status surfaces the self_reported row; scope filter narrows.
+    all_status = tracker.slowest_timings(db_conn, measured_only=False, top=10)
+    assert any(r["name"] == "noisy-leaf" for r in all_status)
+    agents = tracker.slowest_timings(db_conn, scope="agent", top=10)
+    assert {r["name"] for r in agents} == {"lang-python"}
+    db_conn.close()
+
+
 def test_check_warns_on_known_dead_end(
     tracker: ModuleType, db_conn: sqlite3.Connection
 ) -> None:

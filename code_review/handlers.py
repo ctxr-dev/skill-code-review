@@ -1953,6 +1953,31 @@ def write_run_artefacts(
         run_dir / "manifest.json",
         json.dumps(manifest, indent=2) + "\n",
     )
+
+    # Structured timing telemetry, persisted next to manifest.json. The product
+    # runner drives the FSM in-process and never writes a journal, so the runner
+    # hands its live timing snapshot through env["timings"] (whole_review_ms +
+    # per-state stage_timings + per-specialist {leaf_id, wall_ms, tokens_in,
+    # tokens_out}). When the runner did not supply timings (e.g. an ad-hoc
+    # materialisation outside run_review), we skip the file rather than write an
+    # empty shell. tokens stay null on the claude -p CLI path (no billed usage);
+    # they fill in on the API backend. Downstream ingest (scripts/ingest_timings.py)
+    # reads this file, NEVER the untimestamped run.log.
+    timings = env.get("timings")
+    if isinstance(timings, dict):
+        stage_timings = timings.get("stage_timings")
+        specialists = timings.get("specialists")
+        timings_doc = {
+            "run_id": legacy_run_id,
+            "fsm_run_id": run_uuid_str,
+            "whole_review_ms": timings.get("whole_review_ms"),
+            "stage_timings": stage_timings if isinstance(stage_timings, list) else [],
+            "specialists": specialists if isinstance(specialists, list) else [],
+        }
+        _atomic_write_text(
+            run_dir / "timings.json",
+            json.dumps(timings_doc, indent=2) + "\n",
+        )
     return run_dir
 
 

@@ -3,10 +3,10 @@
 
 This is the durable, committed state surface for the optimization loop described
 in the master plan (sections 6 and 8). It owns a SQLite database
-(``benchmarks/experiments.db``) with four tables (experiments, metrics, findings,
-dead_ends) and a query CLI. The DB is tracked (committed) so a tag reconstructs
-the full history, and three generated markdown views (STATE.md, HISTORY.md,
-LEADERBOARD.md) keep ``git diff`` legible in plain text.
+(``benchmarks/experiments.db``) with five tables (experiments, metrics, findings,
+dead_ends, timings) and a query CLI. The DB is tracked (committed) so a tag
+reconstructs the full history, and three generated markdown views (STATE.md,
+HISTORY.md, LEADERBOARD.md) keep ``git diff`` legible in plain text.
 
 Design constraints (house rules):
   - Pure standard library only (sqlite3, json, argparse, hashlib, subprocess).
@@ -21,7 +21,7 @@ Design constraints (house rules):
     header), exactly the discipline the generated wiki uses.
 
 Subcommands:
-  init                      create the DB and its four tables (idempotent).
+  init                      create the DB and its five tables (idempotent).
   record                    ingest one measurement (a score.py run + config + SHA).
   ci                        attach bootstrap CIs to a recorded run (placeholder seam).
   gate --baseline <run>     apply the 5-gate PROMOTE predicate (plan 6.3).
@@ -30,6 +30,7 @@ Subcommands:
   leaderboard               regenerate LEADERBOARD.md (best tool rows per run).
   state                     regenerate STATE.md (the live "YOU ARE HERE").
   status                    print the one-line current position.
+  slowest                   rank the slowest stages/agents by total wall time.
   check <hypothesis> <lever>  dead-end guard (warn if a matching failure is known).
 """
 
@@ -163,6 +164,33 @@ SCHEMA: tuple[str, ...] = (
         retry_at_pr_set  TEXT
     )
     """,
+    # Timing telemetry. The product runner measures per-state and per-agent wall
+    # time LIVE (no FSM journal to backfill), persists it as a timings.json
+    # artifact next to each run's manifest, and scripts/ingest_timings.py loads
+    # measured rows here. scope distinguishes the granularity: a whole-run
+    # process row, an FSM state, a per-leaf agent, or a named stage. The
+    # status/source columns keep unreliable backfill (LLM-self-reported
+    # runtime_ms) from poisoning rankings: only status='measured' rows are
+    # trustworthy wall time; self_reported/estimated rows are kept for provenance
+    # but excluded from the default 'slowest' ranking.
+    """
+    CREATE TABLE IF NOT EXISTS timings (
+        run_id     TEXT NOT NULL,
+        pr_id      TEXT NOT NULL,
+        scope      TEXT CHECK (scope IN ('process', 'fsm_state', 'agent', 'stage')),
+        name       TEXT,
+        wall_ms    INTEGER,
+        tokens_in  INTEGER,
+        tokens_out INTEGER,
+        started_at TEXT,
+        ended_at   TEXT,
+        n_calls    INTEGER DEFAULT 1,
+        status     TEXT DEFAULT 'measured'
+                   CHECK (status IN ('measured', 'self_reported', 'estimated')),
+        source     TEXT,
+        PRIMARY KEY (run_id, pr_id, scope, name)
+    )
+    """,
 )
 
 
@@ -203,7 +231,7 @@ def connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    """Create the four tables if they do not exist. Idempotent."""
+    """Create the five tables if they do not exist. Idempotent."""
     for stmt in SCHEMA:
         conn.execute(stmt)
     conn.commit()
@@ -295,6 +323,72 @@ def upsert_dead_end(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
     marks = ", ".join(f":{c}" for c in cols)
     conn.execute(f"INSERT OR REPLACE INTO dead_ends ({col_sql}) VALUES ({marks})", payload)
     conn.commit()
+
+
+TIMING_COLUMNS: tuple[str, ...] = (
+    "run_id",
+    "pr_id",
+    "scope",
+    "name",
+    "wall_ms",
+    "tokens_in",
+    "tokens_out",
+    "started_at",
+    "ended_at",
+    "n_calls",
+    "status",
+    "source",
+)
+
+
+def upsert_timing(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    """Insert or replace one timing row. n_calls defaults to 1 and status to
+    'measured' when the caller omits them, matching the table defaults."""
+    payload: dict[str, Any] = {c: row.get(c) for c in TIMING_COLUMNS}
+    if payload.get("n_calls") is None:
+        payload["n_calls"] = 1
+    if payload.get("status") is None:
+        payload["status"] = "measured"
+    col_sql = ", ".join(TIMING_COLUMNS)
+    marks = ", ".join(f":{c}" for c in TIMING_COLUMNS)
+    conn.execute(f"INSERT OR REPLACE INTO timings ({col_sql}) VALUES ({marks})", payload)
+    conn.commit()
+
+
+def slowest_timings(
+    conn: sqlite3.Connection,
+    *,
+    scope: str | None = None,
+    run_id: str | None = None,
+    measured_only: bool = True,
+    top: int = 20,
+) -> list[dict[str, Any]]:
+    """Aggregate the timings table into a ranked slowest-stages view.
+
+    Groups by (scope, name); sums wall_ms and n_calls; counts the distinct PRs a
+    stage appeared in; orders by total wall_ms descending. ``measured_only``
+    (default) restricts to status='measured' so LLM-self-reported / estimated
+    rows never poison the ranking.
+    """
+    where: list[str] = []
+    params: list[Any] = []
+    if scope:
+        where.append("scope = ?")
+        params.append(scope)
+    if run_id:
+        where.append("run_id = ?")
+        params.append(run_id)
+    if measured_only:
+        where.append("status = 'measured'")
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    sql = (
+        "SELECT scope, name, COUNT(DISTINCT pr_id) AS prs, SUM(n_calls) AS calls, "
+        "ROUND(AVG(wall_ms)) AS avg_ms, SUM(wall_ms) AS total_ms "
+        "FROM timings" + where_sql + " GROUP BY scope, name "
+        "ORDER BY total_ms DESC NULLS LAST LIMIT ?"
+    )
+    cur = conn.execute(sql, (*params, int(top)))
+    return [dict(r) for r in cur.fetchall()]
 
 
 def get_experiment(conn: sqlite3.Connection, run_id: str) -> dict[str, Any] | None:
@@ -659,8 +753,9 @@ def _load_json_arg(raw: str | None) -> Any:
 
 def cmd_init(args: argparse.Namespace) -> int:
     if not args.apply:
-        print(f"DRY-RUN: would create {DB_PATH} with 4 tables "
-              "(experiments, metrics, findings, dead_ends). Pass --apply to create.")
+        print(f"DRY-RUN: would create {DB_PATH} with 5 tables "
+              "(experiments, metrics, findings, dead_ends, timings). "
+              "Pass --apply to create.")
         return 0
     BENCH_DIR.mkdir(parents=True, exist_ok=True)
     conn = connect(args.db)
@@ -865,6 +960,48 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_slowest(args: argparse.Namespace) -> int:
+    """Rank the slowest stages/agents/states by total measured wall time. Read-only
+    (never mutates), so no --apply. Defaults to measured-only so unreliable
+    self-reported / estimated rows are excluded from the ranking.
+    """
+    conn = connect(args.db)
+    try:
+        init_db(conn)
+        rows = slowest_timings(
+            conn,
+            scope=args.scope,
+            run_id=args.run_id,
+            measured_only=args.measured_only,
+            top=args.top,
+        )
+        scope_note = args.scope or "all"
+        run_note = args.run_id or "all"
+        gate_note = "measured-only" if args.measured_only else "all-status"
+        print(f"slowest stages (scope={scope_note}, run={run_note}, {gate_note}, "
+              f"top {args.top}):")
+        if not rows:
+            print("  (no timing rows match)")
+            return 0
+        header = f"{'scope':<11}{'name':<32}{'prs':>5}{'calls':>7}{'avg_ms':>9}{'total_ms':>11}"
+        print(header)
+        print("-" * len(header))
+        for r in rows:
+            scope_cell = r.get("scope") or ""
+            name_cell = r.get("name") or ""
+            print(
+                f"{scope_cell!s:<11}"
+                f"{name_cell!s:<32}"
+                f"{_fmt(r.get('prs'), 0):>5}"
+                f"{_fmt(r.get('calls'), 0):>7}"
+                f"{_fmt(r.get('avg_ms'), 0):>9}"
+                f"{_fmt(r.get('total_ms'), 0):>11}"
+            )
+    finally:
+        conn.close()
+    return 0
+
+
 def cmd_check(args: argparse.Namespace) -> int:
     """Dead-end guard (plan 6.5). Warn loudly when a matching failure is known at
     the current PR set or a smaller one. Read-only (never mutates), so no --apply.
@@ -910,7 +1047,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--db", type=Path, default=DB_PATH, help="path to experiments.db")
     sub = p.add_subparsers(dest="command", required=True)
 
-    s_init = sub.add_parser("init", help="create the DB and its four tables")
+    s_init = sub.add_parser("init", help="create the DB and its five tables")
     s_init.add_argument("--apply", action="store_true", help="actually create the DB")
     s_init.set_defaults(func=cmd_init)
 
@@ -978,6 +1115,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     s_status = sub.add_parser("status", help="print the one-line current position")
     s_status.set_defaults(func=cmd_status)
+
+    s_slow = sub.add_parser("slowest", help="rank slowest stages/agents by total wall time")
+    s_slow.add_argument("--scope", choices=("process", "fsm_state", "agent", "stage"),
+                        help="restrict to one timing scope")
+    s_slow.add_argument("--run-id", dest="run_id", help="restrict to one run_id")
+    s_slow.add_argument("--measured-only", dest="measured_only", action="store_true",
+                        default=True, help="only status='measured' rows (default)")
+    s_slow.add_argument("--all-status", dest="measured_only", action="store_false",
+                        help="include self_reported / estimated rows too")
+    s_slow.add_argument("--top", type=int, default=20, help="rows to show (default 20)")
+    s_slow.set_defaults(func=cmd_slowest)
 
     s_check = sub.add_parser("check", help="dead-end guard")
     s_check.add_argument("hypothesis")

@@ -72,7 +72,7 @@ activation:
     - OAuth callback with redirect_uri parameter
 source:
   origin: file
-  path: sec-open-redirect.md
+  path: "sec/sec-open-redirect.md"
   hash: "sha256:cc54a77276c334581af785bac927cf806e8a5302122da5742acd3647ededc0fe"
 dimensions:
   - security

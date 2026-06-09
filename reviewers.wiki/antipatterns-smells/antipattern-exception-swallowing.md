@@ -59,7 +59,7 @@ activation:
     - promise_catch
 source:
   origin: file
-  path: antipattern-exception-swallowing.md
+  path: "antipattern/antipattern-exception-swallowing.md"
   hash: "sha256:f7744655027c25ae73c98a888aaeed6d09ef53348017343df13966b1e34e5a0f"
 dimensions:
   - correctness

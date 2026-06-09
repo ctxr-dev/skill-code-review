@@ -57,7 +57,7 @@ activation:
     - missing_autoreleasepool
 source:
   origin: file
-  path: mob-kotlin-multiplatform.md
+  path: "mob/mob-kotlin-multiplatform.md"
   hash: "sha256:8d4102f19eba30944a1d72f646b8442600678039c02d48fd53554d4bbe40d1a2"
 dimensions:
   - correctness

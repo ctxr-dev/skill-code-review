@@ -83,7 +83,7 @@ activation:
     - feature_flag_stale
 source:
   origin: file
-  path: modern-dead-code-removal-discipline.md
+  path: "modern/modern-dead-code-removal-discipline.md"
   hash: "sha256:7032da89ba73644b32fea67de49c9d508c4562a32efa72f423456f04ce631579"
 dimensions:
   - architecture

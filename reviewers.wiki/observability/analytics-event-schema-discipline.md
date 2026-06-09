@@ -70,7 +70,7 @@ activation:
     - Event payload type definition
 source:
   origin: file
-  path: analytics-event-schema-discipline.md
+  path: "analytics/analytics-event-schema-discipline.md"
   hash: "sha256:f27e561ab2de555881afaec177e4c7cf1f57b789786a5da11a06c79474c92bdd"
 dimensions:
   - architecture

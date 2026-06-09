@@ -53,7 +53,7 @@ activation:
     - boolean_argument
 source:
   origin: file
-  path: antipattern-magic-numbers-strings.md
+  path: "antipattern/antipattern-magic-numbers-strings.md"
   hash: "sha256:db46b335f9b2838dbd37c66b78b11b0277cf5f3f45835fb4ee5842d50df11b3f"
 dimensions:
   - readability

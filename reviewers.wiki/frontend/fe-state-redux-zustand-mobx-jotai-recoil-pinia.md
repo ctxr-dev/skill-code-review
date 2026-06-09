@@ -52,7 +52,7 @@ activation:
     - state mutation outside action
 source:
   origin: file
-  path: fe-state-redux-zustand-mobx-jotai-recoil-pinia.md
+  path: "fe/fe-state-redux-zustand-mobx-jotai-recoil-pinia.md"
   hash: "sha256:166f910df008d3cd50bc013fcb6483e4469dba67eadca138208a3639e2044ee1"
 dimensions:
   - performance

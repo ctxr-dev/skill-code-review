@@ -55,7 +55,7 @@ activation:
     - facade_pattern
 source:
   origin: file
-  path: modern-legacy-wrap-and-replace.md
+  path: "modern/modern-legacy-wrap-and-replace.md"
   hash: "sha256:2302b1a435e8b7ed2a8fd2e47853c8a0f074aa6abc5beedba891c8ebe68bb4d0"
 dimensions:
   - architecture

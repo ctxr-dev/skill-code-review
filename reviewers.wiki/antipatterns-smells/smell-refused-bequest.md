@@ -45,7 +45,7 @@ activation:
     - subclass_using_few_parent_methods
 source:
   origin: file
-  path: smell-refused-bequest.md
+  path: "smell/smell-refused-bequest.md"
   hash: "sha256:118de6a7d801372cd753948c2c8f6bb9f8a50ffd538225b56dc78e16334154fe"
 dimensions:
   - architecture

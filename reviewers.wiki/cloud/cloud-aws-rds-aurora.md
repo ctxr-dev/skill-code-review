@@ -52,7 +52,7 @@ activation:
     - missing_encryption
 source:
   origin: file
-  path: cloud-aws-rds-aurora.md
+  path: "cloud/cloud-aws-rds-aurora.md"
   hash: "sha256:545d6b8357fc09d2604ef8be6c195ba8a2d7b753d22e5a8adb92e15b56a268e9"
 dimensions:
   - architecture

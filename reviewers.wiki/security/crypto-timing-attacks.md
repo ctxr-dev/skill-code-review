@@ -68,7 +68,7 @@ activation:
     - Custom loop iterating over bytes with conditional return
 source:
   origin: file
-  path: crypto-timing-attacks.md
+  path: "crypto/crypto-timing-attacks.md"
   hash: "sha256:164eb61cda072eae190e55414c832f53c95a01dab627e40a428e5432ace54749"
 dimensions:
   - security

@@ -50,7 +50,7 @@ activation:
     - multi_tenant_config
 source:
   origin: file
-  path: arch-multi-tenant-saas.md
+  path: "arch/arch-multi-tenant-saas.md"
   hash: "sha256:43064464fd76b5fcc7d53de78bc08341338be97ba43bfceac6590fa6aa6230a9"
 dimensions:
   - security

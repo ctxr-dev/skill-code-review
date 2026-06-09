@@ -48,7 +48,7 @@ activation:
     - access_check_before_delegation
 source:
   origin: file
-  path: pattern-proxy.md
+  path: "pattern/pattern-proxy.md"
   hash: "sha256:3f6a8c724439dad44e69d791663ce3d4836965fa7cee2f71c9af33cbceb7d7e6"
 dimensions:
   - architecture

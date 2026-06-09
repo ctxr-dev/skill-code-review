@@ -64,7 +64,7 @@ activation:
     - chaos_without_safety_limits
 source:
   origin: file
-  path: incident-response-postmortem-chaos-drill.md
+  path: "incident/incident-response-postmortem-chaos-drill.md"
   hash: "sha256:dc55ca32c08cc774561a84dcbe05f5efc830630b3839fadcf3b3011246327262"
 dimensions:
   - architecture

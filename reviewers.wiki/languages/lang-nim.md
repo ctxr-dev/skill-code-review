@@ -35,7 +35,7 @@ activation:
     - nim.cfg or config.nims build configuration changed
 source:
   origin: file
-  path: lang-nim.md
+  path: "lang/lang-nim.md"
   hash: "sha256:0645a0a9eb8dfbf39bed01dc567a4acb2ce4c687f50a00d441825ddaef320b89"
 dimensions:
   - correctness

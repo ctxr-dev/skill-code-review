@@ -112,7 +112,7 @@ activation:
     - Cache key or restore strategy change
 source:
   origin: file
-  path: cicd-caching-strategy.md
+  path: "cicd/cicd-caching-strategy.md"
   hash: "sha256:8c4b5c0898bdea4f9336f45e0dc30853a015e5742fc1070ed68f459a0a21cec4"
 dimensions:
   - architecture

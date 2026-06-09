@@ -54,7 +54,7 @@ activation:
     - non_sendable_crossing
 source:
   origin: file
-  path: mob-swift-concurrency-actors.md
+  path: "mob/mob-swift-concurrency-actors.md"
   hash: "sha256:2f77d1db7009470120915483e183b004e71563aaab353856c4011c90d450d92e"
 dimensions:
   - correctness

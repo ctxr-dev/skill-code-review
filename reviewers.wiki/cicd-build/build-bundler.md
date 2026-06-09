@@ -47,7 +47,7 @@ activation:
     - ruby_version_change
 source:
   origin: file
-  path: build-bundler.md
+  path: "build/build-bundler.md"
   hash: "sha256:954b17421ed450bf9e3b47bdb9d16a832754bd6abd6ed31f0e0e6f3ab3f98f19"
 dimensions:
   - architecture

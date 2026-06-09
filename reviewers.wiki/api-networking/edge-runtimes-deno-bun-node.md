@@ -69,7 +69,7 @@ activation:
     - node_builtin_import
 source:
   origin: file
-  path: edge-runtimes-deno-bun-node.md
+  path: "edge/edge-runtimes-deno-bun-node.md"
   hash: "sha256:38705f3ca70ff3c1b7e2b96f62ec2649df823954db67436611f1d425f5ecfdcc"
 dimensions:
   - correctness

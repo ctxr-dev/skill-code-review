@@ -50,7 +50,7 @@ activation:
     - User-facing feature or fix in the diff
 source:
   origin: file
-  path: doc-changelog-keep-a-changelog.md
+  path: "doc/doc-changelog-keep-a-changelog.md"
   hash: "sha256:e95d2da847491919fb2dcabbb8957738afcb76b456326c25a4ae8a8c41f151c1"
 dimensions:
   - documentation

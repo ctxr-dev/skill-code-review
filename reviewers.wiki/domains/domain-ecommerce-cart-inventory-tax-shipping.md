@@ -66,7 +66,7 @@ activation:
     - Checkout or payment processing flow
 source:
   origin: file
-  path: domain-ecommerce-cart-inventory-tax-shipping.md
+  path: "domain/domain-ecommerce-cart-inventory-tax-shipping.md"
   hash: "sha256:d66f3a9659f2ced68f2ac65bb61fb3a3cd3ff38ca8255fa23e0dfdf6c51ea400"
 dimensions:
   - correctness

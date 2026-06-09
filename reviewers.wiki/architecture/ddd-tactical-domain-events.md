@@ -52,7 +52,7 @@ activation:
     - event_handler
 source:
   origin: file
-  path: ddd-tactical-domain-events.md
+  path: "ddd/ddd-tactical-domain-events.md"
   hash: "sha256:b7431f36fc4d17b38466d22881dfe02c69adc1719a60da5020380fcdd28eea6a"
 dimensions:
   - architecture

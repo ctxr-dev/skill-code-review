@@ -70,7 +70,7 @@ activation:
     - shared_database_table
 source:
   origin: file
-  path: arch-modular-monolith.md
+  path: "arch/arch-modular-monolith.md"
   hash: "sha256:f728fcfb6eb5b7204081180e3fa073317ab94d0c47486dd17c3dd124aedc24da"
 dimensions:
   - architecture

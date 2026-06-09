@@ -65,7 +65,7 @@ activation:
     - container_setup
 source:
   origin: file
-  path: test-integration.md
+  path: "test/test-integration.md"
   hash: "sha256:991219ae4f116ed7d4c2a5baeaba55c7bd130389295200fcfa966d737784dad9"
 dimensions:
   - tests

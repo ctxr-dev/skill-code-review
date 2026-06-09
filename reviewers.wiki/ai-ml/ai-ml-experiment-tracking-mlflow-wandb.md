@@ -50,7 +50,7 @@ activation:
     - no_model_registry
 source:
   origin: file
-  path: ai-ml-experiment-tracking-mlflow-wandb.md
+  path: "ai/ai-ml-experiment-tracking-mlflow-wandb.md"
   hash: "sha256:d3787900425cfe96f33d08f8003ed96d47977e410c6f9edcf57b6eff7a02a813"
 dimensions:
   - architecture

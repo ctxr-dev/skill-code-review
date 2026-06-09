@@ -54,7 +54,7 @@ activation:
     - metrics_not_tracked
 source:
   origin: file
-  path: ai-llm-eval-harness.md
+  path: "ai/ai-llm-eval-harness.md"
   hash: "sha256:8c24cf313f0b538c69ee7b543b315671165a7a233ef6d3421f23a546ea4aa403"
 dimensions:
   - tests

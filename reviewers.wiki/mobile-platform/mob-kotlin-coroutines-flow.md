@@ -57,7 +57,7 @@ activation:
     - exception_not_caught
 source:
   origin: file
-  path: mob-kotlin-coroutines-flow.md
+  path: "mob/mob-kotlin-coroutines-flow.md"
   hash: "sha256:01ddd384205cb815b8fd566131e4466790dcd610a8e51f3111fed156ce453aaa"
 dimensions:
   - correctness

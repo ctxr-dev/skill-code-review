@@ -48,7 +48,7 @@ activation:
     - unpinned_provider
 source:
   origin: file
-  path: iac-pulumi.md
+  path: "iac/iac-pulumi.md"
   hash: "sha256:7e0ca96bc737c47c491e0c714935af4c216b88766d93327e75c943a9b5a3e652"
 dimensions:
   - security

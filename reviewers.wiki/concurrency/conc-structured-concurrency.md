@@ -48,7 +48,7 @@ activation:
     - exception_in_child_not_propagated
 source:
   origin: file
-  path: conc-structured-concurrency.md
+  path: "conc/conc-structured-concurrency.md"
   hash: "sha256:6b7cc7b2a2b8faed1f341f70497c88522f629ecf8ffdc853f8c36f01b7422196"
 dimensions:
   - correctness

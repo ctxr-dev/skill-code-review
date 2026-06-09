@@ -63,7 +63,7 @@ activation:
     - missing_rollback_config
 source:
   origin: file
-  path: iac-cloudformation-sam-cdk.md
+  path: "iac/iac-cloudformation-sam-cdk.md"
   hash: "sha256:ca3c1ef40903bd90790ee100a9b0d27a143ff04a8e4d18788030f659adb07b12"
 dimensions:
   - security

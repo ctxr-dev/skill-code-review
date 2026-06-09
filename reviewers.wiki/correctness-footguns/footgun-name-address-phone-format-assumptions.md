@@ -69,7 +69,7 @@ activation:
     - Address validation logic
 source:
   origin: file
-  path: footgun-name-address-phone-format-assumptions.md
+  path: "footgun/footgun-name-address-phone-format-assumptions.md"
   hash: "sha256:d0a0f8593718e8b135dfd28ddcae8db947c4f7b702283626858fb7a8dd874c90"
 dimensions:
   - correctness

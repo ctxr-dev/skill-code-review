@@ -58,7 +58,7 @@ activation:
     - Connection pool configuration
 source:
   origin: file
-  path: net-tcp-keepalive-timeouts-retries.md
+  path: "net/net-tcp-keepalive-timeouts-retries.md"
   hash: "sha256:59f95eadbccd636776f5f2cf152306c74452742225182d094a958965f6853d53"
 dimensions:
   - correctness

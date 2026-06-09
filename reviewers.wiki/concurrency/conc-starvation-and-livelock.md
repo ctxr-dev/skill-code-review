@@ -54,7 +54,7 @@ activation:
     - spinlock_without_backoff
 source:
   origin: file
-  path: conc-starvation-and-livelock.md
+  path: "conc/conc-starvation-and-livelock.md"
   hash: "sha256:5f4f64ad8716ba2f16a7203bae935592262bc4a668f9c1d4d3bd20feecf1422a"
 dimensions:
   - correctness

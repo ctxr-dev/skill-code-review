@@ -64,7 +64,7 @@ activation:
     - work_without_constraints
 source:
   origin: file
-  path: mob-android-room-hilt-workmanager.md
+  path: "mob/mob-android-room-hilt-workmanager.md"
   hash: "sha256:5783ee9e92fc8ddbcf518438e8be2c96f943b068a09377bd05538e8975ec930a"
 dimensions:
   - correctness

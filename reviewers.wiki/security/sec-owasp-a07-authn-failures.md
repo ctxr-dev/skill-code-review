@@ -71,7 +71,7 @@ activation:
     - login_endpoint
 source:
   origin: file
-  path: sec-owasp-a07-authn-failures.md
+  path: "sec/sec-owasp-a07-authn-failures.md"
   hash: "sha256:f2f203c3ca8f8a8aa16fa5d2b4b2a054180a530fd64002bbf441a6b061eb30e6"
 dimensions:
   - security

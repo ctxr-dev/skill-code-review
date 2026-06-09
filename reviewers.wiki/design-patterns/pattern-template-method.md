@@ -48,7 +48,7 @@ activation:
     - multiple_subclasses_overriding_same_set_of_methods
 source:
   origin: file
-  path: pattern-template-method.md
+  path: "pattern/pattern-template-method.md"
   hash: "sha256:e9bd81cd570ff0d303c77150e82de877489c5fc21721384e007257ef4b48dc5a"
 dimensions:
   - architecture

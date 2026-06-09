@@ -52,7 +52,7 @@ activation:
     - eval_on_user_string
 source:
   origin: file
-  path: pattern-interpreter.md
+  path: "pattern/pattern-interpreter.md"
   hash: "sha256:a454bab7b18acb1f4cc78af46d3f0ece4a9a454ad2809621bbda06bdc9eec3f7"
 dimensions:
   - architecture

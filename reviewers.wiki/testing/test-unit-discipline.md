@@ -31,7 +31,7 @@ activation:
     - Any code diff
 source:
   origin: file
-  path: test-unit-discipline.md
+  path: "test/test-unit-discipline.md"
   hash: "sha256:8d7333f3d6724562891b7f654067d796a43bee374c7237d39ecc9f7e9d6de819"
 dimensions:
   - tests

@@ -49,7 +49,7 @@ activation:
     - Qwik City route loader or action
 source:
   origin: file
-  path: fw-qwik.md
+  path: "fw/fw-qwik.md"
   hash: "sha256:10acb852f1ed9de81c988c3905d2a5c8f6cc4501184bea6d41ed668d16cc85da"
 dimensions:
   - correctness

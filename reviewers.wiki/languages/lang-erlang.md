@@ -52,7 +52,7 @@ activation:
     - "Erlang source files, header files, or rebar/OTP config files in diff"
 source:
   origin: file
-  path: lang-erlang.md
+  path: "lang/lang-erlang.md"
   hash: "sha256:6ac847bf830fb06ca84ef27f5ea9175065328458b125bcf003159a0a0129ca14"
 dimensions:
   - correctness

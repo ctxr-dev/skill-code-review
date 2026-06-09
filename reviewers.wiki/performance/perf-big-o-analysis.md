@@ -63,7 +63,7 @@ activation:
     - recursive_no_memo
 source:
   origin: file
-  path: perf-big-o-analysis.md
+  path: "perf/perf-big-o-analysis.md"
   hash: "sha256:1cb42942b5dd2f607344352c5ff6dc10298c74add4e78a41722bd8975cce7637"
 dimensions:
   - performance

@@ -82,7 +82,7 @@ activation:
     - Alt-Svc header configuration
 source:
   origin: file
-  path: net-http-1-1-2-3-quic.md
+  path: "net/net-http-1-1-2-3-quic.md"
   hash: "sha256:b6fbca04e778452f5a308b3b3e601682ba2974ade8b29e570735efbbbb28249d"
 dimensions:
   - correctness

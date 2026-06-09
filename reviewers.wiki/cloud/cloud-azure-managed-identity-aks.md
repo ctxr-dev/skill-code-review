@@ -53,7 +53,7 @@ activation:
     - ManagedIdentityCredential
 source:
   origin: file
-  path: cloud-azure-managed-identity-aks.md
+  path: "cloud/cloud-azure-managed-identity-aks.md"
   hash: "sha256:f29bb2172db612fe26fd9949f6e059fe8d87cc97653c9c3ce9bc21b542fae146"
 dimensions:
   - security

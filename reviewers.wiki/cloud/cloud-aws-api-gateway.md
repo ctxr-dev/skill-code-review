@@ -51,7 +51,7 @@ activation:
     - cors_wildcard_credentials
 source:
   origin: file
-  path: cloud-aws-api-gateway.md
+  path: "cloud/cloud-aws-api-gateway.md"
   hash: "sha256:bb4156f7e9d472cc335388a0c30c75aabfcea8a3e398ed3acde84e43c5be0f2c"
 dimensions:
   - architecture

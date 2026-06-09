@@ -66,7 +66,7 @@ activation:
     - ECS world or system registration
 source:
   origin: file
-  path: domain-gaming-game-loops-networking.md
+  path: "domain/domain-gaming-game-loops-networking.md"
   hash: "sha256:1b5c1e3d65654dbd2ed762ffd7273b5f97a929543d19dbc5e33851331d863156"
 dimensions:
   - correctness

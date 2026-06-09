@@ -67,7 +67,7 @@ activation:
     - Middleware or interceptor with timing logic
 source:
   origin: file
-  path: obs-metrics-red-use-golden-signals.md
+  path: "obs/obs-metrics-red-use-golden-signals.md"
   hash: "sha256:ef4dd6a6fbebbcc246470894a26dc987f0f4227b6b8a67b4fa7672b652617b61"
 dimensions:
   - architecture

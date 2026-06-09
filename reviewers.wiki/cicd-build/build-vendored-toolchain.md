@@ -56,7 +56,7 @@ activation:
     - third_party_code_change
 source:
   origin: file
-  path: build-vendored-toolchain.md
+  path: "build/build-vendored-toolchain.md"
   hash: "sha256:c1c08078b18d2670152d5169625ae5924c7e8ac879433e562528e975c1f1f242"
 dimensions:
   - architecture

@@ -65,7 +65,7 @@ activation:
     - Struct to bytes conversion
 source:
   origin: file
-  path: footgun-endianness-wire-format.md
+  path: "footgun/footgun-endianness-wire-format.md"
   hash: "sha256:23558d2ac940e8d17e9cbc7ec02b551f7ca8b3761cc55502cf8b0c19654a54d6"
 dimensions:
   - correctness

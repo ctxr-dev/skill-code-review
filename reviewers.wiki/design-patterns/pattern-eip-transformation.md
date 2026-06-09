@@ -55,7 +55,7 @@ activation:
     - multiple_format_handlers_with_shared_output_type
 source:
   origin: file
-  path: pattern-eip-transformation.md
+  path: "pattern/pattern-eip-transformation.md"
   hash: "sha256:6d43c23298643688e21e6186938e5aeb8c988cf26f7dd21b9a1a65de11bf5fef"
 dimensions:
   - architecture

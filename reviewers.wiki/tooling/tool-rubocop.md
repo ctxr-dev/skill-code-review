@@ -43,7 +43,7 @@ activation:
     - inline rubocop suppression
 source:
   origin: file
-  path: tool-rubocop.md
+  path: "tool/tool-rubocop.md"
   hash: "sha256:c7907b1ca09ada00b37432cc080f98e036ef3bdba8dbd765f0c7a23b22915ef5"
 dimensions:
   - architecture

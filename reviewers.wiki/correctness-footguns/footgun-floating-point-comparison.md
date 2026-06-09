@@ -54,7 +54,7 @@ activation:
     - Floating-point value used as map key or set element
 source:
   origin: file
-  path: footgun-floating-point-comparison.md
+  path: "footgun/footgun-floating-point-comparison.md"
   hash: "sha256:9cc8803b8dc0f4478206a7c444be717083f15455d363758efd331690b99371b1"
 dimensions:
   - correctness

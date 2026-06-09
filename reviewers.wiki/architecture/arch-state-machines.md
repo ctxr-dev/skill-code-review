@@ -70,7 +70,7 @@ activation:
     - state_machine_config
 source:
   origin: file
-  path: arch-state-machines.md
+  path: "arch/arch-state-machines.md"
   hash: "sha256:f23532a7cdbc0f953a0e91a4ac42c537305858e8f209e2d011d5779fa16c70a9"
 dimensions:
   - architecture

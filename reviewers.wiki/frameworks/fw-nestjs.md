@@ -54,7 +54,7 @@ activation:
     - Controller with business logic
 source:
   origin: file
-  path: fw-nestjs.md
+  path: "fw/fw-nestjs.md"
   hash: "sha256:fe1a52ad10d799a598fdb8d7f000141d4fe9c15e76a9af93d742f4c42e7a75b4"
 dimensions:
   - security

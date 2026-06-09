@@ -91,7 +91,7 @@ activation:
     - File download endpoint with path parameter
 source:
   origin: file
-  path: sec-path-traversal-and-file-uploads.md
+  path: "sec/sec-path-traversal-and-file-uploads.md"
   hash: "sha256:f31f63c1b870913e8c859516c93efca7223d866cd050b3db9291a0f9656565d7"
 dimensions:
   - security

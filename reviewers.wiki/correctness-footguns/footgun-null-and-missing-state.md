@@ -57,7 +57,7 @@ activation:
     - "Equality comparison against None/null/undefined"
 source:
   origin: file
-  path: footgun-null-and-missing-state.md
+  path: "footgun/footgun-null-and-missing-state.md"
   hash: "sha256:8724c240012b65d3ec9de2ffd75976ea29a4070cedac836683d6be2ad261faa7"
 dimensions:
   - correctness

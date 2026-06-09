@@ -66,7 +66,7 @@ activation:
     - Form submission handler
 source:
   origin: file
-  path: qa-usability-beyond-a11y.md
+  path: "qa/qa-usability-beyond-a11y.md"
   hash: "sha256:b6e8c7cc2dd7820d5b29f75e504ef6f049af92a05cf4c9a757e7207e267cc45c"
 dimensions:
   - readability

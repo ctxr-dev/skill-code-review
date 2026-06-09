@@ -54,7 +54,7 @@ activation:
     - stale_todo
 source:
   origin: file
-  path: antipattern-lava-flow.md
+  path: "antipattern/antipattern-lava-flow.md"
   hash: "sha256:2f70351c203cab3ced6ec52b40f5564aa3a26b6a8682852d5d7c25d5d9284c17"
 dimensions:
   - architecture

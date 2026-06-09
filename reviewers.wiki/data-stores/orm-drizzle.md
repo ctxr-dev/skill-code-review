@@ -46,7 +46,7 @@ activation:
     - db.delete
 source:
   origin: file
-  path: orm-drizzle.md
+  path: "orm/orm-drizzle.md"
   hash: "sha256:74d35cbdecfde8037685e44e5ad154ca2afe86492e72ffea8def6d6605999df6"
 dimensions:
   - security

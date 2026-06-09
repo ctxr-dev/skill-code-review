@@ -48,7 +48,7 @@ activation:
     - ManyToMany
 source:
   origin: file
-  path: orm-typeorm.md
+  path: "orm/orm-typeorm.md"
   hash: "sha256:b3ec6a98885c20e2aa6bf86ba385c5fcb564d685cc2ce843334a421efcdbadcc"
 dimensions:
   - security

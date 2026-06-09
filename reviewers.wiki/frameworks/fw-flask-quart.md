@@ -57,7 +57,7 @@ activation:
     - Jinja2 template rendering calls
 source:
   origin: file
-  path: fw-flask-quart.md
+  path: "fw/fw-flask-quart.md"
   hash: "sha256:595756f208ebf98bdb5c21f3689c13d0ba3a54633dae35a5bac81e0e3b828930"
 dimensions:
   - security

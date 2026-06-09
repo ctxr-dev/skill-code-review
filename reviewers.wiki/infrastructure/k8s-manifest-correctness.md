@@ -57,7 +57,7 @@ activation:
     - "kind: CronJob"
 source:
   origin: file
-  path: k8s-manifest-correctness.md
+  path: "k8s/k8s-manifest-correctness.md"
   hash: "sha256:c5a8aeda5a9e8980b82d043822bc2a60f22a59d23096f1d9f489944e47746c85"
 dimensions:
   - architecture

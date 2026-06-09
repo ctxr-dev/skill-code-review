@@ -117,7 +117,7 @@ activation:
     - breaking_change
 source:
   origin: file
-  path: modern-versioning-semver-compat-matrix.md
+  path: "modern/modern-versioning-semver-compat-matrix.md"
   hash: "sha256:247542cc927f471cf7e2a6b48c5cc6098d3a4fb7ff8d307cd39f26d830dc3886"
 dimensions:
   - architecture

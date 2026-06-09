@@ -75,7 +75,7 @@ activation:
     - Feature flag configuration change
 source:
   origin: file
-  path: cicd-deploy-strategies.md
+  path: "cicd/cicd-deploy-strategies.md"
   hash: "sha256:6c496cf2b337bd5828d9de5fed71ae4ab40715d79f7079854f363d7848f87a3d"
 dimensions:
   - architecture

@@ -49,7 +49,7 @@ activation:
     - volatile_instance_field
 source:
   origin: file
-  path: pattern-double-checked-locking.md
+  path: "pattern/pattern-double-checked-locking.md"
   hash: "sha256:9761f5291181d68244e7abe4f9891ffbcad0a9bff39bb784e592eec075a33dfb"
 dimensions:
   - correctness

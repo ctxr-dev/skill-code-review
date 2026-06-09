@@ -47,7 +47,7 @@ activation:
     - snyk container
 source:
   origin: file
-  path: container-image-scanning-trivy-grype-clair.md
+  path: "container/container-image-scanning-trivy-grype-clair.md"
   hash: "sha256:508b6bb1ada5524ab35949be80ab83832013065ea7c481cbcd2aeaa0c63aa57c"
 dimensions:
   - security

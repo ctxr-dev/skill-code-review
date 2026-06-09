@@ -52,7 +52,7 @@ activation:
     - Ktor plugin configuration
 source:
   origin: file
-  path: fw-ktor.md
+  path: "fw/fw-ktor.md"
   hash: "sha256:c2fe1223e9021b2ab96240784e6cc472904629872aa84ec5dbc6270ef9ba1789"
 dimensions:
   - correctness

@@ -39,7 +39,7 @@ activation:
     - sbt build file changes
 source:
   origin: file
-  path: lang-scala.md
+  path: "lang/lang-scala.md"
   hash: "sha256:b91ecafeb503c127ae9c7eb599b98954a8a7da16b9365a60115609a0db192a14"
 dimensions:
   - correctness

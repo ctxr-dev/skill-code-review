@@ -59,7 +59,7 @@ activation:
     - placement
 source:
   origin: file
-  path: db-cockroachdb-spanner-tidb.md
+  path: "db/db-cockroachdb-spanner-tidb.md"
   hash: "sha256:4421d8482894e4450bfc3c7243256ca4df231c3a86739cf9916b4f7cea1c61ff"
 dimensions:
   - correctness

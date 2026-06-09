@@ -68,7 +68,7 @@ activation:
     - Rails routes configuration
 source:
   origin: file
-  path: fw-rails.md
+  path: "fw/fw-rails.md"
   hash: "sha256:9b6459a577bf9416e2906c0b2837bb0338eb3558de548e91c83811b1cac2d090"
 dimensions:
   - security

@@ -52,7 +52,7 @@ activation:
     - approval_test
 source:
   origin: file
-  path: test-snapshot-and-golden-file.md
+  path: "test/test-snapshot-and-golden-file.md"
   hash: "sha256:8243d2f0ffce81db3b841598c53680817fdf97d6ee39eb0d2cfd8d22040e363b"
 dimensions:
   - tests

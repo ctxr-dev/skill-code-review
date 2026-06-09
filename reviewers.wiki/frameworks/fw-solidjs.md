@@ -47,7 +47,7 @@ activation:
     - Signal primitive creation patterns
 source:
   origin: file
-  path: fw-solidjs.md
+  path: "fw/fw-solidjs.md"
   hash: "sha256:b1a1d69650537140fe4475037d6e20b469459187dfc108c17895e6999fedec01"
 dimensions:
   - correctness

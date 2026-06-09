@@ -59,7 +59,7 @@ activation:
     - Gateway or router configuration
 source:
   origin: file
-  path: api-federation-apollo.md
+  path: "api/api-federation-apollo.md"
   hash: "sha256:b4b3c8bcd9b779a5cbb78dedd0710b8946b6fa62077756bfd035c671216c88c6"
 dimensions:
   - architecture

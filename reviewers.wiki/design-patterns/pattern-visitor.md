@@ -47,7 +47,7 @@ activation:
     - instanceof_chain_on_element_types
 source:
   origin: file
-  path: pattern-visitor.md
+  path: "pattern/pattern-visitor.md"
   hash: "sha256:9e1b349208251e1b73cd066dfe935b92c72edda570ba36dfa2d687a4d716729f"
 dimensions:
   - architecture

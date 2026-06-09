@@ -71,7 +71,7 @@ activation:
     - "neo4j://"
 source:
   origin: file
-  path: db-neo4j-graph.md
+  path: "db/db-neo4j-graph.md"
   hash: "sha256:fefc7425fee1f5e79cdf7bd56261b8b3bfec368e52007ca7f7db01c97f9c8d29"
 dimensions:
   - security

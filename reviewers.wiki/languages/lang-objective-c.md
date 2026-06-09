@@ -34,7 +34,7 @@ activation:
     - "Objective-C source files, mixed Obj-C/C++ files, or headers with @interface"
 source:
   origin: file
-  path: lang-objective-c.md
+  path: "lang/lang-objective-c.md"
   hash: "sha256:2852009bac0ff77e6091b47fbb5138a6109e235338dfb583e3b922310fc24979"
 dimensions:
   - correctness

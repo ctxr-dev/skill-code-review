@@ -45,7 +45,7 @@ activation:
     - Hardcoded string or numeric policy in business logic
 source:
   origin: file
-  path: qa-modifiability.md
+  path: "qa/qa-modifiability.md"
   hash: "sha256:dfdec912594181d58b93fc25e4c205d5ee51f7ec61547e588b67b11fefa969f1"
 dimensions:
   - architecture

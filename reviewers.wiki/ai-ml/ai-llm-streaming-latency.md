@@ -49,7 +49,7 @@ activation:
     - no_ttft_metric
 source:
   origin: file
-  path: ai-llm-streaming-latency.md
+  path: "ai/ai-llm-streaming-latency.md"
   hash: "sha256:82e60db9a1fee3d14ee91425d657398dab4dcf63c5d89599278855b76c769a56"
 dimensions:
   - performance

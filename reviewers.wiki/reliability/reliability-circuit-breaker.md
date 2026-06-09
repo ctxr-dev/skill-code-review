@@ -66,7 +66,7 @@ activation:
     - fallback_method
 source:
   origin: file
-  path: reliability-circuit-breaker.md
+  path: "reliability/reliability-circuit-breaker.md"
   hash: "sha256:20a7ef9b75bb0800d3ff2303acceafbe4ead57615aa391d93d368d56c192dc31"
 dimensions:
   - correctness

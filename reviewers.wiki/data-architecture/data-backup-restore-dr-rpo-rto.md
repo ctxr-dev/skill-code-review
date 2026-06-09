@@ -69,7 +69,7 @@ activation:
     - infrastructure_database_resource
 source:
   origin: file
-  path: data-backup-restore-dr-rpo-rto.md
+  path: "data/data-backup-restore-dr-rpo-rto.md"
   hash: "sha256:e70df26e6123421e854a392c0c5b655db0cce807f43cdc5e24a815632af8c4a6"
 dimensions:
   - architecture

@@ -50,7 +50,7 @@ activation:
     - Pagination offset calculation
 source:
   origin: file
-  path: footgun-off-by-one.md
+  path: "footgun/footgun-off-by-one.md"
   hash: "sha256:ec29f1a459bb9d6a6bd2f9e1faaa3992eae8c4fd6c257ca6d2d4d7f90a2446f0"
 dimensions:
   - correctness

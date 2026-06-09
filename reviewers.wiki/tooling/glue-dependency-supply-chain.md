@@ -53,7 +53,7 @@ activation:
     - Any code diff
 source:
   origin: file
-  path: glue-dependency-supply-chain.md
+  path: "glue/glue-dependency-supply-chain.md"
   hash: "sha256:a464f02a714f6d7008ec09ca89051f49c524579be720d6cff200864d276e7fd8"
 dimensions:
   - security

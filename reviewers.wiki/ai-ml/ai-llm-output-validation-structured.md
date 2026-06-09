@@ -52,7 +52,7 @@ activation:
     - llm_text_in_html
 source:
   origin: file
-  path: ai-llm-output-validation-structured.md
+  path: "ai/ai-llm-output-validation-structured.md"
   hash: "sha256:1032d1e744db9fa1f96af16b6c128d0062b0afb8eeb682213cf022e66652ed57"
 dimensions:
   - correctness

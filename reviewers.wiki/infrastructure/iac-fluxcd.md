@@ -51,7 +51,7 @@ activation:
     - toolkit.fluxcd.io
 source:
   origin: file
-  path: iac-fluxcd.md
+  path: "iac/iac-fluxcd.md"
   hash: "sha256:f957f414a3e537de2ac6590c77350323583d37c33b3cf62a58de15219668faac"
 dimensions:
   - architecture

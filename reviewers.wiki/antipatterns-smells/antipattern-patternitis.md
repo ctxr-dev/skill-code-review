@@ -76,7 +76,7 @@ activation:
     - builder_few_fields
 source:
   origin: file
-  path: antipattern-patternitis.md
+  path: "antipattern/antipattern-patternitis.md"
   hash: "sha256:9546d5e13401815ee66a1cc143ff842c687bf68d4d6c64551976ce4784712c33"
 dimensions:
   - architecture

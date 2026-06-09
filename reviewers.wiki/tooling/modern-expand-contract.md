@@ -76,7 +76,7 @@ activation:
     - api_version_change
 source:
   origin: file
-  path: modern-expand-contract.md
+  path: "modern/modern-expand-contract.md"
   hash: "sha256:185a59882618afafc1155f3386760d7ddda184e5487f55b180f924f982e1491a"
 dimensions:
   - architecture

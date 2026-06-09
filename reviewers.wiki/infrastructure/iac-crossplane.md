@@ -50,7 +50,7 @@ activation:
     - "apiextensions.crossplane.io/v1"
 source:
   origin: file
-  path: iac-crossplane.md
+  path: "iac/iac-crossplane.md"
   hash: "sha256:72fe8799ceb61262a8388522ed5efbb1fafd1b854bdae37ced1cef714f897608"
 dimensions:
   - architecture

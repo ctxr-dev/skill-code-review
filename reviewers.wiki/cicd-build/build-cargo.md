@@ -50,7 +50,7 @@ activation:
     - build_script_change
 source:
   origin: file
-  path: build-cargo.md
+  path: "build/build-cargo.md"
   hash: "sha256:62c550b6e3d4c5e6649b58cae6e0b6a8f9b7be9a58aafabd665f5c9a0e472581"
 dimensions:
   - architecture

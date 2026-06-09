@@ -62,7 +62,7 @@ activation:
     - histogram_observation
 source:
   origin: file
-  path: obs-cardinality-budgeting.md
+  path: "obs/obs-cardinality-budgeting.md"
   hash: "sha256:3e1dedeaec5819a0a00fee915d9527c03a998fee85bc95b607bd1bb17efe8ad2"
 dimensions:
   - performance

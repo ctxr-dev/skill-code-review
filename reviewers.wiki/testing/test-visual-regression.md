@@ -62,7 +62,7 @@ activation:
     - percy_config
 source:
   origin: file
-  path: test-visual-regression.md
+  path: "test/test-visual-regression.md"
   hash: "sha256:f1a0fc7fd9427af6e50c9f404b7c10336f13bb6fa8d5fb69b083ad5a17f5f31c"
 dimensions:
   - tests

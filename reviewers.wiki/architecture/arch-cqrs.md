@@ -69,7 +69,7 @@ activation:
     - bus_configuration
 source:
   origin: file
-  path: arch-cqrs.md
+  path: "arch/arch-cqrs.md"
   hash: "sha256:16f3f3afd7d48d02ed05d29eadb54237dfe9a04f103ee71035d30cf1eaed2189"
 dimensions:
   - architecture

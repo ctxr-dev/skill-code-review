@@ -61,7 +61,7 @@ activation:
     - Game action validation function
 source:
   origin: file
-  path: domain-gaming-anti-cheat.md
+  path: "domain/domain-gaming-anti-cheat.md"
   hash: "sha256:b8aa1993f2cfb0a0e84b3a546c1e9155c55a33b92749e68b4fcb0cdda92cfbb3"
 dimensions:
   - security

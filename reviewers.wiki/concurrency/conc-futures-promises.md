@@ -55,7 +55,7 @@ activation:
     - sequential_await_in_loop
 source:
   origin: file
-  path: conc-futures-promises.md
+  path: "conc/conc-futures-promises.md"
   hash: "sha256:3ad3657d385633eae2d4875b3c51e27d31d0db2cdf1d15d76ab4ac4d03af0a0a"
 dimensions:
   - correctness

@@ -68,7 +68,7 @@ activation:
     - distributed_table_creation
 source:
   origin: file
-  path: data-sharding-partitioning.md
+  path: "data/data-sharding-partitioning.md"
   hash: "sha256:98482e9a1367eb8420343fc6d07c185d8c4679a430c1a0e89d36d104568c471b"
 dimensions:
   - architecture

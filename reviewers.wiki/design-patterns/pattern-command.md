@@ -54,7 +54,7 @@ activation:
     - invoker_calling_execute_on_command_interface
 source:
   origin: file
-  path: pattern-command.md
+  path: "pattern/pattern-command.md"
   hash: "sha256:5025ca082b007c621c94d0b266fae50f2727d2db53eebfdaf67307b9a7fa5456"
 dimensions:
   - architecture

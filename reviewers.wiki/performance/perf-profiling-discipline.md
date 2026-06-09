@@ -97,7 +97,7 @@ activation:
     - latency_measurement
 source:
   origin: file
-  path: perf-profiling-discipline.md
+  path: "perf/perf-profiling-discipline.md"
   hash: "sha256:9e982a1b9454bdd7eafb1ac9d755df4dcd17b7741ec473d98c852fbc0c18980f"
 dimensions:
   - performance

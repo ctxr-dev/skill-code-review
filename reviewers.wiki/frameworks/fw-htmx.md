@@ -58,7 +58,7 @@ activation:
     - htmx script tag inclusion or CDN reference
 source:
   origin: file
-  path: fw-htmx.md
+  path: "fw/fw-htmx.md"
   hash: "sha256:786428a64bdd999d664b13a211a9bd116777b878300098e8ccee1f873231b035"
 dimensions:
   - security

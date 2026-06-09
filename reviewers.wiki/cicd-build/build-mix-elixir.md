@@ -47,7 +47,7 @@ activation:
     - elixir_project_change
 source:
   origin: file
-  path: build-mix-elixir.md
+  path: "build/build-mix-elixir.md"
   hash: "sha256:3140d4c2db234d5d7b68657d480dfe29d32aa761f13cfbe1297ce70a448386da"
 dimensions:
   - architecture

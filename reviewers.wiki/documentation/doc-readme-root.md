@@ -45,7 +45,7 @@ activation:
     - Root-level documentation change
 source:
   origin: file
-  path: doc-readme-root.md
+  path: "doc/doc-readme-root.md"
   hash: "sha256:94e55780feb25803b846385091ac0bd921a7fa22908a0fc693c673f603869c03"
 dimensions:
   - documentation

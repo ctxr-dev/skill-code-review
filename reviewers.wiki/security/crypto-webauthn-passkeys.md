@@ -59,7 +59,7 @@ activation:
     - Challenge generation or validation logic
 source:
   origin: file
-  path: crypto-webauthn-passkeys.md
+  path: "crypto/crypto-webauthn-passkeys.md"
   hash: "sha256:8b20ae05912cf6f73cb1ac29914cbded25548654d761c48aa45ace0f5bdd1353"
 dimensions:
   - security

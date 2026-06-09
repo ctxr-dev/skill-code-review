@@ -30,7 +30,7 @@ activation:
     - Any code diff
 source:
   origin: file
-  path: principle-fail-fast.md
+  path: "principle/principle-fail-fast.md"
   hash: "sha256:e532259bd3adf85dc042a8871355b11e38b8f5811c168d612291c2dc440934bd"
 dimensions:
   - correctness

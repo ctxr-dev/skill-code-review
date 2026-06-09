@@ -44,7 +44,7 @@ activation:
     - inline eslint suppression annotation
 source:
   origin: file
-  path: tool-eslint.md
+  path: "tool/tool-eslint.md"
   hash: "sha256:f0fe43de6f97698561c96f89e243a1136d4d6c91dda3a937398512836d565212"
 dimensions:
   - architecture

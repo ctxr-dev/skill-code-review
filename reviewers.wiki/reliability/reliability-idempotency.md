@@ -51,7 +51,7 @@ activation:
     - event_consumer_without_dedup
 source:
   origin: file
-  path: reliability-idempotency.md
+  path: "reliability/reliability-idempotency.md"
   hash: "sha256:b1aae27734840405a04673d38009459162919637aba729c9e7507fb57c61f636"
 dimensions:
   - correctness

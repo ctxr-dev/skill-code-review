@@ -36,7 +36,7 @@ activation:
     - Xcode project Swift files modified
 source:
   origin: file
-  path: lang-swift.md
+  path: "lang/lang-swift.md"
   hash: "sha256:18ab1cc930b92161683ab72f02d57c0b2b999f5693e51a86f160426ba231423c"
 dimensions:
   - correctness

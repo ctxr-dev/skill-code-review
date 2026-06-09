@@ -71,7 +71,7 @@ activation:
     - missing_gsi
 source:
   origin: file
-  path: cloud-aws-dynamodb-single-table.md
+  path: "cloud/cloud-aws-dynamodb-single-table.md"
   hash: "sha256:b2c2fb989c142eb3f48858e3b1b329b2cdf869f51a767b6824eb96a997e6328f"
 dimensions:
   - architecture

@@ -55,7 +55,7 @@ activation:
     - Tekton Task or Pipeline manifest change
 source:
   origin: file
-  path: cicd-buildkite-drone-tekton.md
+  path: "cicd/cicd-buildkite-drone-tekton.md"
   hash: "sha256:a0a17b64616d30512309e928efd4c320a77a474a3b18f03ceac84e05ba22f25b"
 dimensions:
   - architecture

@@ -68,7 +68,7 @@ activation:
     - kafka_compat_admin_call
 source:
   origin: file
-  path: event-bus-nats-redpanda-eventstoredb.md
+  path: "event/event-bus-nats-redpanda-eventstoredb.md"
   hash: "sha256:d92b045c2c526d96dff33694934429ef8042dbe6de4466d5f15c34dce2c8208d"
 dimensions:
   - architecture

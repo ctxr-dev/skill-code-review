@@ -59,7 +59,7 @@ activation:
     - python_packaging_change
 source:
   origin: file
-  path: build-pip-poetry-uv-pdm-rye.md
+  path: "build/build-pip-poetry-uv-pdm-rye.md"
   hash: "sha256:acbbb8b09248ea617ca6cef9f8f19c97f1419fefd93fee75217bb21d922146b3"
 dimensions:
   - architecture

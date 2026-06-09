@@ -68,7 +68,7 @@ activation:
     - global_variable
 source:
   origin: file
-  path: antipattern-singleton-as-global.md
+  path: "antipattern/antipattern-singleton-as-global.md"
   hash: "sha256:dcb224d2b8ce0c8801b25bcbe8c77663938715f3af40a1234416ac1c3c138d44"
 dimensions:
   - architecture

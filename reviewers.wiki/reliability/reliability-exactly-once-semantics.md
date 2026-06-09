@@ -78,7 +78,7 @@ activation:
     - offset_commit_before_processing
 source:
   origin: file
-  path: reliability-exactly-once-semantics.md
+  path: "reliability/reliability-exactly-once-semantics.md"
   hash: "sha256:dd3a24d41eeaf2375be91f895e362ce1f1a5f1344aacc7e8aa5cd4579eb74c8d"
 dimensions:
   - correctness

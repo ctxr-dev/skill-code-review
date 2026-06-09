@@ -47,7 +47,7 @@ activation:
     - data_class_without_behavior
 source:
   origin: file
-  path: principle-tell-dont-ask.md
+  path: "principle/principle-tell-dont-ask.md"
   hash: "sha256:b8db5d25109e6a6775c0e8f66d9f5a5613a7005a0fb572135008bcd7d6c206be"
 dimensions:
   - architecture

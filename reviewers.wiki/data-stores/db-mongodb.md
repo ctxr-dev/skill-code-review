@@ -59,7 +59,7 @@ activation:
     - readPreference
 source:
   origin: file
-  path: db-mongodb.md
+  path: "db/db-mongodb.md"
   hash: "sha256:c21d8d00a04ca676d57b0aab5271703a6b6085925a0242305e3850da2fa8177a"
 dimensions:
   - performance

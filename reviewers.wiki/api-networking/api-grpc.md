@@ -76,7 +76,7 @@ activation:
     - gRPC interceptor or middleware
 source:
   origin: file
-  path: api-grpc.md
+  path: "api/api-grpc.md"
   hash: "sha256:56598394e0594f7731b1abdcc815cc6c483b70e07a4d7dc0c094c048285563f3"
 dimensions:
   - architecture

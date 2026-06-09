@@ -37,7 +37,7 @@ activation:
     - Gemfile or gemspec changes
 source:
   origin: file
-  path: lang-ruby.md
+  path: "lang/lang-ruby.md"
   hash: "sha256:75dcff5376d58e19a3ee7473b4d65364d0992bd93af43b803b7a63e7f50d9f70"
 dimensions:
   - correctness

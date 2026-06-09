@@ -52,7 +52,7 @@ activation:
     - Untyped loader data
 source:
   origin: file
-  path: fw-remix.md
+  path: "fw/fw-remix.md"
   hash: "sha256:d56a7bec46be7a3796d664b233b581e5e51b5434397799f0f2141924b56d0822"
 dimensions:
   - correctness

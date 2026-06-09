@@ -32,7 +32,7 @@ activation:
     - build.zig.zon dependency manifest changed
 source:
   origin: file
-  path: lang-zig.md
+  path: "lang/lang-zig.md"
   hash: "sha256:d888e6ee5457eadb5a222f4820f37274c9cacb71c4275c405261800ee0391c6f"
 dimensions:
   - correctness

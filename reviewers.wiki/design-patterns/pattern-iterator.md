@@ -51,7 +51,7 @@ activation:
     - custom_next_method_on_collection
 source:
   origin: file
-  path: pattern-iterator.md
+  path: "pattern/pattern-iterator.md"
   hash: "sha256:5896a3aec6f8f05766b4f5a596a1f2b205a5e94e1199e5cd1b6803c2ea842808"
 dimensions:
   - architecture

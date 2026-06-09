@@ -73,7 +73,7 @@ activation:
     - h3_resolution_config
 source:
   origin: file
-  path: domain-maps-geo-postgis-h3-geohash.md
+  path: "domain/domain-maps-geo-postgis-h3-geohash.md"
   hash: "sha256:130f80cfa8d07b6f75dfd55018f64cafab7f57ebddea74bc071d5eee94be6648"
 dimensions:
   - correctness

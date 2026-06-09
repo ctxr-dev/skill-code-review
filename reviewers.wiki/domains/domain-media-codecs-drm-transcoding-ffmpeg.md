@@ -75,7 +75,7 @@ activation:
     - hls_manifest_generation
 source:
   origin: file
-  path: domain-media-codecs-drm-transcoding-ffmpeg.md
+  path: "domain/domain-media-codecs-drm-transcoding-ffmpeg.md"
   hash: "sha256:48cf7bf925112b7fb6e567de30dd17f714dbc272d535691451fce53cf23c158c"
 dimensions:
   - security

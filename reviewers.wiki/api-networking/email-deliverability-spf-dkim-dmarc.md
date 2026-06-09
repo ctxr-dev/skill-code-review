@@ -65,7 +65,7 @@ activation:
     - dmarc_p_none
 source:
   origin: file
-  path: email-deliverability-spf-dkim-dmarc.md
+  path: "email/email-deliverability-spf-dkim-dmarc.md"
   hash: "sha256:096ddbf92737822a5cc1bceefcf22fd657bcd21e7b922746e0986fff477b243d"
 dimensions:
   - correctness

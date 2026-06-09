@@ -59,7 +59,7 @@ activation:
     - polars_eager_collect
 source:
   origin: file
-  path: ai-ml-data-pipelines-pandas-polars-dask-spark.md
+  path: "ai/ai-ml-data-pipelines-pandas-polars-dask-spark.md"
   hash: "sha256:9a82a534a4e34c6be0ff4a8caa18e0e07cd4e4b0f774bf2f39a2aa7476a790f3"
 dimensions:
   - performance

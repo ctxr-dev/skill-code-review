@@ -54,7 +54,7 @@ activation:
     - build_target_change
 source:
   origin: file
-  path: build-bazel-buck-pants.md
+  path: "build/build-bazel-buck-pants.md"
   hash: "sha256:1047dd796545650ac3b600497622268099ab7fa76f1d7bdf1029400272bfbfa3"
 dimensions:
   - architecture

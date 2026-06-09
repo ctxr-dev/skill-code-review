@@ -47,7 +47,7 @@ activation:
     - vendor_directory_change
 source:
   origin: file
-  path: build-go-modules.md
+  path: "build/build-go-modules.md"
   hash: "sha256:246e6f9811310f4344139ddc3246e99e88956a01fa48448c21b1e11733a6f652"
 dimensions:
   - architecture

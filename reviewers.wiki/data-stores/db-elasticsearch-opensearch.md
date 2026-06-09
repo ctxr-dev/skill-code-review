@@ -63,7 +63,7 @@ activation:
     - ISM
 source:
   origin: file
-  path: db-elasticsearch-opensearch.md
+  path: "db/db-elasticsearch-opensearch.md"
   hash: "sha256:07b04d1cf8e719ca8095c7c744e0ce6980009f09ced2bd9c78eee08d5f2ffbc5"
 dimensions:
   - performance

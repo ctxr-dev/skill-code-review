@@ -82,7 +82,7 @@ activation:
     - wasi_context_builder
 source:
   origin: file
-  path: wasm-safety-boundary.md
+  path: "wasm/wasm-safety-boundary.md"
   hash: "sha256:16164aaa814545b4ce06dc145249624eaf2072d105abf90543ad104d4e3e2d9c"
 dimensions:
   - security

@@ -50,7 +50,7 @@ activation:
     - cell_isolation
 source:
   origin: file
-  path: arch-cell-based.md
+  path: "arch/arch-cell-based.md"
   hash: "sha256:6afb56c9740c1dff989d9d612d599367d2e75a32f1918c699d0f452b016e33fd"
 dimensions:
   - architecture

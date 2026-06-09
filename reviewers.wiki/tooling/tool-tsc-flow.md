@@ -51,7 +51,7 @@ activation:
     - inline ts-ignore or ts-expect-error annotation
 source:
   origin: file
-  path: tool-tsc-flow.md
+  path: "tool/tool-tsc-flow.md"
   hash: "sha256:ab046d840ff6b187419c0f6dc08e75f5c71f1713001d1435e1799db792637246"
 dimensions:
   - architecture

@@ -64,7 +64,7 @@ activation:
     - Infrastructure or dependency change
 source:
   origin: file
-  path: doc-c4-and-structurizr.md
+  path: "doc/doc-c4-and-structurizr.md"
   hash: "sha256:10c4f229fae284808afca46bbf9870a838e1a30879fb5da3a10166677ee419c0"
 dimensions:
   - documentation

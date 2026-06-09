@@ -33,7 +33,7 @@ activation:
     - Any code diff
 source:
   origin: file
-  path: glue-initialization-hygiene.md
+  path: "glue/glue-initialization-hygiene.md"
   hash: "sha256:dda05019dfb008b369ec0c7a34d339557edf1cbd399eab8cf8e858aea896775d"
 dimensions:
   - correctness

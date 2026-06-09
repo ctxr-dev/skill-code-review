@@ -53,7 +53,7 @@ activation:
     - spring.jpa
 source:
   origin: file
-  path: orm-hibernate-jpa.md
+  path: "orm/orm-hibernate-jpa.md"
   hash: "sha256:7966fa3065bff30c42c92ebdffa2d9de56f85c4ac0277194e6179a339b6be35c"
 dimensions:
   - performance

@@ -51,7 +51,7 @@ activation:
     - Missing error handler
 source:
   origin: file
-  path: fw-fastify.md
+  path: "fw/fw-fastify.md"
   hash: "sha256:a6965fcc273bb67ec941a4e50534e09a57711266a1398bcf3206a0071a293dbf"
 dimensions:
   - correctness

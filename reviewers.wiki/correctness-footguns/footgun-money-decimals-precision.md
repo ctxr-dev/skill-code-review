@@ -67,7 +67,7 @@ activation:
     - Price calculation or tax computation
 source:
   origin: file
-  path: footgun-money-decimals-precision.md
+  path: "footgun/footgun-money-decimals-precision.md"
   hash: "sha256:62fe237a16d5f7b423a30b2958fb74578185a0053aeda7f412f617516b56f525"
 dimensions:
   - correctness

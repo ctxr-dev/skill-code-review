@@ -57,7 +57,7 @@ activation:
     - Cross-platform code handling file paths
 source:
   origin: file
-  path: footgun-file-path-cross-platform.md
+  path: "footgun/footgun-file-path-cross-platform.md"
   hash: "sha256:2928618ef01317e7529a23b1bb1f8df309c7d0d970717d24b3712e5c2e207231"
 dimensions:
   - correctness

@@ -53,7 +53,7 @@ activation:
     - no_gradient_checkpointing
 source:
   origin: file
-  path: ai-ml-gpu-cuda-pitfalls.md
+  path: "ai/ai-ml-gpu-cuda-pitfalls.md"
   hash: "sha256:20834f2de038cee1b59ade2708872ce08a8ad2d5e670cd3b35971fec52f536e2"
 dimensions:
   - performance

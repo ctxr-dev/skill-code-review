@@ -145,7 +145,7 @@ activation:
     - tRPC subscription with observable or async iterable
 source:
   origin: file
-  path: fw-trpc.md
+  path: "fw/fw-trpc.md"
   hash: "sha256:13185f9205f201bfb1bb4ffdaefcbbeeb430ad41e13bc5993e2c20f5efe973b6"
 dimensions:
   - security

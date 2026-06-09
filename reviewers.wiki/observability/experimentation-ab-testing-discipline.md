@@ -67,7 +67,7 @@ activation:
     - Statistical readout or decision document
 source:
   origin: file
-  path: experimentation-ab-testing-discipline.md
+  path: "experimentation/experimentation-ab-testing-discipline.md"
   hash: "sha256:e96a3616b20bfce6ddccafece6021399034a28258cd4f1ea19232a2419c29c68"
 dimensions:
   - architecture

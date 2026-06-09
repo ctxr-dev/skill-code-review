@@ -51,7 +51,7 @@ activation:
     - Insertable
 source:
   origin: file
-  path: orm-diesel-sqlx-rust.md
+  path: "orm/orm-diesel-sqlx-rust.md"
   hash: "sha256:ed7fc01acd6a06814ff4dd6434d4037dcddb48ab9fcdd7be98afe6606edbc3ec"
 dimensions:
   - correctness

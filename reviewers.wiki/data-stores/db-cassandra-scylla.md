@@ -58,7 +58,7 @@ activation:
     - BATCH
 source:
   origin: file
-  path: db-cassandra-scylla.md
+  path: "db/db-cassandra-scylla.md"
   hash: "sha256:33f45b85561b24a7eb6c65da550de8f6080e5c4b19ff3a5230c0ab859c86bfc3"
 dimensions:
   - performance

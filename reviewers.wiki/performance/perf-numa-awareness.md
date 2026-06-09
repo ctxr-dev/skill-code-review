@@ -56,7 +56,7 @@ activation:
     - multi_socket_deployment
 source:
   origin: file
-  path: perf-numa-awareness.md
+  path: "perf/perf-numa-awareness.md"
   hash: "sha256:2d05bc38cf1062665623d1de11d290d96c81dff92f7e4a12542543b81402885a"
 dimensions:
   - performance

@@ -66,7 +66,7 @@ activation:
     - Scheduling logic referencing local wall-clock times
 source:
   origin: file
-  path: footgun-time-dates-timezones.md
+  path: "footgun/footgun-time-dates-timezones.md"
   hash: "sha256:359b4d526a77e9738a414af93ecf4af724e1818387a5a3616780d279ef9482c6"
 dimensions:
   - correctness

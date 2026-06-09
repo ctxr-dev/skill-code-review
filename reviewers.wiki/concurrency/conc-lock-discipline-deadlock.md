@@ -54,7 +54,7 @@ activation:
     - multiple_mutex_fields
 source:
   origin: file
-  path: conc-lock-discipline-deadlock.md
+  path: "conc/conc-lock-discipline-deadlock.md"
   hash: "sha256:8d3396b232341c9884fea7ff4c933e977919478a2c22c90249112c2171950c97"
 dimensions:
   - correctness

@@ -54,7 +54,7 @@ activation:
     - overlay_definition
 source:
   origin: file
-  path: iac-nix.md
+  path: "iac/iac-nix.md"
   hash: "sha256:ec8c798d0b02421e9d730cb2d8ad2b85200ff93c155483a3055f32dfac99ecc1"
 dimensions:
   - architecture

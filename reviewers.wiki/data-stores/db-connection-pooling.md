@@ -69,7 +69,7 @@ activation:
     - pool.max
 source:
   origin: file
-  path: db-connection-pooling.md
+  path: "db/db-connection-pooling.md"
   hash: "sha256:f15d7d20b86397290403ce0c68c98771ac1cc778a194a514cde811651b237d47"
 dimensions:
   - performance

@@ -111,7 +111,7 @@ activation:
     - "kind: SecretStore"
 source:
   origin: file
-  path: iac-secrets-sops-sealed-secrets-vault.md
+  path: "iac/iac-secrets-sops-sealed-secrets-vault.md"
   hash: "sha256:6dde555866290f3f1836c1b6d5d88b34f4db271b0503bb47072e34da2c6e4af4"
 dimensions:
   - security

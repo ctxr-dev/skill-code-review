@@ -50,7 +50,7 @@ activation:
     - missing lazy loading
 source:
   origin: file
-  path: fe-image-font-optimization.md
+  path: "fe/fe-image-font-optimization.md"
   hash: "sha256:a2843112f1c68ac87c1fbfd9f61b17f754faa20b5fca0203e2fc8a789ddfe9a1"
 dimensions:
   - performance

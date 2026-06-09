@@ -75,7 +75,7 @@ activation:
     - downsample
 source:
   origin: file
-  path: db-timescaledb-influxdb.md
+  path: "db/db-timescaledb-influxdb.md"
   hash: "sha256:637a1e74fa43696b73606a57b32d052b0cfe6cc4729a8e2aac36d4f2787c19c8"
 dimensions:
   - performance

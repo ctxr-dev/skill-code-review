@@ -52,7 +52,7 @@ activation:
     - "diesel::sqlite"
 source:
   origin: file
-  path: db-sqlite.md
+  path: "db/db-sqlite.md"
   hash: "sha256:3dd61c16bff678c3e514e250c6fb986945809beeace8e4923b6fc6eb457b6f16"
 dimensions:
   - correctness

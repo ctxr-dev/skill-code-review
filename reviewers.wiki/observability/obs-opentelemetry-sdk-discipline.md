@@ -60,7 +60,7 @@ activation:
     - context_propagation
 source:
   origin: file
-  path: obs-opentelemetry-sdk-discipline.md
+  path: "obs/obs-opentelemetry-sdk-discipline.md"
   hash: "sha256:b87109e62383a7768984e19f00a90f458d997256339689516c2415bcce0276df"
 dimensions:
   - architecture

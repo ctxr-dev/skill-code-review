@@ -61,7 +61,7 @@ activation:
     - consumer_test
 source:
   origin: file
-  path: test-contract-pact.md
+  path: "test/test-contract-pact.md"
   hash: "sha256:87f87b7c5b39b7ed7c453c78afae43022355dca3fa97c5434fecc5e1bad7dbf9"
 dimensions:
   - tests

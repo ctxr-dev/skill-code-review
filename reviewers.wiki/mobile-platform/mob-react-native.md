@@ -61,7 +61,7 @@ activation:
     - flatlist_without_key
 source:
   origin: file
-  path: mob-react-native.md
+  path: "mob/mob-react-native.md"
   hash: "sha256:414ccc452ccecb41ee37a811186afe85ed069314cb4f1e52a81cdc0d1935e08b"
 dimensions:
   - performance

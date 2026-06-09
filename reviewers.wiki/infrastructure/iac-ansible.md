@@ -57,7 +57,7 @@ activation:
     - handler_without_notify
 source:
   origin: file
-  path: iac-ansible.md
+  path: "iac/iac-ansible.md"
   hash: "sha256:05c54a6bfed811c141bb1ad39c40a8d6d0ebce0a649a7a11b49a7c20538c69b5"
 dimensions:
   - security

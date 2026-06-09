@@ -44,7 +44,7 @@ activation:
     - reflection_accessing_private_members
 source:
   origin: file
-  path: smell-inappropriate-intimacy.md
+  path: "smell/smell-inappropriate-intimacy.md"
   hash: "sha256:fc4e5b6ff0a64c6a22a77e9c03e8ad7766a6040054a12efbf23854ce37999d30"
 dimensions:
   - architecture

@@ -120,7 +120,7 @@ activation:
     - STOMP connection or subscription
 source:
   origin: file
-  path: net-mqtt-amqp-stomp.md
+  path: "net/net-mqtt-amqp-stomp.md"
   hash: "sha256:9353bed7b7bb3ad409e803a2d53c8cdf133a6e4460aeb87ec5aabf598afed78a"
 dimensions:
   - correctness

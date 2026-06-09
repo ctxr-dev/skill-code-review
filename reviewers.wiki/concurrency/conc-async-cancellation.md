@@ -51,7 +51,7 @@ activation:
     - context_cancel_not_deferred
 source:
   origin: file
-  path: conc-async-cancellation.md
+  path: "conc/conc-async-cancellation.md"
   hash: "sha256:ff6be08d9397230067175d8addd7b12fcaa294ba844878d842e0a69f6cdfa8ae"
 dimensions:
   - correctness

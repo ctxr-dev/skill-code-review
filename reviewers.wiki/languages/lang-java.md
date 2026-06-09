@@ -56,7 +56,7 @@ activation:
     - Maven or Gradle build file changes
 source:
   origin: file
-  path: lang-java.md
+  path: "lang/lang-java.md"
   hash: "sha256:3a927c23e87bd313b9c44da253e4166cdb99d4c95232d6c571b2111ee5546f2c"
 dimensions:
   - correctness

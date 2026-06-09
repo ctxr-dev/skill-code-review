@@ -68,7 +68,7 @@ activation:
     - Health check or monitoring endpoint
 source:
   origin: file
-  path: compliance-soc2.md
+  path: "compliance/compliance-soc2.md"
   hash: "sha256:fb38b2c118e4f41fde34e8e0703d27e34c71c9ee448e569c27201a21b3027eab"
 dimensions:
   - security

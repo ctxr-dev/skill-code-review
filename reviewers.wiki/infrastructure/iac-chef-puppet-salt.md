@@ -63,7 +63,7 @@ activation:
     - execute_without_guard
 source:
   origin: file
-  path: iac-chef-puppet-salt.md
+  path: "iac/iac-chef-puppet-salt.md"
   hash: "sha256:b67646c45fc4c77968f6c17d9cb42297315c566f84be1ac4b5dc5480c6183d9f"
 dimensions:
   - security

@@ -86,7 +86,7 @@ activation:
     - File path concatenation with user input
 source:
   origin: file
-  path: sec-owasp-a01-broken-access-control.md
+  path: "sec/sec-owasp-a01-broken-access-control.md"
   hash: "sha256:4ded6abd04df186d7531d31edcddb621cf3e9829e605145d66f6b5014c8e63f3"
 dimensions:
   - security

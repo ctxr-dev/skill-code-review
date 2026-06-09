@@ -55,7 +55,7 @@ activation:
     - checkpoint_all_ranks
 source:
   origin: file
-  path: ai-ml-distributed-training-ddp-fsdp-deepspeed.md
+  path: "ai/ai-ml-distributed-training-ddp-fsdp-deepspeed.md"
   hash: "sha256:bee667321ec2872253c3af177088d724b51c18ba1f4e4a640d191c0c0a68e01a"
 dimensions:
   - correctness

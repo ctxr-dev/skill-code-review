@@ -45,7 +45,7 @@ activation:
     - op.execute
 source:
   origin: file
-  path: migration-alembic.md
+  path: "migration/migration-alembic.md"
   hash: "sha256:1bd29444b11a5bfa12838aad3f6ef17f174e9631e5db73f2c5597242aa0bbb6a"
 dimensions:
   - correctness

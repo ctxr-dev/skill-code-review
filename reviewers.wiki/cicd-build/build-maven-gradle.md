@@ -54,7 +54,7 @@ activation:
     - gradle_wrapper_change
 source:
   origin: file
-  path: build-maven-gradle.md
+  path: "build/build-maven-gradle.md"
   hash: "sha256:4a94aa01c95ba7bdbb9424c5186d7046164692558c9c3c2a5b545f1cfb667254"
 dimensions:
   - architecture

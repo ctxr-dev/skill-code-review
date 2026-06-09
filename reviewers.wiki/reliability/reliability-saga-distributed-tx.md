@@ -81,7 +81,7 @@ activation:
     - distributed_write_without_saga
 source:
   origin: file
-  path: reliability-saga-distributed-tx.md
+  path: "reliability/reliability-saga-distributed-tx.md"
   hash: "sha256:8055842e78306174c667fff8e7351b48bbc0597408bcc08b1b6aaf6aa2875be2"
 dimensions:
   - correctness

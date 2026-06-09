@@ -31,7 +31,7 @@ activation:
     - Any code diff
 source:
   origin: file
-  path: principle-naming-and-intent.md
+  path: "principle/principle-naming-and-intent.md"
   hash: "sha256:1f0eb2f32145e4cd3110ede2122da632a1a30ef39e4105078bf5d6ad415fe73c"
 dimensions:
   - readability

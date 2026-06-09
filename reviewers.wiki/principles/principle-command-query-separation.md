@@ -51,7 +51,7 @@ activation:
     - Return statements in diff
 source:
   origin: file
-  path: principle-command-query-separation.md
+  path: "principle/principle-command-query-separation.md"
   hash: "sha256:1f5087bee34038362ed70c761dad5d7074ef57a6e72ff31b6866c8cfdae8e5a8"
 dimensions:
   - architecture

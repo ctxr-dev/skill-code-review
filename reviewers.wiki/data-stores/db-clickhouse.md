@@ -52,7 +52,7 @@ activation:
     - batch insert
 source:
   origin: file
-  path: db-clickhouse.md
+  path: "db/db-clickhouse.md"
   hash: "sha256:f1e639794afcbdbc05844c9abb8e09b53ae85e9e40112ef0d31477610b8f6598"
 dimensions:
   - performance

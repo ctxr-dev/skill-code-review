@@ -54,7 +54,7 @@ activation:
     - complete_deployment_mode
 source:
   origin: file
-  path: iac-bicep-arm.md
+  path: "iac/iac-bicep-arm.md"
   hash: "sha256:8cef112ad07702f3ffa5cbd716ec8d177cd1e61ff29df6f2b59b58d918d8b4a7"
 dimensions:
   - security

@@ -79,7 +79,7 @@ activation:
     - Reverse proxy upstream definition
 source:
   origin: file
-  path: sec-request-smuggling-and-cache-poisoning.md
+  path: "sec/sec-request-smuggling-and-cache-poisoning.md"
   hash: "sha256:987244076ccd40d0f4aa459f76f1a6a7952ceeae6226348f65ac59e78ffd7201"
 dimensions:
   - security

@@ -70,7 +70,7 @@ activation:
     - Session ID or CSRF token generation
 source:
   origin: file
-  path: footgun-rng-csprng.md
+  path: "footgun/footgun-rng-csprng.md"
   hash: "sha256:f01630d5298f86f302b7fc5fa46d7ab296d7574c125132c113d78558857ed94b"
 dimensions:
   - security

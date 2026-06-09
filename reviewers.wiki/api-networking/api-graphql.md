@@ -59,7 +59,7 @@ activation:
     - GraphQL server configuration
 source:
   origin: file
-  path: api-graphql.md
+  path: "api/api-graphql.md"
   hash: "sha256:e93e92542101fca82daf32525ea3920ae93db25a8661ee8896c4b723bfb94609"
 dimensions:
   - architecture

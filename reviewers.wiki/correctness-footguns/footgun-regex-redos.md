@@ -47,7 +47,7 @@ activation:
     - User-supplied pattern compiled as regex
 source:
   origin: file
-  path: footgun-regex-redos.md
+  path: "footgun/footgun-regex-redos.md"
   hash: "sha256:7dcf89cb2bf0dc27ba100c0124baff0824a0eaa431923d72324bf672c8f864b2"
 dimensions:
   - security

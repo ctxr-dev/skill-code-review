@@ -59,7 +59,7 @@ activation:
     - Django admin site registration
 source:
   origin: file
-  path: fw-django.md
+  path: "fw/fw-django.md"
   hash: "sha256:25b5f957f61e4481c68e0cc0f39192b99e22cb74ca2d5f09ec62166d80eae291"
 dimensions:
   - security

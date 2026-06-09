@@ -52,7 +52,7 @@ activation:
     - Mock setup with chained return values
 source:
   origin: file
-  path: principle-law-of-demeter.md
+  path: "principle/principle-law-of-demeter.md"
   hash: "sha256:232a8f18aa01c905f62f19ebcff9d45186003b3260082cfb512d4f03d1cced57"
 dimensions:
   - architecture

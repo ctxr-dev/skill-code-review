@@ -66,7 +66,7 @@ activation:
     - dynamo_table_definition
 source:
   origin: file
-  path: data-document-modeling.md
+  path: "data/data-document-modeling.md"
   hash: "sha256:8ba2a715210cd5466c4d6f963a61f9a54bf0cb101541b332607d58b80d5b5984"
 dimensions:
   - architecture

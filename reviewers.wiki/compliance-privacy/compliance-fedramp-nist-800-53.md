@@ -67,7 +67,7 @@ activation:
     - Cryptographic module initialization or configuration
 source:
   origin: file
-  path: compliance-fedramp-nist-800-53.md
+  path: "compliance/compliance-fedramp-nist-800-53.md"
   hash: "sha256:6aea0bd2e1c66e8356d5115f39e3c328b24104b6de175770b95fe1f89c07d564"
 dimensions:
   - security

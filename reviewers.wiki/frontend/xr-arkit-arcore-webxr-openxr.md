@@ -67,7 +67,7 @@ activation:
     - no_device_fallback
 source:
   origin: file
-  path: xr-arkit-arcore-webxr-openxr.md
+  path: "xr/xr-arkit-arcore-webxr-openxr.md"
   hash: "sha256:085ffa9b92ef6d333c82d3610ee250487dacbc2d76a017362b7e8b5f8408ec89"
 dimensions:
   - correctness

@@ -63,7 +63,7 @@ activation:
     - error_boundary
 source:
   origin: file
-  path: obs-error-tracking-sentry-rollbar-bugsnag.md
+  path: "obs/obs-error-tracking-sentry-rollbar-bugsnag.md"
   hash: "sha256:c74ee2abafd79580b90c8faeb87c9de0e949c87dea057575d8be95579e9328a5"
 dimensions:
   - architecture

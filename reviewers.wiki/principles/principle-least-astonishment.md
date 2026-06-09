@@ -43,7 +43,7 @@ activation:
     - Any code diff
 source:
   origin: file
-  path: principle-least-astonishment.md
+  path: "principle/principle-least-astonishment.md"
   hash: "sha256:d8d9db048d6176045a1dac87f62e224dfaa89f3b4d5966c5f6624dc9718a18d5"
 dimensions:
   - readability

@@ -40,7 +40,7 @@ activation:
     - renv.lock dependency changes
 source:
   origin: file
-  path: lang-r.md
+  path: "lang/lang-r.md"
   hash: "sha256:6a82026fb2619d8b8664bb1d35e93e824b6331e6f33342bbf3e63eb498bfbe94"
 dimensions:
   - correctness

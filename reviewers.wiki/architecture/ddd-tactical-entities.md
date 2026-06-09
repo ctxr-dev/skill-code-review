@@ -45,7 +45,7 @@ activation:
     - equals_override
 source:
   origin: file
-  path: ddd-tactical-entities.md
+  path: "ddd/ddd-tactical-entities.md"
   hash: "sha256:b073c6d416c5d217b8ce9d9d4bea8b823b8155f0f461320e23448ed07e4e0b8f"
 dimensions:
   - architecture

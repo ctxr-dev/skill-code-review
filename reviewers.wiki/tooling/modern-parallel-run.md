@@ -50,7 +50,7 @@ activation:
     - dual_path
 source:
   origin: file
-  path: modern-parallel-run.md
+  path: "modern/modern-parallel-run.md"
   hash: "sha256:924f0b74a1f93294c93cc8a26b12231c3d5e0ac16edb5a77d0f4fa00c858131e"
 dimensions:
   - architecture

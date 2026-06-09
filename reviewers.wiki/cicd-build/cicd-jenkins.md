@@ -64,7 +64,7 @@ activation:
     - Shared library reference change
 source:
   origin: file
-  path: cicd-jenkins.md
+  path: "cicd/cicd-jenkins.md"
   hash: "sha256:67742e7561b5a705f2907288fd3ed66152be68f3c0f0f831b1ddea895481591b"
 dimensions:
   - architecture

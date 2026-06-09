@@ -49,7 +49,7 @@ activation:
     - unoverridden_virtual_method
 source:
   origin: file
-  path: smell-speculative-generality.md
+  path: "smell/smell-speculative-generality.md"
   hash: "sha256:ccee5c868cf8909e394f463d610b9d01ea2b294cc9cf0d2b0577f55e90335547"
 dimensions:
   - architecture

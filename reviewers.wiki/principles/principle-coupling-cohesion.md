@@ -30,7 +30,7 @@ activation:
     - Any code change
 source:
   origin: file
-  path: principle-coupling-cohesion.md
+  path: "principle/principle-coupling-cohesion.md"
   hash: "sha256:5e97e9a7f461d33fac398f197e931b26262fc0cb95b9eec067232e5c82a76c92"
 dimensions:
   - architecture

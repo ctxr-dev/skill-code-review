@@ -56,7 +56,7 @@ activation:
     - GraalVM native image build configuration
 source:
   origin: file
-  path: fw-quarkus-micronaut.md
+  path: "fw/fw-quarkus-micronaut.md"
   hash: "sha256:8bc314aa870c22db9b5800132422231131d42a6a4e13b842fc295518abf5b768"
 dimensions:
   - correctness

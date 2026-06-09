@@ -83,7 +83,7 @@ activation:
     - pii_in_targeting
 source:
   origin: file
-  path: feature-flag-platforms-launchdarkly-unleash-growthbook-openfeature.md
+  path: "feature/feature-flag-platforms-launchdarkly-unleash-growthbook-openfeature.md"
   hash: "sha256:b0865821532cab39144f382664e91fcf2c2be7488531cbb766e4030850e684dc"
 dimensions:
   - architecture

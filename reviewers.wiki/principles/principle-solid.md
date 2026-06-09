@@ -42,7 +42,7 @@ activation:
     - interface_declaration
 source:
   origin: file
-  path: principle-solid.md
+  path: "principle/principle-solid.md"
   hash: "sha256:63f2273586a3433a4511fefad9c36b2cdd6a6567ccce3a2dc6891b36538d623e"
 dimensions:
   - architecture

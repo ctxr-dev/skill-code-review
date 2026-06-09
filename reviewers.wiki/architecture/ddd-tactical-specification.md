@@ -55,7 +55,7 @@ activation:
     - query_predicate
 source:
   origin: file
-  path: ddd-tactical-specification.md
+  path: "ddd/ddd-tactical-specification.md"
   hash: "sha256:2f162384582af72c00f19b8f90b599fb18a04033d77e1de13ca4be8f226d1186"
 dimensions:
   - architecture

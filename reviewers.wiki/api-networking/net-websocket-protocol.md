@@ -73,7 +73,7 @@ activation:
     - WebSocket client connection
 source:
   origin: file
-  path: net-websocket-protocol.md
+  path: "net/net-websocket-protocol.md"
   hash: "sha256:4cfbe6f718a163facee7b389657ac3b8188803a22b1cff519787bcd9aa252077"
 dimensions:
   - security

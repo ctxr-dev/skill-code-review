@@ -62,7 +62,7 @@ activation:
     - Async task dispatch or background job handler
 source:
   origin: file
-  path: obs-distributed-tracing.md
+  path: "obs/obs-distributed-tracing.md"
   hash: "sha256:8c2be8fccdbe0a7560f4aaa7ff5180a0f06825910ae2f0951a892feaf7197d4f"
 dimensions:
   - architecture

@@ -45,7 +45,7 @@ activation:
     - class_accepting_behavior_parameter
 source:
   origin: file
-  path: pattern-strategy.md
+  path: "pattern/pattern-strategy.md"
   hash: "sha256:d527e7e5e05d8142182d5f7fdfb278e681b9b7ffb1bca43794cc3a61d03b8ccc"
 dimensions:
   - architecture

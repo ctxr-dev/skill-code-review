@@ -48,7 +48,7 @@ activation:
     - push permission on load
 source:
   origin: file
-  path: fe-service-worker-pwa.md
+  path: "fe/fe-service-worker-pwa.md"
   hash: "sha256:ae5f4ca72f46c923161791ddf5249d82f709cf923c2681117be9a4a5761a2591"
 dimensions:
   - correctness

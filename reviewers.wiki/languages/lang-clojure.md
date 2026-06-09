@@ -38,7 +38,7 @@ activation:
     - core.async require or channel operations
 source:
   origin: file
-  path: lang-clojure.md
+  path: "lang/lang-clojure.md"
   hash: "sha256:8fdb4aced4bcd750debca4d359b3c3d6e9ba532f216dbf346a2e0073297e3050"
 dimensions:
   - correctness

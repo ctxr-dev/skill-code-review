@@ -48,7 +48,7 @@ activation:
     - Content collection configuration
 source:
   origin: file
-  path: fw-astro.md
+  path: "fw/fw-astro.md"
   hash: "sha256:8fc5ea32658998839ef4691e6cb630b12588a6c6754c0846f8336e2d3f83f65e"
 dimensions:
   - performance

@@ -62,7 +62,7 @@ activation:
     - Eloquent model with relationships
 source:
   origin: file
-  path: fw-laravel-symfony.md
+  path: "fw/fw-laravel-symfony.md"
   hash: "sha256:403c548164d34eae8429a7f0a68cb7ae99fe2dbf34e9767d22544a8b0206e3b1"
 dimensions:
   - security

@@ -46,7 +46,7 @@ activation:
     - atlas schema
 source:
   origin: file
-  path: migration-atlas-goose.md
+  path: "migration/migration-atlas-goose.md"
   hash: "sha256:18ca9b9bae9ab0806f26f52d4de10df716fde92f3f096e7b7a46ce1f973c0fd9"
 dimensions:
   - correctness

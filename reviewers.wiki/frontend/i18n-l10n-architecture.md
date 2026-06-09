@@ -81,7 +81,7 @@ activation:
     - plural_via_if_else
 source:
   origin: file
-  path: i18n-l10n-architecture.md
+  path: "i18n/i18n-l10n-architecture.md"
   hash: "sha256:7af277781ccce239aa17fc76ae34b42c33a9711f3b7feb549613ba7cde2b632a"
 dimensions:
   - architecture

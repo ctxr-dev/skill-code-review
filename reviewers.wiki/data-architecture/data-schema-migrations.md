@@ -68,7 +68,7 @@ activation:
     - migration_class
 source:
   origin: file
-  path: data-schema-migrations.md
+  path: "data/data-schema-migrations.md"
   hash: "sha256:ad34d4dca36ee59518eccab6da0c4cecb8d42092c44961856334ab2d1947504d"
 dimensions:
   - architecture

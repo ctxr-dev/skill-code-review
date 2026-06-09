@@ -49,7 +49,7 @@ activation:
     - CI workflow adding or removing status checks
 source:
   origin: file
-  path: cicd-merge-queue-and-branch-protection.md
+  path: "cicd/cicd-merge-queue-and-branch-protection.md"
   hash: "sha256:38a2647ebca00e65a38ffd32a42fa6ce6d0ea37cc9c32caa90afb30eaf044aa6"
 dimensions:
   - architecture

@@ -68,7 +68,7 @@ activation:
     - critical_path_sharing_resources
 source:
   origin: file
-  path: reliability-bulkhead-isolation.md
+  path: "reliability/reliability-bulkhead-isolation.md"
   hash: "sha256:86b08771a5a97b910003aeba5fa1cf99523b04368869f56b4e77899754fdda0c"
 dimensions:
   - correctness

@@ -63,7 +63,7 @@ activation:
     - AML screening or watchlist lookup
 source:
   origin: file
-  path: domain-fintech-fraud-kyc-aml.md
+  path: "domain/domain-fintech-fraud-kyc-aml.md"
   hash: "sha256:57166079a90ceadb122c7bf97f5a21682f8c0ceaaa313288d5a87bc089f8b9a8"
 dimensions:
   - security

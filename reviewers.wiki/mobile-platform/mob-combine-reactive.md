@@ -56,7 +56,7 @@ activation:
     - subject_exposed_publicly
 source:
   origin: file
-  path: mob-combine-reactive.md
+  path: "mob/mob-combine-reactive.md"
   hash: "sha256:a3dd3ebcda17b6f7da81113bc5184d02c7dde208997b5539ecf2cce56118d0aa"
 dimensions:
   - correctness

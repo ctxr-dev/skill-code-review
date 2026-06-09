@@ -37,7 +37,7 @@ activation:
     - .csproj or .sln changes
 source:
   origin: file
-  path: lang-csharp.md
+  path: "lang/lang-csharp.md"
   hash: "sha256:71c9f961817c37909cf7f6eb2c22080af457af615dcc5681cdcf7eb1cfc15c3e"
 dimensions:
   - correctness

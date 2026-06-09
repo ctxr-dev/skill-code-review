@@ -60,7 +60,7 @@ activation:
     - "apiVersion: templates.gatekeeper.sh"
 source:
   origin: file
-  path: k8s-admission-opa-kyverno-gatekeeper.md
+  path: "k8s/k8s-admission-opa-kyverno-gatekeeper.md"
   hash: "sha256:26735607bf39b1fbca9b8b9eab222cc08954ff593bd12462325656e4083bdbe6"
 dimensions:
   - security

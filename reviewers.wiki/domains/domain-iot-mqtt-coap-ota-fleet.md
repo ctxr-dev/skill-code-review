@@ -72,7 +72,7 @@ activation:
     - Device provisioning or fleet enrollment logic
 source:
   origin: file
-  path: domain-iot-mqtt-coap-ota-fleet.md
+  path: "domain/domain-iot-mqtt-coap-ota-fleet.md"
   hash: "sha256:9e75dbcf8496fc5d49024da95fdbb7256c5ea2489c7793211c41bf52d815719d"
 dimensions:
   - security

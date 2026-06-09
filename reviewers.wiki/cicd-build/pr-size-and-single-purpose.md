@@ -37,7 +37,7 @@ activation:
     - mixed_concerns
 source:
   origin: file
-  path: pr-size-and-single-purpose.md
+  path: "pr/pr-size-and-single-purpose.md"
   hash: "sha256:cc99663a66afffb9bf77e747cc2dd65fb900c2b0cea7f4da8064fdc3560c84ce"
 dimensions:
   - readability

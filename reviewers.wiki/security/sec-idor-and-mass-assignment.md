@@ -69,7 +69,7 @@ activation:
     - API endpoint with path parameter ID
 source:
   origin: file
-  path: sec-idor-and-mass-assignment.md
+  path: "sec/sec-idor-and-mass-assignment.md"
   hash: "sha256:f13cac101c963e231da6631d74de6169433184bf94fed151849a68938666eb49"
 dimensions:
   - security

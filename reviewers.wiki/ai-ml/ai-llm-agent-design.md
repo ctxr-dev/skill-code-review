@@ -52,7 +52,7 @@ activation:
     - destructive_without_approval
 source:
   origin: file
-  path: ai-llm-agent-design.md
+  path: "ai/ai-llm-agent-design.md"
   hash: "sha256:5b653a20fdaa5cb4e77ae10fa63ee336c33bd9fd3684cc288d3a27bf0b8c022d"
 dimensions:
   - correctness

@@ -53,7 +53,7 @@ activation:
     - railway_toml_config
 source:
   origin: file
-  path: cloud-fly-render-railway.md
+  path: "cloud/cloud-fly-render-railway.md"
   hash: "sha256:483f154fc018c0ec32cf772311fecb10375f9384be3c62a02ad499607b6161e4"
 dimensions:
   - architecture

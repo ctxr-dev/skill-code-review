@@ -44,7 +44,7 @@ activation:
     - stacked_wrapping
 source:
   origin: file
-  path: pattern-decorator.md
+  path: "pattern/pattern-decorator.md"
   hash: "sha256:b88368348f74ad858039abdd3da17e4e85673841dd3b524ff807f06572505d58"
 dimensions:
   - architecture

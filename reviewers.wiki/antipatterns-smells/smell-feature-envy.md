@@ -44,7 +44,7 @@ activation:
     - function_operating_on_parameter_only
 source:
   origin: file
-  path: smell-feature-envy.md
+  path: "smell/smell-feature-envy.md"
   hash: "sha256:0e7941f5fb66ae0321d7c4cd18ab243f98e3f884f2de76dc63e64e8c8268340d"
 dimensions:
   - readability

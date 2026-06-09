@@ -51,7 +51,7 @@ activation:
     - missing_encryption
 source:
   origin: file
-  path: cloud-aws-s3.md
+  path: "cloud/cloud-aws-s3.md"
   hash: "sha256:f7659658e01cb28db4b74c22660f2cc27f3b43ac5f9768fe295d7d439de8f442"
 dimensions:
   - security

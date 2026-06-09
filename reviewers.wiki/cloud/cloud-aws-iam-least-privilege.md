@@ -52,7 +52,7 @@ activation:
     - administrator_access
 source:
   origin: file
-  path: cloud-aws-iam-least-privilege.md
+  path: "cloud/cloud-aws-iam-least-privilege.md"
   hash: "sha256:2e7725d42b84f86ab17392a7d194471aa09da83d4b38f66c741be2687fe6d940"
 dimensions:
   - security

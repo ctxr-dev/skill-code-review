@@ -58,7 +58,7 @@ activation:
     - auto_increment
 source:
   origin: file
-  path: db-mysql-mariadb.md
+  path: "db/db-mysql-mariadb.md"
   hash: "sha256:759718d5ede253f6cce85a1f548f972f02815a44d66cdbf35754c7ef29adf793"
 dimensions:
   - correctness

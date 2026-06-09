@@ -84,7 +84,7 @@ activation:
     - Proxy or forwarding middleware setup
 source:
   origin: file
-  path: api-gateway-and-bff-composition.md
+  path: "api/api-gateway-and-bff-composition.md"
   hash: "sha256:c56cb9571b46d7d33b224213423a5be92a40fc225cd93a220b48f46068bcfe73"
 dimensions:
   - architecture

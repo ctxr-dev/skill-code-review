@@ -73,7 +73,7 @@ activation:
     - pgbouncer
 source:
   origin: file
-  path: db-postgres.md
+  path: "db/db-postgres.md"
   hash: "sha256:2b7c5db17fceb864e9652ed75e1d2317a84d955ed71ec39ef0137922036a137e"
 dimensions:
   - performance

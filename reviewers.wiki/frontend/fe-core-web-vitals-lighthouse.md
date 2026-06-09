@@ -50,7 +50,7 @@ activation:
     - long task in event handler
 source:
   origin: file
-  path: fe-core-web-vitals-lighthouse.md
+  path: "fe/fe-core-web-vitals-lighthouse.md"
   hash: "sha256:41af6b639ce3a4e3d045c487f2f8643d0ef8b2e38755fd8fda10174eff9e7b4b"
 dimensions:
   - performance

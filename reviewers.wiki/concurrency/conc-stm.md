@@ -54,7 +54,7 @@ activation:
     - dosync_with_refs
 source:
   origin: file
-  path: conc-stm.md
+  path: "conc/conc-stm.md"
   hash: "sha256:d975d0dde10d346a2cdfc0c5fc95b45f116fc2821afe2879d5e3795b567a0f8f"
 dimensions:
   - correctness

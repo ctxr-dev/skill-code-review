@@ -41,7 +41,7 @@ activation:
     - env variable exposure
 source:
   origin: file
-  path: fe-build-vite.md
+  path: "fe/fe-build-vite.md"
   hash: "sha256:3db651f5c4c90ee33176a05e03241fb0b7c0132d18523aeae932c447e6bdd92b"
 dimensions:
   - performance

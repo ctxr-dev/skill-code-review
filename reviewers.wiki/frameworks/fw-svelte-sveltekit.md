@@ -53,7 +53,7 @@ activation:
     - Server code in client bundle
 source:
   origin: file
-  path: fw-svelte-sveltekit.md
+  path: "fw/fw-svelte-sveltekit.md"
   hash: "sha256:c1bfe949af6e65ae7eea22e9d42e9a563ef2166fcfcb28e6edcaeb88ce4767f5"
 dimensions:
   - correctness

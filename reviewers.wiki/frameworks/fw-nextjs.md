@@ -71,7 +71,7 @@ activation:
     - Missing route boundary files
 source:
   origin: file
-  path: fw-nextjs.md
+  path: "fw/fw-nextjs.md"
   hash: "sha256:b9fccbf7c89637cb12b87f7a903ae28772cc9c143291872539c7c4551e994381"
 dimensions:
   - correctness

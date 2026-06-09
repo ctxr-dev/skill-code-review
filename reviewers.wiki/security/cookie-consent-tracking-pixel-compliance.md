@@ -74,7 +74,7 @@ activation:
     - document.cookie writes or Set-Cookie headers
 source:
   origin: file
-  path: cookie-consent-tracking-pixel-compliance.md
+  path: "cookie/cookie-consent-tracking-pixel-compliance.md"
   hash: "sha256:266db68773949c9ab1a1a91fc433cefca6b7ca3abb6aa952b69d2d252313a560"
 dimensions:
   - security

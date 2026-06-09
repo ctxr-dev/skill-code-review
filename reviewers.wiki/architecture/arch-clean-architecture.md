@@ -54,7 +54,7 @@ activation:
     - use_case_boundary
 source:
   origin: file
-  path: arch-clean-architecture.md
+  path: "arch/arch-clean-architecture.md"
   hash: "sha256:c96b78023487fc2b667b51f8d010e95172b4e0124bf7eba4b95b71522d5b7489"
 dimensions:
   - architecture

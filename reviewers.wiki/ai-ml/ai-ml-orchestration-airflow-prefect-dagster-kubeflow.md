@@ -61,7 +61,7 @@ activation:
     - hardcoded_connection
 source:
   origin: file
-  path: ai-ml-orchestration-airflow-prefect-dagster-kubeflow.md
+  path: "ai/ai-ml-orchestration-airflow-prefect-dagster-kubeflow.md"
   hash: "sha256:3b27e6561c799ebf3a6b0aad1d0bef06a358435694b074b4f26b2949ae041659"
 dimensions:
   - architecture

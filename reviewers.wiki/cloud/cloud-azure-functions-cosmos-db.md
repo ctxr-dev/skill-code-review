@@ -51,7 +51,7 @@ activation:
     - FunctionName_attribute
 source:
   origin: file
-  path: cloud-azure-functions-cosmos-db.md
+  path: "cloud/cloud-azure-functions-cosmos-db.md"
   hash: "sha256:12a2b1cca7e337eb526e5b1c3acb5d9d3e7d0907139df0b20ded9ac031cb27aa"
 dimensions:
   - architecture

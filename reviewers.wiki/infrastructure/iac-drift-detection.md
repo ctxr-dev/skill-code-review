@@ -55,7 +55,7 @@ activation:
     - scheduled_state_refresh
 source:
   origin: file
-  path: iac-drift-detection.md
+  path: "iac/iac-drift-detection.md"
   hash: "sha256:90958bd53a1c737c27d430c9bcaa56479d8044a66bcd37a19d290cc5611dc368"
 dimensions:
   - architecture

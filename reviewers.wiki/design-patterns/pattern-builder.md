@@ -44,7 +44,7 @@ activation:
     - method_chaining
 source:
   origin: file
-  path: pattern-builder.md
+  path: "pattern/pattern-builder.md"
   hash: "sha256:0edfcfc7394e6e70df7bfbc82e8c0694e4d98e2934c081d88412deca35e7a166"
 dimensions:
   - architecture

@@ -64,7 +64,7 @@ activation:
     - "inline phpstan/psalm suppression annotation"
 source:
   origin: file
-  path: tool-phpstan-psalm-phan.md
+  path: "tool/tool-phpstan-psalm-phan.md"
   hash: "sha256:b2ea102897c63a01119fc8694073f1c3e5216cab4fc26215d8e69e733ee03490"
 dimensions:
   - architecture

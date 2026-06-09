@@ -85,7 +85,7 @@ activation:
     - File upload handling
 source:
   origin: file
-  path: footgun-resource-exhaustion-via-input.md
+  path: "footgun/footgun-resource-exhaustion-via-input.md"
   hash: "sha256:242d4f1765c08c081640b4a85816035eb0b5f185f3025077559b2b80b2a0abe3"
 dimensions:
   - security

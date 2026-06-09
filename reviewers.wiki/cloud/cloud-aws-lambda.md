@@ -65,7 +65,7 @@ activation:
     - async_invoke_without_dlq
 source:
   origin: file
-  path: cloud-aws-lambda.md
+  path: "cloud/cloud-aws-lambda.md"
   hash: "sha256:e5c9f153aa9842bbd98325c4914147da9e99c8524d361400d6655ecb38cd69bb"
 dimensions:
   - architecture

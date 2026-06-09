@@ -63,7 +63,7 @@ activation:
     - native_image_config
 source:
   origin: file
-  path: perf-aot-graalvm-mojo.md
+  path: "perf/perf-aot-graalvm-mojo.md"
   hash: "sha256:1e51642c82dc1fdc250b6117ad92a6ea1a9f75ae0f9af54203415861e3bbb9bf"
 dimensions:
   - performance

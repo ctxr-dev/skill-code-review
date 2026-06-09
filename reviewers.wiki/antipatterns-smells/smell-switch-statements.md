@@ -47,7 +47,7 @@ activation:
     - enum_dispatch_across_methods
 source:
   origin: file
-  path: smell-switch-statements.md
+  path: "smell/smell-switch-statements.md"
   hash: "sha256:67dd213ad3f3c615fdc2773129a828610f2b6897b99d79e0a4544d487ccf3c0a"
 dimensions:
   - readability

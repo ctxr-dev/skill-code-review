@@ -49,7 +49,7 @@ activation:
     - module_export
 source:
   origin: file
-  path: principle-encapsulation.md
+  path: "principle/principle-encapsulation.md"
   hash: "sha256:c8c626629b2730ce3f5ebf2eb94ae33bcb740d55e00b09a80754b5bc6037ff03"
 dimensions:
   - architecture

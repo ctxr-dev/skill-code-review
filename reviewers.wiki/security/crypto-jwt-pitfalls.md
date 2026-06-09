@@ -69,7 +69,7 @@ activation:
     - Algorithm selection in JWT options
 source:
   origin: file
-  path: crypto-jwt-pitfalls.md
+  path: "crypto/crypto-jwt-pitfalls.md"
   hash: "sha256:ced98df2408503b0ff4c6feec53636eaecf48f0d666a4d3414937bb4075b66ff"
 dimensions:
   - security

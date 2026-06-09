@@ -68,7 +68,7 @@ activation:
     - missing_landmark
 source:
   origin: file
-  path: a11y-wcag-2-2-aa.md
+  path: "a11y/a11y-wcag-2-2-aa.md"
   hash: "sha256:ac403539b445f8db8aef57ea3425a719aaa5ff03138440327fcb4aca94b31ad7"
 dimensions:
   - correctness

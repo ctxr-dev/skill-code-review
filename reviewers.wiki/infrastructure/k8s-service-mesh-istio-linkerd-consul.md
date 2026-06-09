@@ -81,7 +81,7 @@ activation:
     - "kind: DestinationRule"
 source:
   origin: file
-  path: k8s-service-mesh-istio-linkerd-consul.md
+  path: "k8s/k8s-service-mesh-istio-linkerd-consul.md"
   hash: "sha256:c81a1b121e234e05aca8b436546c0596db1767e2292deb3c0fde3a52f0ac4415"
 dimensions:
   - security

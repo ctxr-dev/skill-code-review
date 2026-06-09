@@ -52,7 +52,7 @@ activation:
     - pitest_configuration
 source:
   origin: file
-  path: test-mutation.md
+  path: "test/test-mutation.md"
   hash: "sha256:baa3b96fd2aedc3962950e5d647db654b5de9f792446d423dbe9be2392e12de3"
 dimensions:
   - tests

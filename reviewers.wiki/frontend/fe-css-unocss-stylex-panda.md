@@ -44,7 +44,7 @@ activation:
     - design token inconsistency
 source:
   origin: file
-  path: fe-css-unocss-stylex-panda.md
+  path: "fe/fe-css-unocss-stylex-panda.md"
   hash: "sha256:b6f1ba146c95752623840e9a2390cbb591fb547c8f37827b7a0cc4e349981638"
 dimensions:
   - readability

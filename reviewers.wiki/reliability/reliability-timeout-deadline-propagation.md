@@ -53,7 +53,7 @@ activation:
     - sequential_calls_without_budget
 source:
   origin: file
-  path: reliability-timeout-deadline-propagation.md
+  path: "reliability/reliability-timeout-deadline-propagation.md"
   hash: "sha256:93388f75a183e14026f2bce1cd9ff6c86f10e028b76aa602ece2731c384d6f8a"
 dimensions:
   - correctness

@@ -62,7 +62,7 @@ activation:
     - New external dependency introducing trust relationship
 source:
   origin: file
-  path: sec-threat-modeling-stride-dread-linddun.md
+  path: "sec/sec-threat-modeling-stride-dread-linddun.md"
   hash: "sha256:5e3536f04976c851ff738cd37f68910d2c792bf83e501e8d276d0fc7a087c2a2"
 dimensions:
   - security

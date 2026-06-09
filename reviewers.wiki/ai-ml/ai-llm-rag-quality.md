@@ -53,7 +53,7 @@ activation:
     - no_relevance_threshold
 source:
   origin: file
-  path: ai-llm-rag-quality.md
+  path: "ai/ai-llm-rag-quality.md"
   hash: "sha256:b19a5848c961ac74aee7df90140c402ab15348059226cb172c68cb04a7943efb"
 dimensions:
   - correctness

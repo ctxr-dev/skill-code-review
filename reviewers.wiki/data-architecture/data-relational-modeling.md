@@ -67,7 +67,7 @@ activation:
     - migration_file
 source:
   origin: file
-  path: data-relational-modeling.md
+  path: "data/data-relational-modeling.md"
   hash: "sha256:dad7bb8bb57918b159638024a121ef1b15f6a35389eb1d352794fe3091df3821"
 dimensions:
   - architecture

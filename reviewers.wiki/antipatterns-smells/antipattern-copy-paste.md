@@ -48,7 +48,7 @@ activation:
     - Any code diff
 source:
   origin: file
-  path: antipattern-copy-paste.md
+  path: "antipattern/antipattern-copy-paste.md"
   hash: "sha256:bc0ce80e1496efc77e8dae91706ebe5c3474479ac310a394ecb117752acfdbb4"
 dimensions:
   - architecture

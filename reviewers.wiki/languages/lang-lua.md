@@ -35,7 +35,7 @@ activation:
     - LuaRocks spec or luacheck configuration changed
 source:
   origin: file
-  path: lang-lua.md
+  path: "lang/lang-lua.md"
   hash: "sha256:07df4a39c0a2224079b93547e24340d6e32296cfe12e2718365c401c0ca891bc"
 dimensions:
   - correctness

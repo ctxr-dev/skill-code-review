@@ -62,7 +62,7 @@ activation:
     - Docs directory with markdown files and a build tool
 source:
   origin: file
-  path: doc-site-generators.md
+  path: "doc/doc-site-generators.md"
   hash: "sha256:b93a59d69e62e1627cd2adf831ddb46ab6c2ebb69d6a765ce35a43b52588b9c7"
 dimensions:
   - documentation

@@ -49,7 +49,7 @@ activation:
     - pip install
 source:
   origin: file
-  path: container-image-hardening.md
+  path: "container/container-image-hardening.md"
   hash: "sha256:1821b5bc072f66e9e5078ebce6da33ffc7314c92c38d02a17cab2d8ba0719bd6"
 dimensions:
   - security

@@ -102,7 +102,7 @@ activation:
     - Bulk operation or batch mutation
 source:
   origin: file
-  path: obs-audit-trail.md
+  path: "obs/obs-audit-trail.md"
   hash: "sha256:9521aa5391a129543b7b19094923781e6824366172fe991e304199ad4f186028"
 dimensions:
   - security

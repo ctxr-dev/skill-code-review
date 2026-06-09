@@ -67,7 +67,7 @@ activation:
     - complex_infrastructure_for_simple_app
 source:
   origin: file
-  path: antipattern-golden-hammer.md
+  path: "antipattern/antipattern-golden-hammer.md"
   hash: "sha256:175e0832807f6e3993bfe7b24ab3832d1576adb3729cb31951f71f23991352ca"
 dimensions:
   - architecture

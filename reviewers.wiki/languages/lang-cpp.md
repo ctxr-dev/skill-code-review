@@ -38,7 +38,7 @@ activation:
     - C++ source or header files in diff
 source:
   origin: file
-  path: lang-cpp.md
+  path: "lang/lang-cpp.md"
   hash: "sha256:280d084a71df79390d6b735ab6f2f67e2f9321e28a997408ca2fdfb52b7f6c95"
 dimensions:
   - correctness

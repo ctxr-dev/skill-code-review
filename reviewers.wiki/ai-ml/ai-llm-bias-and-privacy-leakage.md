@@ -55,7 +55,7 @@ activation:
     - unredacted_logs
 source:
   origin: file
-  path: ai-llm-bias-and-privacy-leakage.md
+  path: "ai/ai-llm-bias-and-privacy-leakage.md"
   hash: "sha256:f0ec685153d8d82e5f0a1a92ec1ce35407a774c77ce56551793b42c8ec44fd78"
 dimensions:
   - security

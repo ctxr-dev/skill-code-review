@@ -67,7 +67,7 @@ def _prod_issues(pr_id: str) -> list[dict]:
 
 
 def _text(i: dict) -> str:
-    return (i.get("title", "") + ". " + i.get("description", "")).strip()
+    return ((i.get("title") or "") + ". " + (i.get("description") or "")).strip()
 
 
 def _skill_candidates(issues: list[dict]) -> list[dict]:

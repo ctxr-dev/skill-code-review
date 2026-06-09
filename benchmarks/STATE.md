@@ -3,18 +3,26 @@
 
 # Benchmark STATE (YOU ARE HERE)
 
-Generated: 2026-06-09T14:22:07+00:00
+Generated: 2026-06-09T20:42:52+00:00
 
-Phase: A0 complete (the proof machine is built and green).
+Current PR set: pr5 (rung 5 PRs)
+Baseline tag: Baseline@pr5 LOCKED  (run_id: base-pr5, sha: c4e1e09)
 
-Current baseline: NONE locked yet.
+| metric | value | 95% CI |
+|---|---|---|
+| F1 | 0.593 | [0.537, 0.652] |
+| recall | 0.727 | [0.600, 0.900] |
+| precision | 0.500 | n/a |
+| fp/PR | 1.60 | n/a |
+| $/review | n/a | n/a |
+| F1 stdev | 0.030 | (over 3 rounds) |
 
-Next step: A1, lock Baseline@pr5. This is expensive (a full product run over the 5 pilot PRs, N=3 rounds) and is awaiting conductor go-ahead before any benchmark dollar is spent.
+Last proven win: baseline (ramp, 2026-06-09T20:37:54+00:00)
 
 ## Dead-ends ledger
 None recorded.
 
 ## Next action
-A1: lock Baseline@pr5 (expensive, awaiting conductor go-ahead), then tag it and iterate one lever at a time.
+Start A2 (calibration): tune workers/finding-ranker.md, the cheapest proven win (ranker-only, low token cost, averaged over N rounds via rerank.py). Then apply the 5-gate predicate against this locked baseline. Alternative: ramp consideration, move to a larger PR rung for a more powered signal once a calibration win is proven.
 
-Total recorded experiments: 0
+Total recorded experiments: 2

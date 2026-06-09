@@ -503,7 +503,7 @@ def render_state(conn: sqlite3.Connection) -> str:
         rung = _pr_set_rung(proven.get("pr_set_id"))
         lines.append(f"Current PR set: {proven.get('pr_set_id') or 'n/a'} "
                      f"(rung {rung if rung is not None else 'n/a'} PRs)")
-        lines.append(f"Baseline tag: {proven.get('baseline_tag') or 'n/a'}  "
+        lines.append(f"Baseline tag: {proven.get('baseline_tag') or 'n/a'} LOCKED  "
                      f"(run_id: {proven.get('run_id')}, sha: {proven.get('git_sha') or 'n/a'})")
         lines.append("")
         lines.append("| metric | value | 95% CI |")
@@ -539,6 +539,17 @@ def render_state(conn: sqlite3.Connection) -> str:
     if proven is None:
         lines.append("A1: lock Baseline@pr5 (expensive, awaiting conductor go-ahead), then "
                      "tag it and iterate one lever at a time.")
+    elif (proven.get("lever") or "") == "baseline":
+        # A1 just locked the baseline. The cheapest proven win next is A2
+        # calibration (a ranker-only, low-token lever), with a ramp to a larger
+        # PR rung as the alternative once a calibration win is in hand.
+        lines.append(
+            "Start A2 (calibration): tune workers/finding-ranker.md, the cheapest "
+            "proven win (ranker-only, low token cost, averaged over N rounds via "
+            "rerank.py). Then apply the 5-gate predicate against this locked "
+            "baseline. Alternative: ramp consideration, move to a larger PR rung "
+            "for a more powered signal once a calibration win is proven."
+        )
     else:
         lines.append(
             "Pick the cheapest-proven-win-first hypothesis that is NOT a known "

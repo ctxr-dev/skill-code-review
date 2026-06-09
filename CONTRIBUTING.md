@@ -25,9 +25,9 @@ All three must pass.
 
 ### Adding a Reviewer (or language / framework)
 
-The corpus lives in two layers: hand-authored sources at `reviewers.src/`, and the wiki-organised tree at `reviewers.wiki/` produced by [`skill-llm-wiki`](https://github.com/ctxr-dev/skill-llm-wiki). Authors only touch the source layer; the wiki layer is regenerated from sources.
+The corpus lives in two layers: hand-authored sources at `reviewers.src/`, and the wiki-organised tree at `reviewers.wiki/` produced by [`skill-llm-wiki`](https://github.com/ctxr-dev/skill-llm-wiki). Authors only touch the source layer; the wiki layer is regenerated from sources. The source is sharded by id prefix (the first token before the first hyphen), so each leaf lives at `reviewers.src/<prefix>/<id>.md`; `scripts/shard_src.py` enforces this shape (dry-run by default, `--apply` to move via `git mv`). The source path does not affect the wiki (id comes from the filename, placement from the layout pins).
 
-1. Author `reviewers.src/<id>.md` with the v2 frontmatter:
+1. Author `reviewers.src/<prefix>/<id>.md` (e.g. `sec-ssrf` → `reviewers.src/sec/sec-ssrf.md`) with the v2 frontmatter:
 
    ```yaml
    id: <kebab-case>            # must match filename
@@ -81,9 +81,14 @@ The corpus lives in two layers: hand-authored sources at `reviewers.src/`, and t
    false-positives-per-PR down-or-equal vs the baseline. See the `scr-benchmark-optimizer`
    skill. Do not promote on a regression.
 
-6. Move the produced `reviewers.src.wiki/` over the existing `reviewers.wiki/`, then
-   commit the `reviewers.src/` change, the rebuilt `reviewers.wiki/`, and
-   `reviewers.layout.yaml` together.
+6. Move the produced `reviewers.src.wiki/` over the existing `reviewers.wiki/`, run the
+   drift check (it rebuilds and byte-compares the committed wiki against the source, and
+   also runs in CI), then commit the `reviewers.src/` change, the rebuilt
+   `reviewers.wiki/`, and `reviewers.layout.yaml` together:
+
+   ```bash
+   python scripts/check_wiki_drift.py
+   ```
 
 The wiki layer handles clustering within the pinned categories, soft-DAG parents,
 balance enforcement, and the nested layout, so no manual placement under a
@@ -164,6 +169,7 @@ code_review/
   workers/*.md                        Per-state worker prompts (LLM-readable, self-contained)
 tests/                                pytest suite
 reviewers.src/                        Hand-authored source corpus (TRACKED; the authoring layer)
+  <prefix>/<id>.md                    Leaf sharded by id prefix (scripts/shard_src.py enforces)
 reviewers.layout.yaml                 Shape contract: taxonomy + pins + frontmatter contract
 reviewers.wiki/                       Generated tree (layout-driven, deterministic), source of truth in repo
   index.md                            Root index — entries[] of subcategories

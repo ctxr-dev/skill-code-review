@@ -34,15 +34,24 @@ adding one well.
 
 ## The two layers (never edit the generated one)
 
-- `reviewers.src/<id>.md` is the **hand-authored source.** The ONLY layer you edit.
-  It is TRACKED in this repo (the canonical authoring layer); edit it directly and
-  never author against the generated tree.
+- `reviewers.src/` is the **hand-authored source.** The ONLY layer you edit. It is
+  TRACKED in this repo (the canonical authoring layer); edit it directly and never
+  author against the generated tree. It is **sharded**: each leaf lives at
+  `reviewers.src/<prefix>/<id>.md`, where `<prefix>` is the first token of the id
+  (before the first hyphen). A new `sec-ssrf` leaf goes at `reviewers.src/sec/sec-ssrf.md`;
+  a new prefix means a new folder. `scripts/shard_src.py` enforces/repairs this shape
+  (dry-run by default, `--apply` to move via `git mv`). The source folder does not
+  affect the wiki: id comes from the filename, placement from the layout pins. Decide
+  ALL metadata (frontmatter + tags + body) here.
 - `reviewers.wiki/` — **generated tree**, produced from `reviewers.src/` by
   [`skill-llm-wiki`](https://github.com/ctxr-dev/skill-llm-wiki). It handles
   clustering, slug/subcategory placement, soft-DAG parents, balance, depth, and the
-  nested/sharded layout. **Never hand-edit `reviewers.wiki/` or hand-place a leaf
-  under a subcategory** — every change is regenerated. The wiki is committed
-  alongside the source as the repo's source of truth.
+  nested/sharded layout. It is a **verification surface**: build it, inspect placement,
+  neighbours, and index focus, and if anything is wrong fix the SOURCE (or
+  `reviewers.layout.yaml` for placement) and rebuild. **Never hand-edit the wiki**,
+  which is regenerated and would overwrite hand-edits. Decide in src, verify in the
+  wiki, correct in src. The wiki is committed alongside the source as a verified
+  projection.
 
 The generated leaf carries extra read-only fields the build adds (`depth_role`,
 `parents`, `depth`, `source.hash`) — you never write those.
@@ -176,7 +185,9 @@ silence is precision; the neutral ranker decides what blocks.**
 
 ## Build → validate → promote (deterministic; never skip)
 
-Author in `reviewers.src/`, then regenerate the wiki (sibling `../skill-llm-wiki/`):
+Author the leaf at `reviewers.src/<prefix>/<id>.md` (sharded; `scripts/shard_src.py`
+enforces the shape, run it with `--apply` if a leaf landed in the wrong folder), then
+regenerate the wiki (sibling `../skill-llm-wiki/`):
 
 ```bash
 # 1. Validate the source corpus shape against the layout contract
@@ -196,9 +207,15 @@ node ../skill-llm-wiki/scripts/cli.mjs build "$(pwd)/reviewers.src" \
 node ../skill-llm-wiki/scripts/cli.mjs validate "$(pwd)/reviewers.src.wiki"
 uv run python scripts/validate_layout.py --wiki reviewers.src.wiki
 
-# 4. Promote (atomic) and commit BOTH layers together.
+# 4. Promote (atomic).
 mv reviewers.wiki /tmp/reviewers.wiki.bak
 mv reviewers.src.wiki reviewers.wiki
+
+# 5. Drift check: rebuild + byte-compare the committed wiki against the source
+#    (this also runs in CI). It must pass before you commit.
+python scripts/check_wiki_drift.py
+
+# 6. Commit BOTH layers together.
 git add reviewers.src/ reviewers.wiki/ reviewers.layout.yaml
 ```
 
@@ -218,7 +235,9 @@ A corpus change is not done until it is benchmark-checked:
 1. Code gate: `uv run ruff check code_review/ tests/ && uv run mypy
    code_review/ && uv run pytest`.
 2. Shape gate: `uv run python scripts/validate_layout.py` and, after a rebuild,
-   `--wiki reviewers.src.wiki`, both 0 errors, plus skill-llm-wiki `validate`.
+   `--wiki reviewers.src.wiki`, both 0 errors, plus skill-llm-wiki `validate`, plus
+   `python scripts/check_wiki_drift.py` (rebuilds and byte-compares the committed wiki
+   against the source; also runs in CI).
 3. Routing check: run a review (via the product, see scr-benchmark-optimizer) on a
    diff the new leaf should cover; confirm the leaf is picked and its specialist
    fires, and confirm you did NOT inflate the candidate set on unrelated diffs
@@ -254,4 +273,6 @@ A corpus change is not done until it is benchmark-checked:
   `footgun-destructive-query-scope` (DELETE/UPDATE with a missing or too-broad
   predicate, data loss). They are generalized footgun reviewers (reusable heuristics),
   not benchmark-specific rules, and they recovered recall while keeping noise low.
-- **Never hand-edit `reviewers.wiki/`**; always regenerate from `reviewers.src/`.
+- **Never hand-edit `reviewers.wiki/`**; decide in src, verify in the wiki, correct in
+  src, rebuild, and let `scripts/check_wiki_drift.py` confirm the committed wiki is
+  exactly a rebuild of the source.

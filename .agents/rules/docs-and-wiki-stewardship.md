@@ -38,6 +38,18 @@ benchmark run, optimization, or fix changes how the skill works or how it compar
 
 ## Reviewer-corpus stewardship (never degrade)
 
+- `reviewers.src/` is the SOURCE OF TRUTH, sharded by id prefix (one folder per
+  first token before the first hyphen): `reviewers.src/<prefix>/<prefix>-<rest>.md`
+  (e.g. `reviewers.src/lang/lang-go.md`, `reviewers.src/build/build-cargo.md`). This
+  avoids a flat directory of thousands of files; `scripts/shard_src.py` enforces and
+  repairs the layout. Decide ALL metadata (frontmatter, tags, body) in the source,
+  never in the generated wiki (it is regenerated, so a wiki edit is always lost).
+- `reviewers.wiki/` is a VERIFIED deterministic projection of the source: ids come
+  from filenames and placement from the layout pins, so the source folder structure
+  does not affect the wiki. `scripts/check_wiki_drift.py` rebuilds the wiki from
+  `reviewers.src` and fails if the committed wiki differs; it runs in CI, so a
+  hand-edited wiki (or a source change committed without rebuilding) fails the drift
+  gate and cannot merge. The wiki is a verification surface, not an editing surface.
 - Extend `reviewers.wiki` ONLY via the [`scr-reviewers-wiki-authoring`](../skills/scr-reviewers-wiki-authoring/SKILL.md)
   skill: author in the TRACKED `reviewers.src/`, regenerate with `skill-llm-wiki`
   `--layout-config reviewers.layout.yaml` (a deterministic, pinned projection),

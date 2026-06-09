@@ -48,6 +48,8 @@ The corpus is two layers: hand-authored `reviewers.src/<id>.md` → generated
 | `make_dims_batches.py` | Stage the per-leaf inputs (`tmp/dims/batch_NN.json`) for the `dimensions` LLM-assist refinement. | `uv run python scripts/make_dims_batches.py` |
 | `apply_dimensions.py` | Fold the LLM-assist results (`tmp/dims/out_*.json`, written by parallel classifier agents) back into `reviewers.src/` `dimensions`, validated against the closed set (fallback to baseline on miss). | `uv run python scripts/apply_dimensions.py --apply` |
 | `fix_broad_globs.py` | Replace catch-all activation globs (`**/*`/`*`/`**`/`**/**`) with the precise all-code brace glob (matches code, not docs/json) so leaves stop over-activating. | `uv run python scripts/fix_broad_globs.py --apply` |
+| `shard_src.py` | Enforce the sharded shape of `reviewers.src`: move each `reviewers.src/<id>.md` into `reviewers.src/<prefix>/<id>.md` where `<prefix>` is the first token of the id (before the first hyphen). `reviewers.src` is the source of truth, and a single flat directory of thousands of files is a filesystem bottleneck; the id (filename) and placement (layout pins) are unaffected by the source folder, so this is a safe source-tree reorganization. Idempotent; dry-run by default, `--apply` performs the moves with `git mv`. Reach for it after adding a leaf at the top level (to re-shard it), or to verify/repair the source shape. | `uv run python scripts/shard_src.py [--apply]` |
+| `check_wiki_drift.py` | Verify `reviewers.wiki` equals a fresh rebuild of `reviewers.src`: rebuild the wiki from `reviewers.src` (via the sibling `../skill-llm-wiki`, deterministic + layout-pinned) into a temp dir and byte-compare every content file to the committed `reviewers.wiki/`. Exits non-zero on any difference. `reviewers.wiki` is a generated projection; this proves the committed wiki is exactly `rebuild(reviewers.src)`, so the two-file setup is self-policing. Run before committing a corpus change (after rebuilding the wiki) and automatically in CI; it catches a hand-edited wiki or a source change committed without rebuilding the wiki. | `uv run python scripts/check_wiki_drift.py` (env `SKILL_LLM_WIKI` overrides the default `../skill-llm-wiki/scripts/cli.mjs` path) |
 | `validate_layout.py` | THE shape gate: enforce `reviewers.layout.yaml` — 100% pin coverage + the v2 frontmatter contract on `reviewers.src/`, and (with `--wiki`) taxonomy/placement/depth/fanout on a built tree. `--report` = warn-only (exit 0). | `uv run python scripts/validate_layout.py [--wiki <dir>] [--report]` |
 
 ### B. Benchmark harness (measuring the product vs competitors)
@@ -76,7 +78,8 @@ node ../skill-llm-wiki/scripts/cli.mjs build "$(pwd)/reviewers.src" \
 node ../skill-llm-wiki/scripts/cli.mjs validate "$(pwd)/reviewers.src.wiki"   # 0 errors
 uv run python scripts/validate_layout.py --wiki reviewers.src.wiki            # placement clean
 mv reviewers.wiki /tmp/reviewers.wiki.bak && mv reviewers.src.wiki reviewers.wiki
-# then the benchmark gate (cookbook 4) before committing
+uv run python scripts/check_wiki_drift.py                # committed wiki == rebuild(reviewers.src)
+# then the benchmark gate (cookbook 5) before committing
 ```
 
 **2. Recover a lost `reviewers.src/`**:
@@ -95,7 +98,15 @@ uv run python scripts/apply_dimensions.py --apply  # fold results back
 uv run python scripts/validate_layout.py           # 0 contract findings
 ```
 
-**4. Run a benchmark iteration** (a `<run-id>` = one variant, e.g. `iter4`):
+**4. Re-shard `reviewers.src` after adding a top-level leaf** (keep the source sharded, one folder per id prefix):
+```
+# a new reviewers.src/<id>.md was authored at the top level
+uv run python scripts/shard_src.py                 # preview the git mv moves
+uv run python scripts/shard_src.py --apply         # move <id>.md -> <prefix>/<id>.md (git mv)
+uv run python scripts/validate_layout.py           # src shape still clean (id + pins unaffected)
+```
+
+**5. Run a benchmark iteration** (a `<run-id>` = one variant, e.g. `iter4`):
 ```
 uv run python scripts/setup_repo.py <pr-id>        # once per PR (materialize repo)
 export GITHUB_TOKEN="$(gh auth token)"; export CTXR_SCR_CALL_TIMEOUT=600
@@ -107,19 +118,19 @@ uv run python scripts/build_judge_input_prod.py <pr-id> <run-id>
 uv run python scripts/score.py <run-id>            # leaderboard
 ```
 
-**5. Fast ranker tuning** (no specialist re-roll):
+**6. Fast ranker tuning** (no specialist re-roll):
 ```
 # edit code_review/workers/finding-ranker.md
 uv run python scripts/rerank.py <pr-id> <src-run-id> <new-run-id>   # per PR, ≥3 rounds
 #   then build_judge_input_prod.py + judge + score.py for <new-run-id>
 ```
 
-**6. Add or sharpen a reviewer leaf** — follow
+**7. Add or sharpen a reviewer leaf** — follow
 [`scr-reviewers-wiki-authoring`](../scr-reviewers-wiki-authoring/SKILL.md): edit
-`reviewers.src/<id>.md` → `validate_layout.py` → cookbook 1 (regenerate) → cookbook 4
+`reviewers.src/<id>.md` → `validate_layout.py` → cookbook 1 (regenerate) → cookbook 5
 (benchmark gate, frontier-or-better) → human-gated commit.
 
 ## Before any commit
 `uv run ruff check code_review/ tests/` · `uv run mypy code_review/` · `uv run pytest`.
 A corpus change also runs `validate_layout.py` + the skill-llm-wiki validate + the
-benchmark gate (cookbook 4).
+benchmark gate (cookbook 5).

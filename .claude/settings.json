@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if echo \"$CLAUDE_TOOL_INPUT\" | grep -q 'reviewers.src/'; then uv run python scripts/validate_layout.py 2>/dev/null; fi",
+            "command": "if echo \"$CLAUDE_TOOL_INPUT\" | grep -q 'reviewers.src/'; then uv run python scripts/validate_layout.py 2>/dev/null; fi; if echo \"$CLAUDE_TOOL_INPUT\" | grep -q 'reviewers.wiki/'; then echo 'reviewers.wiki/ is GENERATED (a deterministic, layout-pinned projection of reviewers.src). Hand-edits are overwritten on rebuild and fail the wiki-drift check. Author in reviewers.src/<prefix>/ and rebuild via skill-llm-wiki.' >&2; fi",
             "timeout": 30
           }
         ]

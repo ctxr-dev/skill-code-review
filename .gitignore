@@ -33,6 +33,8 @@ logs
 
 # Benchmark harness (scr-benchmark-optimizer): data + measurement scratch, never committed.
 tmp/
+# Experiment DB: baseline + timing rows. Untracked so it survives code rollbacks.
+benchmarks/experiments.db
 
 # Transient build output from the wiki drift check / manual rebuilds
 reviewers.src.wiki/

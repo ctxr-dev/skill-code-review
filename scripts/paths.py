@@ -24,6 +24,44 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent  # .../skill-code-review
 TMP = REPO / "tmp"
 
+# The benchmarks/ tree is TRACKED (committed), unlike the gitignored tmp/ data
+# (plan section 8). It holds the experiment tracker DB, the generated markdown
+# state surfaces (STATE/HISTORY/LEADERBOARD), and the versioned calibration
+# artifacts. The layout lives here, in one place, next to the tmp sharding
+# helpers, so experiments.py and ingest_verdicts.py share a single source of
+# truth for these paths instead of each re-deriving them.
+BENCH = REPO / "benchmarks"
+
+
+def bench_db_path() -> Path:
+    """The tracked SQLite tracker DB (benchmarks/experiments.db, plan section 8)."""
+    return BENCH / "experiments.db"
+
+
+def calibration_dir() -> Path:
+    """The tracked calibration-artifact directory (benchmarks/calibration/).
+
+    Holds the versioned <tag-or-date>.json curves and the stable current.json
+    the product loads at review time (plan 7.2). Not created here; the
+    calibrator makes it on first --apply.
+    """
+    return BENCH / "calibration"
+
+
+def state_md_path() -> Path:
+    """Generated 'YOU ARE HERE' state surface (benchmarks/STATE.md, plan 6.7)."""
+    return BENCH / "STATE.md"
+
+
+def history_md_path() -> Path:
+    """Generated full experiment ledger (benchmarks/HISTORY.md, plan section 8)."""
+    return BENCH / "HISTORY.md"
+
+
+def leaderboard_md_path() -> Path:
+    """Generated best-tool leaderboard (benchmarks/LEADERBOARD.md, plan section 8)."""
+    return BENCH / "LEADERBOARD.md"
+
 
 def shard(pr_id: str) -> str:
     return hashlib.sha256(pr_id.encode("utf-8")).hexdigest()[:2]

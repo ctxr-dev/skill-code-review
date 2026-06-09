@@ -31,6 +31,22 @@ dev = [
   "ruff>=0.6",
   "mypy>=1.11",
 ]
+# DEV/bench-only statistics + calibration stack for the Martian benchmark
+# program (scripts/stats.py, scripts/calibrate.py). These are NOT runtime
+# deps: the code_review package gains ZERO new runtime deps in phase A0.
+# They are imported only under scripts/ (and the tracker's lazy gate path),
+# behind pytest.importorskip in the tests, so a plain install stays green.
+bench = [
+  # bootstrap PR-resampling for recall/precision/F1 CIs + the ECE helper.
+  "numpy>=1.26",
+  # paired permutation_test on delta-F1 (scipy.stats.permutation_test).
+  "scipy>=1.11",
+  # exact McNemar (contingency_tables) + Benjamini-Hochberg FDR (multitest).
+  "statsmodels>=0.14",
+  # isotonic/Platt calibration, GroupKFold, PR-curve, Brier, calibration_curve
+  # (plan 7.2 / A2 scripts/calibrate.py; added now so the dev env is ready).
+  "scikit-learn>=1.4",
+]
 
 [project.entry-points."ctxr_fsm.skills"]
 skill-code-review = "code_review.install:register"

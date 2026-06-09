@@ -11,6 +11,16 @@ Candidates come from that run's report via the sharded layout
 Competitor candidate sets are copied from the committed Opus-4.5 candidates so
 score.py compares apples-to-apples against the same judge. Output goes to
 `paths.judge_input_path(run_id, pr_id)`.
+
+SKILL candidate shape (the per-finding label prerequisite, plan 7.1): each
+skill candidate is emitted as an object
+`{"text", "defect_confidence", "severity", "idx"}` (not bare text), so the
+judge verdict can record per-candidate `matched: [idx...]` and
+`scripts/ingest_verdicts.py` can write one labelled row per finding (the input
+the calibrator needs). The `text` field is unchanged readable text, so a judge
+that reads `candidate["text"]` (or that still tolerates a bare string) keeps
+working. Competitor candidates stay bare-string lists (no idx/confidence is
+available for them), so their shape is untouched and apples-to-apples holds.
 """
 from __future__ import annotations
 
@@ -60,19 +70,47 @@ def _text(i: dict) -> str:
     return (i.get("title", "") + ". " + i.get("description", "")).strip()
 
 
+def _skill_candidates(issues: list[dict]) -> list[dict]:
+    """Emit each skill issue as a labelled candidate object.
+
+    Shape per the per-finding label prerequisite (plan 7.1):
+      {"text": <readable>, "defect_confidence": <float|None>,
+       "severity": <str|None>, "idx": <position in this candidate list>}
+    `idx` is the candidate's position in THIS list (0-based, stable for the
+    emitted order), which is the index the judge records in `matched` and that
+    ingest_verdicts uses as `correct = idx in matched`. `defect_confidence`
+    sources the product's self-reported `confidence`; `severity` is carried
+    verbatim so the calibrator can bucket per severity.
+    """
+    out: list[dict] = []
+    for idx, i in enumerate(issues):
+        out.append({
+            "text": _text(i),
+            "defect_confidence": i.get("confidence"),
+            "severity": i.get("severity"),
+            "idx": idx,
+        })
+    return out
+
+
 def main() -> None:
     pr_id = sys.argv[1]
     e = INDEX[pr_id]
     key = e["original_key"]
     issues = _prod_issues(pr_id)
     golden = [g["comment"] for g in e["golden_comments"]]
-    tools: dict[str, list[str]] = {
-        "skill-prod": [_text(i) for i in issues],
-        "skill-prod-primary": [_text(i) for i in issues if i.get("primary")],
-        "skill-prod-scoped": [
-            _text(i) for i in issues
-            if i.get("severity") in ("critical", "important") and _is_correctness(i)
-        ],
+    primary_issues = [i for i in issues if i.get("primary")]
+    scoped_issues = [
+        i for i in issues
+        if i.get("severity") in ("critical", "important") and _is_correctness(i)
+    ]
+    # Skill tools carry labelled candidate objects; competitors stay bare-string
+    # lists (no idx/confidence exists for them). `tools` is therefore a union
+    # type, hence the `list[object]` annotation.
+    tools: dict[str, list[object]] = {
+        "skill-prod": list(_skill_candidates(issues)),
+        "skill-prod-primary": list(_skill_candidates(primary_issues)),
+        "skill-prod-scoped": list(_skill_candidates(scoped_issues)),
     }
     comp = CAND.get(key, {})
     for t in COMPETITORS:

@@ -251,6 +251,44 @@ A corpus change is not done until it is benchmark-checked:
 5. Human gate: SET/STRUCTURE changes (and any full corpus regeneration) ship only
    with the confirmed proposal and human sign-off.
 
+## Wiki-build methodology change protocol (HARD, documented, reproducible)
+
+Any change to wiki-building principles or to activation (notably narrowing a broad
+glob, the S2 speed lever in the benchmark plan) is a long-horizon reproducibility
+liability if it lives only in chat. It MUST be documented IN THE REPO. This protocol
+is the canonical companion to section 6.9 of
+`docs/plans/beating-competitors.md`; the two are kept in lockstep. For ANY
+activation/corpus change, the change is INCOMPLETE and must not be promoted until ALL
+FIVE are recorded (in the plan section, here, and on the experiment row):
+
+1. **METHOD**: which leaves changed, the before/after activation, and the
+   deterministic build/validate/promote flow used (validate_layout -> skill-llm-wiki
+   build deterministic -> validate -> atomic promote -> check_wiki_drift). Author in
+   `reviewers.src/` only; never hand-edit the generated wiki.
+2. **ACTIVATION SIGNALS taxonomy**: for each touched leaf, the signals across all
+   four kinds: `file_globs` (specific, never `**/*`), `keyword_matches` (the
+   API/symbol names that prove the concern is present), `structural_signals`
+   (project-profile), `escalation_from` (chain-activation). State which signals
+   REPLACED the broad glob and why each still fires where the concern lives.
+3. **GAPS**: what the narrowed activation can NO LONGER catch that the broad glob did
+   (diffs in the language that touch the concern but use no listed keyword and live
+   outside the listed paths). Name the blind spots explicitly.
+4. **SENSITIVITY (recall risk)**: for each narrowed leaf, the recall risk: narrowing
+   a glob can drop a leaf that would have caught a real bug. Record the worst-case
+   dropped-diff shape and the mitigation (extra keyword, escalation chain, or keep the
+   leaf). This is the half people skip; it is REQUIRED because recall is sacred (the
+   no-regression gate's GATE-1).
+5. **REPRODUCTION**: how to reproduce and prove no regression: this authoring flow,
+   the wiki-drift check (`scripts/check_wiki_drift.py`, rebuilds + byte-compares; also
+   CI), and the no-regression benchmark gate (re-run the PRODUCT reviewer on the same
+   five pilot PRs; BOTH axes no worse: recall/coverage up-or-equal AND fp/PR
+   down-or-equal). Ships only with human sign-off on the SET/STRUCTURE proposal.
+
+CRITICAL nuance baked into the sensitivity analysis: the coverage floor only fires
+when routing returns EMPTY, NOT per-leaf, so a narrowing that silently drops a `sec-*`
+leaf is NOT rescued by the floor. Narrow leaf-by-leaf (or in small batches), each its
+own attributable iteration, and revert any leaf whose narrowing regresses recall.
+
 ## Lessons baked in (do not regress — proven across 16 commits)
 
 - **Specific globs only.** `**/*` activation crowds out the right leaves. Scope to

@@ -45,7 +45,7 @@ activation:
     - Orb reference added or changed
 source:
   origin: file
-  path: cicd-circleci.md
+  path: "cicd/cicd-circleci.md"
   hash: "sha256:bcd040a0d82201aec796c4f56fbf8bcfeedeff1cc7fea7b1d47370c74bdf053f"
 dimensions:
   - architecture

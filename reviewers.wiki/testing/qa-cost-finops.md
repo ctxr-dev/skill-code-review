@@ -82,7 +82,7 @@ activation:
     - Database query without pagination
 source:
   origin: file
-  path: qa-cost-finops.md
+  path: "qa/qa-cost-finops.md"
   hash: "sha256:72d5c1911b84d37c5836f4b406d1eef84df121d23585cd2e2a493d273cae3e4f"
 dimensions:
   - performance

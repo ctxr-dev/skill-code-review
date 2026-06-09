@@ -50,7 +50,7 @@ activation:
     - For
 source:
   origin: file
-  path: k8s-operator-and-crd-design.md
+  path: "k8s/k8s-operator-and-crd-design.md"
   hash: "sha256:747d83706fb27edd6e01783c1aef19f6bcea748743ab9dfb14dbdc6521cad444"
 dimensions:
   - correctness

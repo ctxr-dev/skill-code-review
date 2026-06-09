@@ -41,7 +41,7 @@ activation:
     - sandbox
 source:
   origin: file
-  path: container-runtime-gvisor-kata-sysbox.md
+  path: "container/container-runtime-gvisor-kata-sysbox.md"
   hash: "sha256:28a4e11f67fcb344299cbf100d5cc36d8f7aac050306ec7b2eb3a3842e97742c"
 dimensions:
   - security

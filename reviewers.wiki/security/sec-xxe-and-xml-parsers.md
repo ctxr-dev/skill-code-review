@@ -112,7 +112,7 @@ activation:
     - XML deserialization from HTTP request body
 source:
   origin: file
-  path: sec-xxe-and-xml-parsers.md
+  path: "sec/sec-xxe-and-xml-parsers.md"
   hash: "sha256:c8c53f75568b16ff2feda9e0a5f9e4b7bd048e5a5ca894aaaeec81484636a403"
 dimensions:
   - security

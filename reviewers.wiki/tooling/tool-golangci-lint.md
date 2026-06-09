@@ -47,7 +47,7 @@ activation:
     - inline nolint directive
 source:
   origin: file
-  path: tool-golangci-lint.md
+  path: "tool/tool-golangci-lint.md"
   hash: "sha256:bc6c319e9a18aa6d4eb785333164bdb69db5468e11bbf8ce5ed5075d322fbe0b"
 dimensions:
   - architecture

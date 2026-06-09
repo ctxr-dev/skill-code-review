@@ -50,7 +50,7 @@ activation:
     - sequential dependent queries
 source:
   origin: file
-  path: fe-data-react-query-swr-apollo-relay-urql.md
+  path: "fe/fe-data-react-query-swr-apollo-relay-urql.md"
   hash: "sha256:7c617d9bcceee5d1835e04d9d1947bd5f4ea210b57363f9617e084e45d5082d0"
 dimensions:
   - correctness

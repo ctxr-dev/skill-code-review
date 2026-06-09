@@ -134,7 +134,7 @@ activation:
     - transaction_boundary
 source:
   origin: file
-  path: ddd-tactical-application-services.md
+  path: "ddd/ddd-tactical-application-services.md"
   hash: "sha256:9144eb74fc298e3f23ffcf9783499899c69f0fec70594b7203a99d635ab01fc1"
 dimensions:
   - architecture

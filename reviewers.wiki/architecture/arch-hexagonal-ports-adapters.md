@@ -70,7 +70,7 @@ activation:
     - dependency_injection
 source:
   origin: file
-  path: arch-hexagonal-ports-adapters.md
+  path: "arch/arch-hexagonal-ports-adapters.md"
   hash: "sha256:75328fd3cf6fce04e9b988ecadce275f6bb3bb95df53380c14566a22c58622eb"
 dimensions:
   - architecture

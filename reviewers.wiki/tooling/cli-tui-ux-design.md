@@ -67,7 +67,7 @@ activation:
     - no_sigint_handler
 source:
   origin: file
-  path: cli-tui-ux-design.md
+  path: "cli/cli-tui-ux-design.md"
   hash: "sha256:18e456bd22aa5ec5e272a1c83411725e8fdd91fefb9d0dd8cb0208c52b5b45bd"
 dimensions:
   - readability

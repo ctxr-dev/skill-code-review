@@ -78,7 +78,7 @@ activation:
     - data_key_not_cached
 source:
   origin: file
-  path: cloud-aws-kms-crypto.md
+  path: "cloud/cloud-aws-kms-crypto.md"
   hash: "sha256:3ef8ca4f24cd631429b6e2eb6028b4acb803db31b8c7372e703569e7f3e5056f"
 dimensions:
   - security

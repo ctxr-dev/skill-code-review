@@ -49,7 +49,7 @@ activation:
     - feature_flag_for_degradation
 source:
   origin: file
-  path: reliability-graceful-degradation.md
+  path: "reliability/reliability-graceful-degradation.md"
   hash: "sha256:17bd63d2cd825f6f6ee270db73dc3287d43a788a97510656bb10742bb3334197"
 dimensions:
   - correctness

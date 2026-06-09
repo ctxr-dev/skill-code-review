@@ -54,7 +54,7 @@ activation:
     - "Fluent model definitions with @ID and @Field property wrappers"
 source:
   origin: file
-  path: fw-vapor-swift.md
+  path: "fw/fw-vapor-swift.md"
   hash: "sha256:a93e2236092592625bc9655b6d60e470811e2ceba97e72657f54282d7255e1e3"
 dimensions:
   - security

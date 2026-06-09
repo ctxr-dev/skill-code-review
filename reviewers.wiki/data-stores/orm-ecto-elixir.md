@@ -48,7 +48,7 @@ activation:
     - belongs_to
 source:
   origin: file
-  path: orm-ecto-elixir.md
+  path: "orm/orm-ecto-elixir.md"
   hash: "sha256:d14adb2a1d56bf0c3b805d7d8e224cf3cf9c411c70ef853094ac232634dd6dac"
 dimensions:
   - correctness

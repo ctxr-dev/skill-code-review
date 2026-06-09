@@ -59,7 +59,7 @@ activation:
     - traffic_split
 source:
   origin: file
-  path: modern-strangler-fig.md
+  path: "modern/modern-strangler-fig.md"
   hash: "sha256:bf954fefd87d975e8c512e9fe8a02830d6c5e2edab65b2ce6d00a91c2837027c"
 dimensions:
   - architecture

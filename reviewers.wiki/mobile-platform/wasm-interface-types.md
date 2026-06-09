@@ -60,7 +60,7 @@ activation:
     - js_wasm_hot_loop
 source:
   origin: file
-  path: wasm-interface-types.md
+  path: "wasm/wasm-interface-types.md"
   hash: "sha256:2f7436925ff0f016680ff4daa5b3f90bf31ef69ef50902dc8d108ded9e0837e8"
 dimensions:
   - architecture

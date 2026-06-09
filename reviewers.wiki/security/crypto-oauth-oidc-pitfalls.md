@@ -69,7 +69,7 @@ activation:
     - OAuth middleware configuration
 source:
   origin: file
-  path: crypto-oauth-oidc-pitfalls.md
+  path: "crypto/crypto-oauth-oidc-pitfalls.md"
   hash: "sha256:00658752c270924e085091d438d279f03a369563fce03e60c9ee9eb1e613ef8d"
 dimensions:
   - security

@@ -56,7 +56,7 @@ activation:
     - Infrastructure change affecting operational procedures
 source:
   origin: file
-  path: doc-runbook-oncall.md
+  path: "doc/doc-runbook-oncall.md"
   hash: "sha256:d4c5ce44ab67fa81c01bed1881e0c24eaccdccbc33d5c3add2e9146b92e0fe05"
 dimensions:
   - documentation

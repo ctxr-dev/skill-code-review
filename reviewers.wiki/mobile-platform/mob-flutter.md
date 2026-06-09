@@ -75,7 +75,7 @@ activation:
     - platform_channel_no_error
 source:
   origin: file
-  path: mob-flutter.md
+  path: "mob/mob-flutter.md"
   hash: "sha256:a386bf45bd2be786b317110aa5dd77ba021b15c91076fbbe4fa5ab1c30e8cbf1"
 dimensions:
   - correctness

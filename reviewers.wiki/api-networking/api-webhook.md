@@ -55,7 +55,7 @@ activation:
     - HTTP POST to user-registered callback URL
 source:
   origin: file
-  path: api-webhook.md
+  path: "api/api-webhook.md"
   hash: "sha256:fab9ae609c9e03e0bd97151b9b179abe6017c48e8bbc52fac93cf0c4b40b8476"
 dimensions:
   - security

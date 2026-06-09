@@ -57,7 +57,7 @@ activation:
     - new_dependency_added
 source:
   origin: file
-  path: build-npm-yarn-pnpm-bun.md
+  path: "build/build-npm-yarn-pnpm-bun.md"
   hash: "sha256:3336c6b77f67133f1947386d580563a53f15af2dd3e4c45bf6b2a88c23f49da7"
 dimensions:
   - architecture

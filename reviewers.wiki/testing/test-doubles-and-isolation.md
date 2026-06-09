@@ -68,7 +68,7 @@ activation:
     - spy_creation
 source:
   origin: file
-  path: test-doubles-and-isolation.md
+  path: "test/test-doubles-and-isolation.md"
   hash: "sha256:7b31d3621f7fa725dcdb93cd6de424144acf4dd4e005b42dff127f1dd7fba4b3"
 dimensions:
   - tests

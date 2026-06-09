@@ -47,7 +47,7 @@ activation:
     - ios_project_change
 source:
   origin: file
-  path: build-swiftpm-cocoapods.md
+  path: "build/build-swiftpm-cocoapods.md"
   hash: "sha256:c9a8e0abe83cf3e7256514e66540cb68fbafd839afd50c483a13ff11b0f2a179"
 dimensions:
   - architecture

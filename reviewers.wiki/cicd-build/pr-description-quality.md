@@ -34,7 +34,7 @@ activation:
     - merge request description field
 source:
   origin: file
-  path: pr-description-quality.md
+  path: "pr/pr-description-quality.md"
   hash: "sha256:31fb355c638d3b6765749d0edc27c2d6c2c6683a2e12a80b230125357c845901"
 dimensions:
   - documentation

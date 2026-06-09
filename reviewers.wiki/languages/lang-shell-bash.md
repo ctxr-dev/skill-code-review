@@ -40,7 +40,7 @@ activation:
     - Dockerfile RUN commands with shell logic
 source:
   origin: file
-  path: lang-shell-bash.md
+  path: "lang/lang-shell-bash.md"
   hash: "sha256:89ad45309bd4d8d5f04dd6775a09d3cea9d66fd2dec73144448c387478c45d94"
 dimensions:
   - correctness

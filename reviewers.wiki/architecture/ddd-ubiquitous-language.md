@@ -52,7 +52,7 @@ activation:
     - new_module
 source:
   origin: file
-  path: ddd-ubiquitous-language.md
+  path: "ddd/ddd-ubiquitous-language.md"
   hash: "sha256:9f380900e69c9a6bc2810e969bc738b108feb0eb5929bb11abdf0dd016e2f470"
 dimensions:
   - architecture

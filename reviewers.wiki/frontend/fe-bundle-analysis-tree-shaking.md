@@ -48,7 +48,7 @@ activation:
     - CJS in ESM codebase
 source:
   origin: file
-  path: fe-bundle-analysis-tree-shaking.md
+  path: "fe/fe-bundle-analysis-tree-shaking.md"
   hash: "sha256:0fedd47c1417070707384154d5049ec49d99bc8ecf44bce594b7393435c7d8d6"
 dimensions:
   - performance

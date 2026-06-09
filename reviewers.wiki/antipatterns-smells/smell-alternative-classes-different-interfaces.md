@@ -45,7 +45,7 @@ activation:
     - wrapper_classes_with_inconsistent_apis
 source:
   origin: file
-  path: smell-alternative-classes-different-interfaces.md
+  path: "smell/smell-alternative-classes-different-interfaces.md"
   hash: "sha256:8ca237dee58ff2d806280377ed1c88d6d498e3f6713f79ca888de6eced4b417c"
 dimensions:
   - readability

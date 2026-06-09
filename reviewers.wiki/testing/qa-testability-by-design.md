@@ -51,7 +51,7 @@ activation:
     - Global state access in business logic
 source:
   origin: file
-  path: qa-testability-by-design.md
+  path: "qa/qa-testability-by-design.md"
   hash: "sha256:07028bedc1f1cc5d26d927751c9e93cee4ac93ba0339f763721663a8acee4e31"
 dimensions:
   - tests

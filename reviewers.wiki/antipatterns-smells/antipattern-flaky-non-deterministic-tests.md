@@ -77,7 +77,7 @@ activation:
     - network_call_in_test
 source:
   origin: file
-  path: antipattern-flaky-non-deterministic-tests.md
+  path: "antipattern/antipattern-flaky-non-deterministic-tests.md"
   hash: "sha256:af68b281e5ab42d32a92d3c70d8b9e1d52d8f4758645ae5fbf73c0ada5a96f9f"
 dimensions:
   - tests

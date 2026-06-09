@@ -44,7 +44,7 @@ activation:
     - commonLabels
 source:
   origin: file
-  path: k8s-kustomize-discipline.md
+  path: "k8s/k8s-kustomize-discipline.md"
   hash: "sha256:f6bb546642d5f6fdc0837be1a4f9b7d128c0b8977df0c9b64f758b227f55c413"
 dimensions:
   - architecture

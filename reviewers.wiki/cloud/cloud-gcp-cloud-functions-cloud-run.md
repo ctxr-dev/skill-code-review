@@ -51,7 +51,7 @@ activation:
     - functions_framework
 source:
   origin: file
-  path: cloud-gcp-cloud-functions-cloud-run.md
+  path: "cloud/cloud-gcp-cloud-functions-cloud-run.md"
   hash: "sha256:e0514ebf14a7ea2f11c95a39a6cb6529c10ed7401cebe43f44b459c359198e53"
 dimensions:
   - architecture

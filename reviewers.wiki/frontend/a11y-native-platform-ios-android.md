@@ -63,7 +63,7 @@ activation:
     - fixed_font_size
 source:
   origin: file
-  path: a11y-native-platform-ios-android.md
+  path: "a11y/a11y-native-platform-ios-android.md"
   hash: "sha256:d9bda7a4084a463986d027ea16a2143479aa7538c7ddeb321de8dc0386ceb7fc"
 dimensions:
   - correctness

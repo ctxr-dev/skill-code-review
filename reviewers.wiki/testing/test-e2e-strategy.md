@@ -69,7 +69,7 @@ activation:
     - acceptance_test
 source:
   origin: file
-  path: test-e2e-strategy.md
+  path: "test/test-e2e-strategy.md"
   hash: "sha256:345f69523ee1f9cbe6a145c90bf39ff9c57d0fc2546b44e8658879975d70a891"
 dimensions:
   - tests

@@ -87,7 +87,7 @@ activation:
     - oracle_price_fetch
 source:
   origin: file
-  path: domain-blockchain-smart-contracts.md
+  path: "domain/domain-blockchain-smart-contracts.md"
   hash: "sha256:cac0a6d74f55591e2a86945c252f09d7705bd335113a6ff86867579fa7bd34fb"
 dimensions:
   - security

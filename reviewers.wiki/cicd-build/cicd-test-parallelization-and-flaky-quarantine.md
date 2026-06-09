@@ -57,7 +57,7 @@ activation:
     - Retry or rerun configuration change
 source:
   origin: file
-  path: cicd-test-parallelization-and-flaky-quarantine.md
+  path: "cicd/cicd-test-parallelization-and-flaky-quarantine.md"
   hash: "sha256:94b272f7ef2aff64cedbf48cc8917a8dc4098872b6d095b78c895401851558de"
 dimensions:
   - tests

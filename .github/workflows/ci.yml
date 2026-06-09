@@ -103,3 +103,38 @@ jobs:
 
       - name: Pytest
         run: uv run pytest -q
+
+  wiki-drift:
+    name: Wiki drift (reviewers.wiki == rebuild(reviewers.src))
+    runs-on: ubuntu-latest
+    # reviewers.src is the source of truth; reviewers.wiki is a deterministic,
+    # layout-pinned projection of it. This job rebuilds the wiki from source via the
+    # sibling skill-llm-wiki and fails if the committed reviewers.wiki/ differs, so a
+    # hand-edited wiki (or a source change committed without rebuilding the wiki)
+    # cannot merge. See scripts/check_wiki_drift.py.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Clone skill-llm-wiki sibling
+        # The drift check shells out to skill-llm-wiki's build. Pre-publish it is
+        # resolved from a sibling checkout (same pattern as the ctxr-fsm clone above).
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch main \
+            https://github.com/ctxr-dev/skill-llm-wiki.git ../skill-llm-wiki
+          cd ../skill-llm-wiki && npm install --no-audit --no-fund
+
+      - name: Check wiki drift
+        # Pure-stdlib script: rebuilds into a temp dir and byte-compares to the
+        # committed wiki. SKILL_LLM_WIKI defaults to ../skill-llm-wiki/scripts/cli.mjs.
+        run: python3 scripts/check_wiki_drift.py

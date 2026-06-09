@@ -77,7 +77,7 @@ activation:
     - scenario_definition
 source:
   origin: file
-  path: test-load-k6-locust-gatling-jmeter.md
+  path: "test/test-load-k6-locust-gatling-jmeter.md"
   hash: "sha256:3102e0de192c15c14158eac7a26bac94818c8e77862c82564b69e777be592381"
 dimensions:
   - tests

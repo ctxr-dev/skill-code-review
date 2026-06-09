@@ -52,7 +52,7 @@ activation:
     - Litestar controller or route handler
 source:
   origin: file
-  path: fw-fastapi-starlette-litestar.md
+  path: "fw/fw-fastapi-starlette-litestar.md"
   hash: "sha256:74e95838f8a84460fc488ec76eeeb3de3e488b09525927eca4541ddf6ca9f4dc"
 dimensions:
   - security

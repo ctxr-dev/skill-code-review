@@ -75,7 +75,7 @@ activation:
     - Service discovery configuration
 source:
   origin: file
-  path: net-dns-pitfalls.md
+  path: "net/net-dns-pitfalls.md"
   hash: "sha256:2562950f8e5cc173aff51be3e4314184ac9b0537a6547de53157c4eb10770950"
 dimensions:
   - correctness

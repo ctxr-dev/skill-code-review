@@ -108,7 +108,7 @@ activation:
     - Missing ObjectInputFilter or type allowlist on deserialization boundary
 source:
   origin: file
-  path: sec-deserialization.md
+  path: "sec/sec-deserialization.md"
   hash: "sha256:00e08d6d7caf2b3f2def5e28e2af9293fd68b946de60d5c88187bc4c6ed08f98"
 dimensions:
   - security

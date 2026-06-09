@@ -66,7 +66,7 @@ activation:
     - io_uring_no_backpressure
 source:
   origin: file
-  path: perf-io-multiplexing-epoll-kqueue-io-uring.md
+  path: "perf/perf-io-multiplexing-epoll-kqueue-io-uring.md"
   hash: "sha256:f315aef923d44c5c7b4d19561d294a9c9020b8c374227aef0457de588f905ae7"
 dimensions:
   - performance

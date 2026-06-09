@@ -58,7 +58,7 @@ activation:
     - supervisor_strategy_definition
 source:
   origin: file
-  path: conc-actor-model.md
+  path: "conc/conc-actor-model.md"
   hash: "sha256:a45dadc79757cf65a1a56d13b9dfdebf6a81f488628e2e796f56c4b6c6cccaeb"
 dimensions:
   - correctness

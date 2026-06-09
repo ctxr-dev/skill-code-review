@@ -57,7 +57,7 @@ activation:
     - health_check_with_dependency_call
 source:
   origin: file
-  path: reliability-health-checks.md
+  path: "reliability/reliability-health-checks.md"
   hash: "sha256:5ac0187830cbdea53479dc0b57d05863d00e83e78237323d4232c562b126f414"
 dimensions:
   - correctness

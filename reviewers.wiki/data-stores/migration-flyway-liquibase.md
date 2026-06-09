@@ -52,7 +52,7 @@ activation:
     - outOfOrder
 source:
   origin: file
-  path: migration-flyway-liquibase.md
+  path: "migration/migration-flyway-liquibase.md"
   hash: "sha256:e16d8aeb8cdbd2baace8c1ac51c058c7357bb8eb567e016f6a47176b43ac7b24"
 dimensions:
   - correctness

@@ -70,7 +70,7 @@ activation:
     - query_method
 source:
   origin: file
-  path: ddd-tactical-repositories.md
+  path: "ddd/ddd-tactical-repositories.md"
   hash: "sha256:eb25d939db681310aaabf638b6b2468b8b3cc5b12f802f57a2a6bd963d457a5c"
 dimensions:
   - architecture

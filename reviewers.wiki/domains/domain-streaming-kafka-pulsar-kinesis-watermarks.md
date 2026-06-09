@@ -69,7 +69,7 @@ activation:
     - window_definition
 source:
   origin: file
-  path: domain-streaming-kafka-pulsar-kinesis-watermarks.md
+  path: "domain/domain-streaming-kafka-pulsar-kinesis-watermarks.md"
   hash: "sha256:5fd99cec08991dc8db58d04ed4d96603304862c19f97e87c052bca0d49497af3"
 dimensions:
   - correctness

@@ -55,7 +55,7 @@ activation:
     - primitive_type_for_domain_concept
 source:
   origin: file
-  path: ddd-tactical-value-objects.md
+  path: "ddd/ddd-tactical-value-objects.md"
   hash: "sha256:cb2a8c536ae76d505fdb46ab8bde2163c079277520f76240c9d39bebd150099e"
 dimensions:
   - architecture

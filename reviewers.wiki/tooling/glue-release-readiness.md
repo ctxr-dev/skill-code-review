@@ -35,7 +35,7 @@ activation:
     - Any code diff
 source:
   origin: file
-  path: glue-release-readiness.md
+  path: "glue/glue-release-readiness.md"
   hash: "sha256:d9176ed398c7f4a574d34d0e1ea2d0f322d0331caa74be3877981926402317bd"
 dimensions:
   - architecture

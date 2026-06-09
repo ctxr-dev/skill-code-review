@@ -43,7 +43,7 @@ activation:
     - high_fan_out_class
 source:
   origin: file
-  path: pattern-facade.md
+  path: "pattern/pattern-facade.md"
   hash: "sha256:c990a84cc713016e9355bbbe2a23212bff78d12c48804e4e947b1153eff0d108"
 dimensions:
   - architecture

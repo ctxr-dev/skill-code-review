@@ -33,3 +33,6 @@ logs
 
 # Benchmark harness (scr-benchmark-optimizer): data + measurement scratch, never committed.
 tmp/
+
+# Transient build output from the wiki drift check / manual rebuilds
+reviewers.src.wiki/

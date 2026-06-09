@@ -67,7 +67,7 @@ activation:
     - BLPOP
 source:
   origin: file
-  path: db-redis.md
+  path: "db/db-redis.md"
   hash: "sha256:bdd2466743304778d6a0e6cc05313275c89e0b93670e3c06eaf986eb3eee541a"
 dimensions:
   - correctness

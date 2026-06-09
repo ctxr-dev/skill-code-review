@@ -52,7 +52,7 @@ activation:
     - "kind: ServiceAccount"
 source:
   origin: file
-  path: k8s-rbac.md
+  path: "k8s/k8s-rbac.md"
   hash: "sha256:e32848c2e83c46c4b156e786ea04c7f837fd3d35585c653db30b0a04741ac2a9"
 dimensions:
   - security

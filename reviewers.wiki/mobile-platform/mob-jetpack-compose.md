@@ -52,7 +52,7 @@ activation:
     - large_composable
 source:
   origin: file
-  path: mob-jetpack-compose.md
+  path: "mob/mob-jetpack-compose.md"
   hash: "sha256:5a2b048ad1fd7fb24756da4db91f7961c439f7883efac544a55671c89acf7f0d"
 dimensions:
   - performance

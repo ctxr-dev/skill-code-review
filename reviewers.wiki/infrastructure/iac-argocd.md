@@ -52,7 +52,7 @@ activation:
     - "apiVersion: argoproj.io"
 source:
   origin: file
-  path: iac-argocd.md
+  path: "iac/iac-argocd.md"
   hash: "sha256:5795d465926535cfa35ec00c32b0bff5cd720b416eb19568371dc99465ef8158"
 dimensions:
   - security

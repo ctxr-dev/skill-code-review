@@ -44,7 +44,7 @@ activation:
     - field_reset_after_use
 source:
   origin: file
-  path: smell-temporary-field.md
+  path: "smell/smell-temporary-field.md"
   hash: "sha256:9170f31de5a1dd32edd23c0565b8ff69f077b4d89389c1959599c26d6d0f0524"
 dimensions:
   - readability

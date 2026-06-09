@@ -130,7 +130,7 @@ activation:
     - large_import_block
 source:
   origin: file
-  path: antipattern-god-object.md
+  path: "antipattern/antipattern-god-object.md"
   hash: "sha256:d5d8861af9f0127b7281b9463df2a5ed29380e05b4673d7a35928065f07fd3d0"
 dimensions:
   - architecture

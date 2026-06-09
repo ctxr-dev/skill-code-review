@@ -45,7 +45,7 @@ activation:
     - notify_method_dispatching_to_multiple_handlers
 source:
   origin: file
-  path: pattern-mediator.md
+  path: "pattern/pattern-mediator.md"
   hash: "sha256:e7c7664c2d2654019d99ccd3310ddb7705bd2da0a8142b8d6f7af81cb36d93a1"
 dimensions:
   - architecture

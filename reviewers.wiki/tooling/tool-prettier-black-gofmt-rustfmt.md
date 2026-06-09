@@ -75,7 +75,7 @@ activation:
     - pre-commit config present
 source:
   origin: file
-  path: tool-prettier-black-gofmt-rustfmt.md
+  path: "tool/tool-prettier-black-gofmt-rustfmt.md"
   hash: "sha256:29aa7a71eac73ed32a95b4ca17b5d46241b4787b23254b1237da6a6df88e6812"
 dimensions:
   - readability

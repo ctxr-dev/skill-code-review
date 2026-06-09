@@ -56,7 +56,7 @@ activation:
     - missing_lifecycle_prevent_destroy
 source:
   origin: file
-  path: iac-terraform.md
+  path: "iac/iac-terraform.md"
   hash: "sha256:c889f205c0beaf291e7ea9cae2e58e74b25faf5a73f235a6f45d6296e69af239"
 dimensions:
   - security

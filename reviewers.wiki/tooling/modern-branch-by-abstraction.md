@@ -71,7 +71,7 @@ activation:
     - dependency_injection
 source:
   origin: file
-  path: modern-branch-by-abstraction.md
+  path: "modern/modern-branch-by-abstraction.md"
   hash: "sha256:801f067bd4043f7bd7f75c3a7f03476c68e4a4d06a2d2b0bfb8985a3dc494a6b"
 dimensions:
   - architecture

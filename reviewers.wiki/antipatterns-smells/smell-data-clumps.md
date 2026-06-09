@@ -43,7 +43,7 @@ activation:
     - parameter_list
 source:
   origin: file
-  path: smell-data-clumps.md
+  path: "smell/smell-data-clumps.md"
   hash: "sha256:abb08c1283dc0a68c26f1cab7cdebef30924e4d01eea82a5911d6e073a0100d1"
 dimensions:
   - readability

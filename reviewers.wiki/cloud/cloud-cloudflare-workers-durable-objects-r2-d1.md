@@ -51,7 +51,7 @@ activation:
     - durable_object_class
 source:
   origin: file
-  path: cloud-cloudflare-workers-durable-objects-r2-d1.md
+  path: "cloud/cloud-cloudflare-workers-durable-objects-r2-d1.md"
   hash: "sha256:0593c5ccafeb022d68537a2b15a2a0439a770d5b1686e41b3fdb8f1c90767fc1"
 dimensions:
   - architecture

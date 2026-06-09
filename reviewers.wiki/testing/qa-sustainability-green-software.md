@@ -57,7 +57,7 @@ activation:
     - Always-on resource configuration
 source:
   origin: file
-  path: qa-sustainability-green-software.md
+  path: "qa/qa-sustainability-green-software.md"
   hash: "sha256:17fedf6d7c707ed59160c9a6f890106ce8f96fc04f91bd5fbfe50057c1418518"
 dimensions:
   - performance

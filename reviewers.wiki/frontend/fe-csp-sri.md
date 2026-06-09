@@ -72,7 +72,7 @@ activation:
     - missing SRI on CDN script
 source:
   origin: file
-  path: fe-csp-sri.md
+  path: "fe/fe-csp-sri.md"
   hash: "sha256:08e707d9d7f4e297c83a47054705abf166d940486c4b54462692add795a8d26f"
 dimensions:
   - security

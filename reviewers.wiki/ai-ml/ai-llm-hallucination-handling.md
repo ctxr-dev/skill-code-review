@@ -49,7 +49,7 @@ activation:
     - unverified_url
 source:
   origin: file
-  path: ai-llm-hallucination-handling.md
+  path: "ai/ai-llm-hallucination-handling.md"
   hash: "sha256:9be3aa094c1e7311790a73252bdb9ce87c9236bb6c7d6eefed1413d09219d0ba"
 dimensions:
   - correctness

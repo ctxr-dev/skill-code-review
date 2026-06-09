@@ -51,7 +51,7 @@ activation:
     - proxy_returning_future
 source:
   origin: file
-  path: pattern-active-object.md
+  path: "pattern/pattern-active-object.md"
   hash: "sha256:11b72df2d82d937a5ed2497a14586d805fca8f4abc11e16916816ee1cf5b7100"
 dimensions:
   - architecture

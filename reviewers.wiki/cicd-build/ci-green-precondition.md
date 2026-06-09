@@ -33,7 +33,7 @@ activation:
     - PR check results present
 source:
   origin: file
-  path: ci-green-precondition.md
+  path: "ci/ci-green-precondition.md"
   hash: "sha256:b98b39d8f3b7e773c9d3d67fc96782d3dfaa2d24c88929ee4887cbfc52570506"
 dimensions:
   - architecture

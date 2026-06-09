@@ -62,7 +62,7 @@ activation:
     - enum_value_inserted_mid
 source:
   origin: file
-  path: binary-serialization-protobuf-avro-flatbuffers-msgpack-thrift.md
+  path: "binary/binary-serialization-protobuf-avro-flatbuffers-msgpack-thrift.md"
   hash: "sha256:57e98228495d35838d6fac5ad303c24ce450021bd65375b1312f3cd0a6bb3d41"
 dimensions:
   - correctness

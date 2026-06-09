@@ -107,7 +107,7 @@ activation:
     - eval or exec call with non-literal argument
 source:
   origin: file
-  path: sec-owasp-a03-injection.md
+  path: "sec/sec-owasp-a03-injection.md"
   hash: "sha256:f196f1237a2bfb3d7414728dc3ff7d94bde57fc0127c00fa07f9fbcc00855422"
 dimensions:
   - security

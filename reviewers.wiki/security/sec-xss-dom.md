@@ -55,7 +55,7 @@ activation:
     - Message event handler without origin guard
 source:
   origin: file
-  path: sec-xss-dom.md
+  path: "sec/sec-xss-dom.md"
   hash: "sha256:180576fa137b73045143b3004f3e22a1b8dd1df030a66e9d4ca142972f8da634"
 dimensions:
   - security

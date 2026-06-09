@@ -68,7 +68,7 @@ activation:
     - conflict_resolution_logic
 source:
   origin: file
-  path: domain-real-time-crdt-ot-presence-websocket.md
+  path: "domain/domain-real-time-crdt-ot-presence-websocket.md"
   hash: "sha256:dc75ac61958a626eaf8e8ac93279af92a24f779eeb58926327a1994211ab40f9"
 dimensions:
   - correctness

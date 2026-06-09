@@ -94,7 +94,7 @@ activation:
     - redundant_aria
 source:
   origin: file
-  path: a11y-aria-and-live-regions.md
+  path: "a11y/a11y-aria-and-live-regions.md"
   hash: "sha256:115c7e580e8fd58f60ab93d81f75c214ba9614ea6a31a298791489b964d995de"
 dimensions:
   - correctness

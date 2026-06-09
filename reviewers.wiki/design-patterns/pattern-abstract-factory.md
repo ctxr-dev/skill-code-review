@@ -57,7 +57,7 @@ activation:
     - factory_injection
 source:
   origin: file
-  path: pattern-abstract-factory.md
+  path: "pattern/pattern-abstract-factory.md"
   hash: "sha256:ae81ae96e359d6dc4bfe674df14effa94db6e097416ac2d40c6ce38d078aac4f"
 dimensions:
   - architecture

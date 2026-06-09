@@ -52,7 +52,7 @@ activation:
     - Missing cleanup in useEffect
 source:
   origin: file
-  path: fw-react.md
+  path: "fw/fw-react.md"
   hash: "sha256:35b23e71e62bbbfaa4721088ee8bee79c9cb22958b7eae6810acf528ae561ad7"
 dimensions:
   - correctness

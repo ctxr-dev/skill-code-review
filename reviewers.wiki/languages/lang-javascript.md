@@ -37,7 +37,7 @@ activation:
     - Browser-side JavaScript present
 source:
   origin: file
-  path: lang-javascript.md
+  path: "lang/lang-javascript.md"
   hash: "sha256:3192ec8a8957d3e7ba06342a5f3fc7d5e0ffb111001b59e2098b62f57550ab53"
 dimensions:
   - correctness

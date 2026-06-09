@@ -45,7 +45,7 @@ activation:
     - mapped_column
 source:
   origin: file
-  path: orm-sqlalchemy.md
+  path: "orm/orm-sqlalchemy.md"
   hash: "sha256:71cec3c4ece850386bd3e6ec34a9989585dacb73c94fa7244d004c4b8d1801c7"
 dimensions:
   - correctness

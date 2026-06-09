@@ -104,7 +104,7 @@ activation:
     - Password hashing or verification
 source:
   origin: file
-  path: sec-owasp-a02-crypto-failures.md
+  path: "sec/sec-owasp-a02-crypto-failures.md"
   hash: "sha256:8817ae4dc1e820a3519977a91afb9414e8e5134183e5f79f1fe8c8a6d7b99866"
 dimensions:
   - security

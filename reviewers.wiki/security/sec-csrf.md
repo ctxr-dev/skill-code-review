@@ -69,7 +69,7 @@ activation:
     - Cookie configuration block
 source:
   origin: file
-  path: sec-csrf.md
+  path: "sec/sec-csrf.md"
   hash: "sha256:ecfa03f0a71ecd41bf944ea7254924d474f204819ff24cc48879a442663f85f4"
 dimensions:
   - security

@@ -59,7 +59,7 @@ activation:
     - Binary data parsing or serialization
 source:
   origin: file
-  path: qa-portability-interoperability.md
+  path: "qa/qa-portability-interoperability.md"
   hash: "sha256:cc8e996ca69e342f969737be88e2d345430596ab8ca73a6c090bb9d25f4dce77"
 dimensions:
   - correctness

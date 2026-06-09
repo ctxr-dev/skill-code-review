@@ -63,7 +63,7 @@ activation:
     - Proxy or gateway forwarding query parameters
 source:
   origin: file
-  path: sec-http-parameter-pollution.md
+  path: "sec/sec-http-parameter-pollution.md"
   hash: "sha256:975b3d93600b3f833d25abd226707d314d3fdf44c54a81f9cd07b9c7e1e6d177"
 dimensions:
   - security

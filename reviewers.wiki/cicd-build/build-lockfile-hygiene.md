@@ -62,7 +62,7 @@ activation:
     - manifest_without_lock_change
 source:
   origin: file
-  path: build-lockfile-hygiene.md
+  path: "build/build-lockfile-hygiene.md"
   hash: "sha256:d4d1141717bf5cce1b22f6cf757ea84a25d7ceb39a23f951e45d8950064d1192"
 dimensions:
   - architecture

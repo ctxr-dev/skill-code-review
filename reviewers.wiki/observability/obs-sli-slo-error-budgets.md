@@ -61,7 +61,7 @@ activation:
     - Deployment gate referencing error budget
 source:
   origin: file
-  path: obs-sli-slo-error-budgets.md
+  path: "obs/obs-sli-slo-error-budgets.md"
   hash: "sha256:96e59eb38443ea5133c57d36ebe09045941b37998f98adadff0efda8fef07a19"
 dimensions:
   - architecture

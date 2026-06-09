@@ -45,7 +45,7 @@ activation:
     - prisma db push
 source:
   origin: file
-  path: orm-prisma.md
+  path: "orm/orm-prisma.md"
   hash: "sha256:317f6412916395bf7a7bf000079ddf355cc4deb9675a05b2ea2ed18572ca5084"
 dimensions:
   - performance

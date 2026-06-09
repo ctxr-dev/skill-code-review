@@ -52,6 +52,26 @@ tools:                              # OPTIONAL external linters / SAST
 
 Because placement is pinned, the build is byte-stable: `skill-llm-wiki build --layout-config reviewers.layout.yaml` plus a re-run produce identical trees, and a new leaf adds exactly one file.
 
+## Source of truth vs generated wiki
+
+The corpus has two layers. You edit ONE of them.
+
+- **`reviewers.src/`** is the SOURCE OF TRUTH: hand-authored flat leaves, now SHARDED into one folder per id prefix (the first token of the filename, before the first hyphen), for example `reviewers.src/a11y/a11y-aria-and-live-regions.md`, `reviewers.src/lang/lang-go.md`, `reviewers.src/build/build-cargo.md`. The sharding (66 prefix folders, 479 leaves today) exists only to avoid a flat directory of thousands of files (a filesystem bottleneck). It does NOT affect the wiki: the build ingests the source RECURSIVELY, derives each leaf id from its FILENAME (not its path), and places it via the layout pins on that id. So source nesting is purely a source-tree concern, and the built wiki is identical regardless of how the source is foldered (only the generated `source.path` provenance reflects the new location).
+- **`reviewers.wiki/`** is a GENERATED, deterministic projection of `reviewers.src`, built by `skill-llm-wiki` and pinned by `reviewers.layout.yaml` into the 26-category taxonomy. It is NEVER hand-edited.
+
+DECIDE everything in `reviewers.src`: all frontmatter (`id`, `type`, `focus`, `covers`, `dimensions`, `audit_surface`, `languages`, `tags`, `activation`, `tools`) AND the body. Some fields exist ONLY in the wiki and are derived by the build, never authored:
+
+| Authored in `reviewers.src` | Derived by the wiki build (never authored) |
+|---|---|
+| `id`, `type`, `focus`, `covers`, `dimensions` | `depth_role`, `depth` |
+| `audit_surface`, `languages`, `tags` | `parents` (unless authored) |
+| `activation`, `tools` | `source` (path + content hash) |
+| the full body | category placement, the `index.md` tree |
+
+The workflow is: DECIDE in src, VERIFY in the wiki, CORRECT in src. The wiki is a verification surface (inspect placement, neighbours, the index focus strings), not an editing surface. If something is wrong, fix the SOURCE (or `reviewers.layout.yaml` for placement) and rebuild. Never decide metadata in the wiki: it is regenerated and overwritten on the next build.
+
+The enforcement is a drift check. [scripts/check_wiki_drift.py](../scripts/check_wiki_drift.py) rebuilds the wiki from `reviewers.src` and fails if the committed `reviewers.wiki/` differs. It runs in CI, so the committed wiki is provably always equal to `rebuild(reviewers.src)`: no hand-edits, no drift. The wiki is a verified build artifact, like a committed lockfile.
+
 ## Body Sections (required, in order)
 
 ```markdown

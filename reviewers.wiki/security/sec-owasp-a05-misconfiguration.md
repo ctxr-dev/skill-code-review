@@ -92,7 +92,7 @@ activation:
     - Dependency file change
 source:
   origin: file
-  path: sec-owasp-a05-misconfiguration.md
+  path: "sec/sec-owasp-a05-misconfiguration.md"
   hash: "sha256:37e9c3b482d5a8beed2dcdc86a59722a4e2a8eaa76481d207c9fa7cbbe4ecccf"
 dimensions:
   - security

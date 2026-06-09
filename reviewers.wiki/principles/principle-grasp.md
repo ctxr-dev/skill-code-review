@@ -46,7 +46,7 @@ activation:
     - dependency_injection
 source:
   origin: file
-  path: principle-grasp.md
+  path: "principle/principle-grasp.md"
   hash: "sha256:6db953387c6b24be379480c22a26fe9837d0532244d9e534d2782a8717fe4157"
 dimensions:
   - architecture

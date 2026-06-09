@@ -36,7 +36,7 @@ activation:
     - Go test files present
 source:
   origin: file
-  path: lang-go.md
+  path: "lang/lang-go.md"
   hash: "sha256:69d2c7865a321ef207d487285aa4b8a1b4005dedeffb1f20944ffff1ce8aa84d"
 dimensions:
   - correctness

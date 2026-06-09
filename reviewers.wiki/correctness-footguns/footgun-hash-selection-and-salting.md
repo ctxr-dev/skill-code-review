@@ -109,7 +109,7 @@ activation:
     - HMAC or MAC construction
 source:
   origin: file
-  path: footgun-hash-selection-and-salting.md
+  path: "footgun/footgun-hash-selection-and-salting.md"
   hash: "sha256:bbfcee7efb1e2bbb143d2f9e719ea9e528a0f84fa9a718af8fe76d655a68696a"
 dimensions:
   - security

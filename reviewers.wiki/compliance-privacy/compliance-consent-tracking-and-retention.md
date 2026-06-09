@@ -148,7 +148,7 @@ activation:
     - Terms acceptance or opt-in flow
 source:
   origin: file
-  path: compliance-consent-tracking-and-retention.md
+  path: "compliance/compliance-consent-tracking-and-retention.md"
   hash: "sha256:893cefe14db544ab967ca925d9fec9726670ed20c3d158ddc094cb25eba5b388"
 dimensions:
   - security

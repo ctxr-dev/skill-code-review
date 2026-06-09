@@ -44,7 +44,7 @@ activation:
     - missing contenthash
 source:
   origin: file
-  path: fe-build-webpack.md
+  path: "fe/fe-build-webpack.md"
   hash: "sha256:1ae3b4406e9e0846b5927ed011f4f52b250cfd5ecd51561e1338c25efcfde228"
 dimensions:
   - performance

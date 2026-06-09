@@ -48,7 +48,7 @@ activation:
     - knex_migrations
 source:
   origin: file
-  path: migration-knex-objection.md
+  path: "migration/migration-knex-objection.md"
   hash: "sha256:eb8e9e0fa5a72a1b5f5dd10a14962d66609274d6aaca20ef9fa983b9182b9a08"
 dimensions:
   - correctness

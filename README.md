@@ -17,7 +17,10 @@ miss bugs outside their attention. This skill separates the concerns:
   reliability pattern), organised as a deterministic 26-category taxonomy
   (`reviewers.layout.yaml` pins every leaf, so adding one is a one-file diff). A
   diff activates only the relevant leaves, so every line is reviewed by a
-  specialist that knows what to look for, not a generalist.
+  specialist that knows what to look for, not a generalist. The source of truth is
+  `reviewers.src/` (hand-authored leaves, sharded by id prefix); `reviewers.wiki/`
+  is a deterministic, drift-checked projection of it, never hand-edited (see
+  [`docs/SCHEMA.md`](docs/SCHEMA.md)).
 - **100% coverage, in parallel.** Every changed file is sharded into review units
   and dispatched concurrently through an adaptive thread pool. Ten files or a
   thousand, all reviewed; a failed unit is recorded, never silently dropped.

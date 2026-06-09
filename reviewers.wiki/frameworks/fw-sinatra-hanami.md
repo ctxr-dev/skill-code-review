@@ -54,7 +54,7 @@ activation:
     - Rack middleware stack configuration
 source:
   origin: file
-  path: fw-sinatra-hanami.md
+  path: "fw/fw-sinatra-hanami.md"
   hash: "sha256:c0a717872cad0af07a29f90799b5bd8d0eef952da2049b23451d461f01f44981"
 dimensions:
   - security

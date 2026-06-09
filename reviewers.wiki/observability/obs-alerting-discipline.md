@@ -63,7 +63,7 @@ activation:
     - Alert routing or notification configuration
 source:
   origin: file
-  path: obs-alerting-discipline.md
+  path: "obs/obs-alerting-discipline.md"
   hash: "sha256:88ae1277f27df9fe6da3e59cb2422ee7fb13b760dd104ce8fd89c9e882273753"
 dimensions:
   - architecture

@@ -114,7 +114,7 @@ activation:
     - Dependency version changed
 source:
   origin: file
-  path: sec-supply-chain-sbom-slsa-sigstore.md
+  path: "sec/sec-supply-chain-sbom-slsa-sigstore.md"
   hash: "sha256:015f09bf7f2631507623eb5455976e4bbbfe41a613c118e76b1c16bf285320bb"
 dimensions:
   - security

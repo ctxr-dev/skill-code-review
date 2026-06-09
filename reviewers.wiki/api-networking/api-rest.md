@@ -64,7 +64,7 @@ activation:
     - Pagination parameter handling
 source:
   origin: file
-  path: api-rest.md
+  path: "api/api-rest.md"
   hash: "sha256:b051a272adba103f2f92a866b74e9a2936f243ab0f6f6d153664bec3cedff505"
 dimensions:
   - architecture

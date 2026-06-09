@@ -53,7 +53,7 @@ activation:
     - Hard delete where sibling code or the schema uses a soft-delete flag
 source:
   origin: file
-  path: footgun-destructive-query-scope.md
+  path: "footgun/footgun-destructive-query-scope.md"
   hash: "sha256:3fb7d882dd94c80cbf0718b5d543b71471354fc206fe7d09212be95872fde7b3"
 dimensions:
   - correctness

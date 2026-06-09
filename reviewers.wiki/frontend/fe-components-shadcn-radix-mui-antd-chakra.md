@@ -49,7 +49,7 @@ activation:
     - aria attribute modification
 source:
   origin: file
-  path: fe-components-shadcn-radix-mui-antd-chakra.md
+  path: "fe/fe-components-shadcn-radix-mui-antd-chakra.md"
   hash: "sha256:fd0ce1cae9bd9b4aec9e09968ea2cf0c8f53aa0bb980857ef4eaecf1b64e8cc7"
 dimensions:
   - readability

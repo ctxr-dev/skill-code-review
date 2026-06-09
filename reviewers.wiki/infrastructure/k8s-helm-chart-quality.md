@@ -47,7 +47,7 @@ activation:
     - .Values
 source:
   origin: file
-  path: k8s-helm-chart-quality.md
+  path: "k8s/k8s-helm-chart-quality.md"
   hash: "sha256:ce77ede646bdb087f6c347dc06e2beae8262009efe99001447341786de01a524"
 dimensions:
   - architecture

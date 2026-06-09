@@ -104,7 +104,7 @@ activation:
     - Cipher suite directive in server config
 source:
   origin: file
-  path: net-tls-configuration.md
+  path: "net/net-tls-configuration.md"
   hash: "sha256:d60af8b8b2e3d50156a1808e9c9ff8c811c178cc541dd00fa245ed8c27c8ebc3"
 dimensions:
   - security

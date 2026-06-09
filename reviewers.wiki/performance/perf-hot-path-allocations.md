@@ -63,7 +63,7 @@ activation:
     - lambda_in_tight_loop
 source:
   origin: file
-  path: perf-hot-path-allocations.md
+  path: "perf/perf-hot-path-allocations.md"
   hash: "sha256:966e764e25f76ba85f9b52651643ea3354901258b7553c3bcd96b9c8ab452c2c"
 dimensions:
   - performance

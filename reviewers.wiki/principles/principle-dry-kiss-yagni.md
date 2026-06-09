@@ -31,7 +31,7 @@ activation:
     - Any code diff
 source:
   origin: file
-  path: principle-dry-kiss-yagni.md
+  path: "principle/principle-dry-kiss-yagni.md"
   hash: "sha256:cce7753235a619d86b0fbdfb15627894059d1b938b6ddf1dde4bcda85d27ac7e"
 dimensions:
   - architecture

@@ -66,7 +66,7 @@ activation:
     - image_decode_main_thread
 source:
   origin: file
-  path: mob-perf-60fps-battery-network.md
+  path: "mob/mob-perf-60fps-battery-network.md"
   hash: "sha256:c1dd949c5cb4c70b94821dd700c063c2d029b709728f542a7afd7fe19516c91c"
 dimensions:
   - performance

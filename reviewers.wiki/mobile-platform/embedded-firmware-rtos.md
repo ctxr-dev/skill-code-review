@@ -72,7 +72,7 @@ activation:
     - missing_volatile
 source:
   origin: file
-  path: embedded-firmware-rtos.md
+  path: "embedded/embedded-firmware-rtos.md"
   hash: "sha256:f61ef8720bb4395f7ea4cf85b75de6f01871b4ab9950865035b9d21b3970d6cc"
 dimensions:
   - correctness

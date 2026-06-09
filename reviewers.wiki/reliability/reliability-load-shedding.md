@@ -50,7 +50,7 @@ activation:
     - static_shedding_threshold
 source:
   origin: file
-  path: reliability-load-shedding.md
+  path: "reliability/reliability-load-shedding.md"
   hash: "sha256:51fc8386a398edf7cf3db0789c002011e2bd0b8eac65f66eede720d28d537ec4"
 dimensions:
   - correctness

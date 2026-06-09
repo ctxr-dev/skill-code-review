@@ -54,7 +54,7 @@ activation:
     - Missing watcher cleanup
 source:
   origin: file
-  path: fw-vue-nuxt.md
+  path: "fw/fw-vue-nuxt.md"
   hash: "sha256:c9c86dc891714a10b507e3c4da06e60344cc677916ecb6f71337ee7e557751d9"
 dimensions:
   - correctness

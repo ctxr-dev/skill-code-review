@@ -74,7 +74,7 @@ activation:
     - Dependency lockfile change pulling in new licenses
 source:
   origin: file
-  path: licensing-compliance-copyleft-dual-license-cla.md
+  path: "licensing/licensing-compliance-copyleft-dual-license-cla.md"
   hash: "sha256:91f85c70123bfeefc98641890de2b02e2c296083d6bbfdfec7c84124241828d6"
 dimensions:
   - documentation

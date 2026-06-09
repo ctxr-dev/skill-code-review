@@ -61,7 +61,7 @@ activation:
     - steady_state_hypothesis
 source:
   origin: file
-  path: test-chaos-engineering.md
+  path: "test/test-chaos-engineering.md"
   hash: "sha256:3fe2d9d8a16c9fe5dfd535686d7962639509f6934d2dc1358274d58dd6886eb9"
 dimensions:
   - tests

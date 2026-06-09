@@ -64,7 +64,7 @@ activation:
     - circular_dependency
 source:
   origin: file
-  path: ddd-strategic-bounded-contexts.md
+  path: "ddd/ddd-strategic-bounded-contexts.md"
   hash: "sha256:e391fd88a5fe71bfc04ea21f034c8e55978cc51908d19e3cda72e4f9a87447e3"
 dimensions:
   - architecture

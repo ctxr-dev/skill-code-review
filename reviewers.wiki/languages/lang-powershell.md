@@ -35,7 +35,7 @@ activation:
     - "PowerShell module manifest (.psd1) changed"
 source:
   origin: file
-  path: lang-powershell.md
+  path: "lang/lang-powershell.md"
   hash: "sha256:5de4a6c4cdfa0268d70edcbe144a8e6598b87cdd1dd67b515f34285bc8875950"
 dimensions:
   - correctness

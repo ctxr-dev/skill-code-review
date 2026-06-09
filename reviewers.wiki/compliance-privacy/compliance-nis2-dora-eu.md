@@ -68,7 +68,7 @@ activation:
     - Third-party vendor integration or dependency management
 source:
   origin: file
-  path: compliance-nis2-dora-eu.md
+  path: "compliance/compliance-nis2-dora-eu.md"
   hash: "sha256:c73331068beca35441b08e104d4fd3351f057bec81ca705b7e9ffc48098482a4"
 dimensions:
   - security

@@ -65,7 +65,7 @@ activation:
     - "CI/CD security scanning stage"
 source:
   origin: file
-  path: compliance-iso27001.md
+  path: "compliance/compliance-iso27001.md"
   hash: "sha256:f04c7a745f54cded3c145d888a53e91d7c1b500d04b4ff4335e935b609268461"
 dimensions:
   - security

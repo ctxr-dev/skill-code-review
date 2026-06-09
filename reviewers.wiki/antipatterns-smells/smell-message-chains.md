@@ -43,7 +43,7 @@ activation:
     - optional_chaining_3_plus_levels
 source:
   origin: file
-  path: smell-message-chains.md
+  path: "smell/smell-message-chains.md"
   hash: "sha256:534184a3ca7387e4bc29fc10a1a1c1bd3b3d368c762ebc0ebb23ea1d2d3d1f46"
 dimensions:
   - readability

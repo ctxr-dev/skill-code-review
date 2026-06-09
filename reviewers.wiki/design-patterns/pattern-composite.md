@@ -48,7 +48,7 @@ activation:
     - interface_with_add_remove_and_operation_methods
 source:
   origin: file
-  path: pattern-composite.md
+  path: "pattern/pattern-composite.md"
   hash: "sha256:908b0b79208deab991adfffd06be6494d4cf381a1464fae7cddbf05afbb18ab6"
 dimensions:
   - architecture

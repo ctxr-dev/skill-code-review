@@ -62,7 +62,7 @@ activation:
     - Number parsing from locale-dependent formatted strings
 source:
   origin: file
-  path: footgun-bidi-rtl-locale-collation.md
+  path: "footgun/footgun-bidi-rtl-locale-collation.md"
   hash: "sha256:a394cb12839b49aad574f5cacb733eed4683d5c417e27dcc49249ec211a58408"
 dimensions:
   - correctness

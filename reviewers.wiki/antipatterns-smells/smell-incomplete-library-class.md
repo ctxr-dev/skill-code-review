@@ -47,7 +47,7 @@ activation:
     - duplicated_workaround_code
 source:
   origin: file
-  path: smell-incomplete-library-class.md
+  path: "smell/smell-incomplete-library-class.md"
   hash: "sha256:b02e50b54f555d4d3d33fa8347affa4aad5e86603a9ff75a316ba7213d557155"
 dimensions:
   - readability

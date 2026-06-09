@@ -50,7 +50,7 @@ activation:
     - prototype_registry
 source:
   origin: file
-  path: pattern-prototype.md
+  path: "pattern/pattern-prototype.md"
   hash: "sha256:a1ecbaf0fe696a4d5b17b66d7fe57e6a64930616309dd25aaa5f548b5791150b"
 dimensions:
   - architecture

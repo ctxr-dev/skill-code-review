@@ -49,7 +49,7 @@ activation:
     - test_annotation
 source:
   origin: file
-  path: author-self-review-hygiene.md
+  path: "author/author-self-review-hygiene.md"
   hash: "sha256:577190a732fe14114cb28feabe07d6313dd0b979aa20e183dfd10ec2b614e29e"
 dimensions:
   - readability

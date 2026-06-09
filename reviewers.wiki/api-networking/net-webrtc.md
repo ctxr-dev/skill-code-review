@@ -53,7 +53,7 @@ activation:
     - "SDP offer/answer handling"
 source:
   origin: file
-  path: net-webrtc.md
+  path: "net/net-webrtc.md"
   hash: "sha256:b4bd734ec752b2c28303cd448d3db37bbb0d0fe36f66ea8ecdb9d09f3cc76ec2"
 dimensions:
   - security

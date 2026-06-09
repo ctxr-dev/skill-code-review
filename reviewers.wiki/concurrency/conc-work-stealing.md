@@ -53,7 +53,7 @@ activation:
     - fork_without_join
 source:
   origin: file
-  path: conc-work-stealing.md
+  path: "conc/conc-work-stealing.md"
   hash: "sha256:6ab10e7f7ae120ac94ee153a6ea0b458d6b75a5b30ec596a51fd4ab03b29f363"
 dimensions:
   - correctness

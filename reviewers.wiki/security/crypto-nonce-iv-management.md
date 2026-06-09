@@ -58,7 +58,7 @@ activation:
     - Ciphertext construction or parsing with prepended bytes
 source:
   origin: file
-  path: crypto-nonce-iv-management.md
+  path: "crypto/crypto-nonce-iv-management.md"
   hash: "sha256:ef997210e5d3fa665ff2d4771531690f53c81a42954b1380cd9e4e7bee0c8302"
 dimensions:
   - security

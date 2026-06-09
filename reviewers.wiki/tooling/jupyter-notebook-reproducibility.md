@@ -51,7 +51,7 @@ activation:
     - hardcoded_path
 source:
   origin: file
-  path: jupyter-notebook-reproducibility.md
+  path: "jupyter/jupyter-notebook-reproducibility.md"
   hash: "sha256:0380a6c2970fc5f92b2b0be15b5ea84c768a45c862882e0b3a38db2003004ef9"
 dimensions:
   - correctness

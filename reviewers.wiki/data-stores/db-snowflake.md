@@ -56,7 +56,7 @@ activation:
     - ACCOUNT_USAGE
 source:
   origin: file
-  path: db-snowflake.md
+  path: "db/db-snowflake.md"
   hash: "sha256:eb3acc239241b1394eae8255d9cac9b6405993a741a105a76e06c9956959e568"
 dimensions:
   - performance

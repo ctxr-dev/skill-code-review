@@ -56,7 +56,7 @@ activation:
     - reactive_stream_without_backpressure
 source:
   origin: file
-  path: reliability-backpressure.md
+  path: "reliability/reliability-backpressure.md"
   hash: "sha256:8426701e8428222aaac6818d35acf2f694245a66825345231bcadbd9978a4fd6"
 dimensions:
   - correctness

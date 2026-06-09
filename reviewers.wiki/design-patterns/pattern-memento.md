@@ -50,7 +50,7 @@ activation:
     - undo_redo_method_pair
 source:
   origin: file
-  path: pattern-memento.md
+  path: "pattern/pattern-memento.md"
   hash: "sha256:4c23e52151428a64778928d4f32781465ec27c9629ed11771fd3959a8c6ba471"
 dimensions:
   - architecture

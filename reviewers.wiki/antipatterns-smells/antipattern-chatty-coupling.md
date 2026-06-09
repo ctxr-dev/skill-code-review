@@ -48,7 +48,7 @@ activation:
     - Sequential HTTP or gRPC calls in a single method
 source:
   origin: file
-  path: antipattern-chatty-coupling.md
+  path: "antipattern/antipattern-chatty-coupling.md"
   hash: "sha256:990b540b7731986199566551563c0a477b4f359bb1f58fa7f7bdfbf137ad636d"
 dimensions:
   - architecture

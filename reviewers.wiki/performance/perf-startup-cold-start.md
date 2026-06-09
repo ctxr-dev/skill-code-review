@@ -64,7 +64,7 @@ activation:
     - large_container_image
 source:
   origin: file
-  path: perf-startup-cold-start.md
+  path: "perf/perf-startup-cold-start.md"
   hash: "sha256:64a8f5f5592e7af136d8d1f39328559706e9d09f731c68501392a82ae1474832"
 dimensions:
   - performance

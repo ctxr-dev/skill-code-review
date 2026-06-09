@@ -54,7 +54,7 @@ activation:
     - circular_layer_dependency
 source:
   origin: file
-  path: arch-layered.md
+  path: "arch/arch-layered.md"
   hash: "sha256:a33af553d73fcb661f378cd95c704639f25a4a3b876b9e4f3c540e02eaf93655"
 dimensions:
   - architecture

@@ -37,7 +37,7 @@ activation:
     - Cargo.toml changes
 source:
   origin: file
-  path: lang-rust.md
+  path: "lang/lang-rust.md"
   hash: "sha256:71c7bd4a397850f8028208e9a13edd78a34e5e81ff4f07e8dec1e1530ca3c66e"
 dimensions:
   - correctness

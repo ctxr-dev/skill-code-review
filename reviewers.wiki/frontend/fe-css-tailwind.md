@@ -41,7 +41,7 @@ activation:
     - custom CSS bypassing tokens
 source:
   origin: file
-  path: fe-css-tailwind.md
+  path: "fe/fe-css-tailwind.md"
   hash: "sha256:72a3c9b116cd88b754e3fdf0417f111bf6049eec7f5e4143f098cca51deff6e0"
 dimensions:
   - readability

@@ -50,7 +50,7 @@ activation:
     - random ID generation in render
 source:
   origin: file
-  path: fe-hydration-mismatch.md
+  path: "fe/fe-hydration-mismatch.md"
   hash: "sha256:70643b24ea85b60e8427a72114a7ef8f7867bb0f1327434008a3d2701d5f155f"
 dimensions:
   - correctness

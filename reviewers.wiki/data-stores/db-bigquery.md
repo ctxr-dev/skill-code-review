@@ -74,7 +74,7 @@ activation:
     - "@google-cloud/bigquery"
 source:
   origin: file
-  path: db-bigquery.md
+  path: "db/db-bigquery.md"
   hash: "sha256:18353296abd77e60144eee6c3cb99ff2caae56490dd14dce4a3ad32913a69522"
 dimensions:
   - performance

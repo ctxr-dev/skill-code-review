@@ -38,7 +38,7 @@ activation:
     - "Haskell source files or Cabal/Stack project configuration in diff"
 source:
   origin: file
-  path: lang-haskell.md
+  path: "lang/lang-haskell.md"
   hash: "sha256:e550f86e6354ae755c1b9f737c8148c1813e625d6ac21cdf400745c1c4b54df3"
 dimensions:
   - correctness

@@ -105,7 +105,7 @@ activation:
     - preprocessing_inconsistency
 source:
   origin: file
-  path: ai-llm-embeddings-hygiene.md
+  path: "ai/ai-llm-embeddings-hygiene.md"
   hash: "sha256:6bfbd0837bd952070cf7b0628f75bc9c0def71d6b54665272181757bb2ce62e4"
 dimensions:
   - correctness

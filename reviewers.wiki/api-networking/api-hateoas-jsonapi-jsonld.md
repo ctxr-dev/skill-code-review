@@ -62,7 +62,7 @@ activation:
     - "JSON-LD @context annotation"
 source:
   origin: file
-  path: api-hateoas-jsonapi-jsonld.md
+  path: "api/api-hateoas-jsonapi-jsonld.md"
   hash: "sha256:dc7f31f864fc57aa3d161106d2ba455ae0e486b56e4bc879aa42aba74a3533fe"
 dimensions:
   - architecture

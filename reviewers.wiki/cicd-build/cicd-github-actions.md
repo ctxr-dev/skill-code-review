@@ -47,7 +47,7 @@ activation:
     - Permissions block added or removed
 source:
   origin: file
-  path: cicd-github-actions.md
+  path: "cicd/cicd-github-actions.md"
   hash: "sha256:0ec0f5259d951017fcd3f19ebf885b1c8ba43d3656bbc8d24cade229e9e90b88"
 dimensions:
   - architecture

@@ -50,7 +50,7 @@ activation:
     - "decr "
 source:
   origin: file
-  path: db-memcached.md
+  path: "db/db-memcached.md"
   hash: "sha256:21c0e8eb8965cfa33c203b90844eea628b4b8cf0c8c836c56fef56e83c9d5f9c"
 dimensions:
   - performance

@@ -59,7 +59,7 @@ activation:
     - no_validation_split
 source:
   origin: file
-  path: ai-ml-training-pytorch-tensorflow-jax-sklearn.md
+  path: "ai/ai-ml-training-pytorch-tensorflow-jax-sklearn.md"
   hash: "sha256:ac233e4f1bd98d62cf7e89053424c30ad060d53143155a8a31237cf827b0ca93"
 dimensions:
   - correctness

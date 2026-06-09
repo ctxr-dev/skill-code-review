@@ -56,7 +56,7 @@ activation:
     - unbounded_memory
 source:
   origin: file
-  path: ai-llm-frameworks-langchain-llamaindex-haystack-dspy.md
+  path: "ai/ai-llm-frameworks-langchain-llamaindex-haystack-dspy.md"
   hash: "sha256:fe4b733de1cc8c5c678096c01456f0141703573f3e23f2cd6a46f56a1a221729"
 dimensions:
   - correctness

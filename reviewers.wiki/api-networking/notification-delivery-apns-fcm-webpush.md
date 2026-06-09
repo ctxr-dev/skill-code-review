@@ -61,7 +61,7 @@ activation:
     - silent_push_polling
 source:
   origin: file
-  path: notification-delivery-apns-fcm-webpush.md
+  path: "notification/notification-delivery-apns-fcm-webpush.md"
   hash: "sha256:f1380a531896f882224de024503172ecc8b11f321d6def8cbeac011b13be5599"
 dimensions:
   - correctness

@@ -54,7 +54,7 @@ activation:
     - workspace_config_change
 source:
   origin: file
-  path: build-nx-turbo-lerna-rush-lage.md
+  path: "build/build-nx-turbo-lerna-rush-lage.md"
   hash: "sha256:fd753a2d8043eee91cd459f876536a98adf9d209efd5423f32212757d00a194c"
 dimensions:
   - architecture

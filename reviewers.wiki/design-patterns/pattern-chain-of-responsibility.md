@@ -47,7 +47,7 @@ activation:
     - linked_list_of_handlers
 source:
   origin: file
-  path: pattern-chain-of-responsibility.md
+  path: "pattern/pattern-chain-of-responsibility.md"
   hash: "sha256:f51f7f797f5032d1e035ca9d6d03f20888c9c642b92228c3c1125030fc4e940c"
 dimensions:
   - architecture

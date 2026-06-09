@@ -45,7 +45,7 @@ activation:
     - "apiVersion: networking.k8s.io"
 source:
   origin: file
-  path: k8s-network-policies.md
+  path: "k8s/k8s-network-policies.md"
   hash: "sha256:3ef8f5f9cf1981566e34e03401c07c760623a70b0a9ce03a558db806de21b326"
 dimensions:
   - security

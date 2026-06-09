@@ -31,7 +31,7 @@ activation:
     - Any code diff
 source:
   origin: file
-  path: test-coverage-quality-not-quantity.md
+  path: "test/test-coverage-quality-not-quantity.md"
   hash: "sha256:fb79a0b2559f016fba3eeeb68764f659a6d34f3c25a62c35dc100f3d5300592e"
 dimensions:
   - tests

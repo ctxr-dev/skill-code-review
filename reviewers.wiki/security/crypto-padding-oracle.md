@@ -55,7 +55,7 @@ activation:
     - HMAC computation in conjunction with encryption
 source:
   origin: file
-  path: crypto-padding-oracle.md
+  path: "crypto/crypto-padding-oracle.md"
   hash: "sha256:006c45317484c888da427e062e2d915932ac6c3ec068b7a0ba06d5e2efac9aaa"
 dimensions:
   - security

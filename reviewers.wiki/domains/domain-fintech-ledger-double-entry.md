@@ -57,7 +57,7 @@ activation:
     - Journal entry creation handler
 source:
   origin: file
-  path: domain-fintech-ledger-double-entry.md
+  path: "domain/domain-fintech-ledger-double-entry.md"
   hash: "sha256:00d21f46791e5cdc134254ba6abb141981a3401a5fbe34430166280a1b752516"
 dimensions:
   - correctness

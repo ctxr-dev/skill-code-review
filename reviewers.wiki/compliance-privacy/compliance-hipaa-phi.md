@@ -93,7 +93,7 @@ activation:
     - Medical record access or query function
 source:
   origin: file
-  path: compliance-hipaa-phi.md
+  path: "compliance/compliance-hipaa-phi.md"
   hash: "sha256:6b8eb4d1612b63165c2df81b81a6c14126d80ade62716bd10146e21264248b43"
 dimensions:
   - security

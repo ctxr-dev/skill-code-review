@@ -57,7 +57,7 @@ activation:
     - trace_exporter_config
 source:
   origin: file
-  path: obs-sampling-strategies.md
+  path: "obs/obs-sampling-strategies.md"
   hash: "sha256:2a74dd29304e93470892d58d57de482f2c54c6d4a1e8758c7b6cdca9c780382d"
 dimensions:
   - architecture

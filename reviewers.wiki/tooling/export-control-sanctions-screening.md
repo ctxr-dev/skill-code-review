@@ -69,7 +69,7 @@ activation:
     - "Vendor / customer list ingestion or sync"
 source:
   origin: file
-  path: export-control-sanctions-screening.md
+  path: "export/export-control-sanctions-screening.md"
   hash: "sha256:6a63efc72c58c3bc12e2c90780567412b50818ec0b32b87ec10abdc469555f2b"
 dimensions:
   - security

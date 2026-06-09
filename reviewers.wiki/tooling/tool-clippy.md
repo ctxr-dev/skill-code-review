@@ -44,7 +44,7 @@ activation:
     - Rust source files present
 source:
   origin: file
-  path: tool-clippy.md
+  path: "tool/tool-clippy.md"
   hash: "sha256:92c629ff8b32947b7cebc39008edbc24a21fc8069cc5a0a76d19cb8c23b1b7da"
 dimensions:
   - architecture

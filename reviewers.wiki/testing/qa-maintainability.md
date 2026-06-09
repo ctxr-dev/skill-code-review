@@ -47,7 +47,7 @@ activation:
     - Multiple branching statements in single function
 source:
   origin: file
-  path: qa-maintainability.md
+  path: "qa/qa-maintainability.md"
   hash: "sha256:1ebe647183a6f719c02d0e527d8c5bfb393bd67f2d4a7a03015c678b9bbf0500"
 dimensions:
   - readability

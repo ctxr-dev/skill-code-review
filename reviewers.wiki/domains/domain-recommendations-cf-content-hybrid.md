@@ -63,7 +63,7 @@ activation:
     - recommendation_serving
 source:
   origin: file
-  path: domain-recommendations-cf-content-hybrid.md
+  path: "domain/domain-recommendations-cf-content-hybrid.md"
   hash: "sha256:81783e5ae0ec865b9efe0570913c71314a397b913c0213d6c28c867c7147e855"
 dimensions:
   - correctness

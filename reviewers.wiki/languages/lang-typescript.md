@@ -36,7 +36,7 @@ activation:
     - Type declaration files present
 source:
   origin: file
-  path: lang-typescript.md
+  path: "lang/lang-typescript.md"
   hash: "sha256:9774a5d19b115c1d1c999678f1a8d8bd87aeadf6ef0b873409ac6050b9d38917"
 dimensions:
   - correctness

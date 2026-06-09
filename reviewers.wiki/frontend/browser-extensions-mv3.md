@@ -56,7 +56,7 @@ activation:
     - host_permissions_all_urls
 source:
   origin: file
-  path: browser-extensions-mv3.md
+  path: "browser/browser-extensions-mv3.md"
   hash: "sha256:d7a37a99cc8eb3576c3986fc30235ab0c89fd57fc8e512d42e8e21f11bac7fbc"
 dimensions:
   - security

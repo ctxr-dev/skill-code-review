@@ -60,7 +60,7 @@ activation:
     - non_weak_delegate
 source:
   origin: file
-  path: mob-uikit.md
+  path: "mob/mob-uikit.md"
   hash: "sha256:0d6c4b8b6ac3b80272cc746bee49cff96996bd78b78ec624949555caec138bae"
 dimensions:
   - correctness

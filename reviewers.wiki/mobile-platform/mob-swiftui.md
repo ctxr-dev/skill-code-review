@@ -54,7 +54,7 @@ activation:
     - preview_not_buildable
 source:
   origin: file
-  path: mob-swiftui.md
+  path: "mob/mob-swiftui.md"
   hash: "sha256:a4e2b3cced31acb0d2c8df09eb07ee7fa079e405d68c51e8cd5b96bfae0022bf"
 dimensions:
   - correctness

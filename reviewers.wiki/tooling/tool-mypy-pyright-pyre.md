@@ -52,7 +52,7 @@ activation:
     - stub files present
 source:
   origin: file
-  path: tool-mypy-pyright-pyre.md
+  path: "tool/tool-mypy-pyright-pyre.md"
   hash: "sha256:f1f48f2230281c9cc65c2e3a45def580cf54ea21a74e8dd80bfc4515e9b36d4d"
 dimensions:
   - architecture

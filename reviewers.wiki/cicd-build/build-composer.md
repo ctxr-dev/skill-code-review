@@ -44,7 +44,7 @@ activation:
     - php_packaging_change
 source:
   origin: file
-  path: build-composer.md
+  path: "build/build-composer.md"
   hash: "sha256:f3771275c72e83388eda68f0ec4314a6ac4508e5f018e0729d91ca420611378d"
 dimensions:
   - architecture

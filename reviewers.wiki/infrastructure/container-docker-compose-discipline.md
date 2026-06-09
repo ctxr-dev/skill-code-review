@@ -46,7 +46,7 @@ activation:
     - restart
 source:
   origin: file
-  path: container-docker-compose-discipline.md
+  path: "container/container-docker-compose-discipline.md"
   hash: "sha256:3124938a14eded9983b497033db7f0292acbd38e31bc765dafc9910842e0a501"
 dimensions:
   - security

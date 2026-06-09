@@ -45,7 +45,7 @@ activation:
     - build_configuration_change
 source:
   origin: file
-  path: build-earthly.md
+  path: "build/build-earthly.md"
   hash: "sha256:b21d1fa77d7c3ba1eb913959faee292d68edeae36c7bfef528bb1f310c6973c0"
 dimensions:
   - architecture

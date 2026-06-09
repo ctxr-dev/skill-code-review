@@ -71,7 +71,7 @@ activation:
     - callback_nesting
 source:
   origin: file
-  path: antipattern-spaghetti-code.md
+  path: "antipattern/antipattern-spaghetti-code.md"
   hash: "sha256:f05a1ec316a913cec186e95bcdb4086169970219c9adaa490c077f75ae626bbb"
 dimensions:
   - architecture

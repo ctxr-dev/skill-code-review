@@ -58,7 +58,7 @@ activation:
     - benchmark_configuration
 source:
   origin: file
-  path: test-performance-regression.md
+  path: "test/test-performance-regression.md"
   hash: "sha256:7df93a8cf952b36616e955422e899e595e53675970438ed1339137584562b20c"
 dimensions:
   - tests

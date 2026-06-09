@@ -69,7 +69,7 @@ activation:
     - failover_configuration
 source:
   origin: file
-  path: data-replication-consistency.md
+  path: "data/data-replication-consistency.md"
   hash: "sha256:aec56ef3963f963c26ea07d93642fb42f3f831368ff53768b7bc53dafdf29b6c"
 dimensions:
   - architecture

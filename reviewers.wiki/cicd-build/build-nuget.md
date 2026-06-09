@@ -50,7 +50,7 @@ activation:
     - dotnet_project_change
 source:
   origin: file
-  path: build-nuget.md
+  path: "build/build-nuget.md"
   hash: "sha256:0560cfcc58f43097ece3929446091021e73eea664cc52186e8b1a78d9ba26b7a"
 dimensions:
   - architecture

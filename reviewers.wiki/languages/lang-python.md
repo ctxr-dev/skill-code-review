@@ -37,7 +37,7 @@ activation:
     - Python packaging config changed
 source:
   origin: file
-  path: lang-python.md
+  path: "lang/lang-python.md"
   hash: "sha256:b0b8482712aa6c827f54fc1e82c8fe012636120d578e5fccdb41de5dc345500e"
 dimensions:
   - correctness

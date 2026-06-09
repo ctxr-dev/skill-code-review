@@ -53,7 +53,7 @@ activation:
     - scatter_dispatch_with_no_timeout
 source:
   origin: file
-  path: pattern-eip-routing.md
+  path: "pattern/pattern-eip-routing.md"
   hash: "sha256:581c715ab6b9e87555bbb8c2d55d3b60340110ff2a1ff2b6002ebe772399d2d0"
 dimensions:
   - architecture

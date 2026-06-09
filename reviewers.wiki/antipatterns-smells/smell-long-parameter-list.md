@@ -40,7 +40,7 @@ activation:
     - function_call
 source:
   origin: file
-  path: smell-long-parameter-list.md
+  path: "smell/smell-long-parameter-list.md"
   hash: "sha256:224bc90efe507322d5a5ee5556fa0726acb8ac0c4a6b0a652f66ef33f9fc51c4"
 dimensions:
   - readability

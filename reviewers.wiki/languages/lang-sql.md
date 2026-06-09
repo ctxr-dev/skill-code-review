@@ -37,7 +37,7 @@ activation:
     - Schema definition or ALTER TABLE statements
 source:
   origin: file
-  path: lang-sql.md
+  path: "lang/lang-sql.md"
   hash: "sha256:af7158cf93f7406e23fda01de6d3ac22582f2fc574883df500db8af068ff7241"
 dimensions:
   - correctness

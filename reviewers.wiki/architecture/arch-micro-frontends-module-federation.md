@@ -50,7 +50,7 @@ activation:
     - remote_entry
 source:
   origin: file
-  path: arch-micro-frontends-module-federation.md
+  path: "arch/arch-micro-frontends-module-federation.md"
   hash: "sha256:a16f60f3c8c2d649958fd8c32f18d513f8bd60d11e2fab810c5cbc832b396354"
 dimensions:
   - architecture

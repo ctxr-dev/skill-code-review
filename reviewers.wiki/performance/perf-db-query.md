@@ -78,7 +78,7 @@ activation:
     - select_star
 source:
   origin: file
-  path: perf-db-query.md
+  path: "perf/perf-db-query.md"
   hash: "sha256:274a2a194ab9cd22d1fd92204d5f76d5046c53aac422081d055624d0b8d7c4fc"
 dimensions:
   - performance

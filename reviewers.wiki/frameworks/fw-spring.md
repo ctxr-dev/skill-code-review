@@ -58,7 +58,7 @@ activation:
     - Spring MVC controller with mapping annotations
 source:
   origin: file
-  path: fw-spring.md
+  path: "fw/fw-spring.md"
   hash: "sha256:a8967880d5c08c321135a2ab55ed320ecac78de9eff130446e03c03140db42bd"
 dimensions:
   - security

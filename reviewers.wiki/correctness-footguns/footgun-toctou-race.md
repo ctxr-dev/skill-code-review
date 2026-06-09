@@ -57,7 +57,7 @@ activation:
     - Read-then-write on shared resource without atomicity
 source:
   origin: file
-  path: footgun-toctou-race.md
+  path: "footgun/footgun-toctou-race.md"
   hash: "sha256:75000cc8101a161054b68a36f7462ff86d51b0ae01685d217e654810c98f129a"
 dimensions:
   - correctness

@@ -64,7 +64,7 @@ activation:
     - missing_error_scope
 source:
   origin: file
-  path: graphics-shaders-webgl-webgpu.md
+  path: "graphics/graphics-shaders-webgl-webgpu.md"
   hash: "sha256:f2e155078502de8422e52e55ffc5968c11a3f1f4884c97b572358d0f78058c05"
 dimensions:
   - performance

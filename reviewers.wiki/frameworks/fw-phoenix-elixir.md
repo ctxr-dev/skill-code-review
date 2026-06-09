@@ -56,7 +56,7 @@ activation:
     - "Channel module with join/handle_in callbacks"
 source:
   origin: file
-  path: fw-phoenix-elixir.md
+  path: "fw/fw-phoenix-elixir.md"
   hash: "sha256:6b247985820c898db80c3f73810a340edc37a40570122cb9b164893f7756c820"
 dimensions:
   - security

@@ -51,7 +51,7 @@ activation:
     - PlantUML files in the repository
 source:
   origin: file
-  path: doc-mermaid-plantuml.md
+  path: "doc/doc-mermaid-plantuml.md"
   hash: "sha256:41ddb716e4421c0fa91455ce4183f6c366bdfb7a33b169a8c3841af03af8bea6"
 dimensions:
   - documentation

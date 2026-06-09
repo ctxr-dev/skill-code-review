@@ -58,7 +58,7 @@ activation:
     - no_forced_colors_support
 source:
   origin: file
-  path: a11y-reduced-motion-and-prefers-color-scheme.md
+  path: "a11y/a11y-reduced-motion-and-prefers-color-scheme.md"
   hash: "sha256:000529badc8967c88c17ba16352e726475fd06facc259d97c7a77f7b40ee696f"
 dimensions:
   - correctness

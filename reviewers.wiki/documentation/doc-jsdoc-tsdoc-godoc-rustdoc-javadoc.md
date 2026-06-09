@@ -80,7 +80,7 @@ activation:
     - New module or package
 source:
   origin: file
-  path: doc-jsdoc-tsdoc-godoc-rustdoc-javadoc.md
+  path: "doc/doc-jsdoc-tsdoc-godoc-rustdoc-javadoc.md"
   hash: "sha256:e6d7795778b7e3e2c89eb970147af377b153c9b593bd397372c3d1d009e2f682"
 dimensions:
   - documentation

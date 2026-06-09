@@ -63,7 +63,7 @@ activation:
     - fuzzer_configuration
 source:
   origin: file
-  path: test-fuzzing.md
+  path: "test/test-fuzzing.md"
   hash: "sha256:d7a7fe4bc742eeda69d589dfe8fd14a6387d2a34a36c2c9e70dee9967bd5d783"
 dimensions:
   - tests

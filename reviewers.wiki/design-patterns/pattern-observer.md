@@ -51,7 +51,7 @@ activation:
     - subscribe_without_matching_unsubscribe
 source:
   origin: file
-  path: pattern-observer.md
+  path: "pattern/pattern-observer.md"
   hash: "sha256:32cf5ceb1df8bb388b4746c8179907b93b2ae61d0e466d7639441a860ad216f7"
 dimensions:
   - architecture

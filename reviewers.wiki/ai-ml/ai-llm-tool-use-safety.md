@@ -50,7 +50,7 @@ activation:
     - tool_output_unvalidated
 source:
   origin: file
-  path: ai-llm-tool-use-safety.md
+  path: "ai/ai-llm-tool-use-safety.md"
   hash: "sha256:f9afaaa4ca17aacaeb099af8e24255922f7aeb05215805955247de081eb296b3"
 dimensions:
   - security

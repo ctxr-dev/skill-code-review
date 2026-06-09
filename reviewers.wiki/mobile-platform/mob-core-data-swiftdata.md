@@ -57,7 +57,7 @@ activation:
     - missing_migration
 source:
   origin: file
-  path: mob-core-data-swiftdata.md
+  path: "mob/mob-core-data-swiftdata.md"
   hash: "sha256:ba03bc001c8da9ef1ab25c0c42e7d7b136184dde031acff2c2873d38661da23d"
 dimensions:
   - correctness

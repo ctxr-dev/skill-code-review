@@ -59,7 +59,7 @@ activation:
     - kinesis_shard_mismatch
 source:
   origin: file
-  path: cloud-aws-eventbridge-sqs-sns-kinesis-step-functions.md
+  path: "cloud/cloud-aws-eventbridge-sqs-sns-kinesis-step-functions.md"
   hash: "sha256:3f4789a754cd199db6dda7a3b7c3379064a968e469be79049ec7daf1d01db75b"
 dimensions:
   - architecture

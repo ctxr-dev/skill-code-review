@@ -57,7 +57,7 @@ activation:
     - matrix_traversal_order
 source:
   origin: file
-  path: perf-cache-locality-false-sharing.md
+  path: "perf/perf-cache-locality-false-sharing.md"
   hash: "sha256:b78c09a1f0fec8bf727a107fa59b8253cb656b60563bf1b0d750840c5e2f7ada"
 dimensions:
   - performance

@@ -65,7 +65,7 @@ activation:
     - static_collection_growth
 source:
   origin: file
-  path: perf-memory-gc.md
+  path: "perf/perf-memory-gc.md"
   hash: "sha256:1885a467db5c66aea7a12443184a40f47b1d3c80bf08eb99bb5a50e0a259e1db"
 dimensions:
   - performance

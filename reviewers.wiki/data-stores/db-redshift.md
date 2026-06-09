@@ -60,7 +60,7 @@ activation:
     - ZSTD
 source:
   origin: file
-  path: db-redshift.md
+  path: "db/db-redshift.md"
   hash: "sha256:37e40c38f8b907eeb93a2013f4da56ec88e9ce0d7fca08c833bd2f3bf6838456"
 dimensions:
   - performance

@@ -58,7 +58,7 @@ activation:
     - Content-Type header set for error responses
 source:
   origin: file
-  path: api-problem-json-rfc7807.md
+  path: "api/api-problem-json-rfc7807.md"
   hash: "sha256:a33dd7467fb4b28108567e6a5c3bb51d36f99c09b22471491ac412004d3e3115"
 dimensions:
   - architecture

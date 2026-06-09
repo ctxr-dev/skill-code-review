@@ -49,7 +49,7 @@ activation:
     - merge_commit
 source:
   origin: file
-  path: conventional-commits-discipline.md
+  path: "conventional/conventional-commits-discipline.md"
   hash: "sha256:24710983c675e4ac4ddb4532096e1adda46e9348e63731f45cd1a43985e1292e"
 dimensions:
   - documentation

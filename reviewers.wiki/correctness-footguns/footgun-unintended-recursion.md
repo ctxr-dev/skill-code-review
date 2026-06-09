@@ -54,7 +54,7 @@ activation:
     - "A framework effect/reducer that writes a value it also reads or depends on"
 source:
   origin: file
-  path: footgun-unintended-recursion.md
+  path: "footgun/footgun-unintended-recursion.md"
   hash: "sha256:ae4bfc2f1a31af000741d7351b16f2f71f5bfd7f25170e7690cce5542b3cbd07"
 dimensions:
   - correctness

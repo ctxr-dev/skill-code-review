@@ -49,7 +49,7 @@ activation:
     - no_rate_limit
 source:
   origin: file
-  path: ai-llm-mcp-server-discipline.md
+  path: "ai/ai-llm-mcp-server-discipline.md"
   hash: "sha256:cf2047664a80d33c0cc5bcbe8fd8cd92c78a500494c02cb5dd776589583fe08f"
 dimensions:
   - security

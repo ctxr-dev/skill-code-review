@@ -57,7 +57,7 @@ activation:
     - Rocket launch or mount configuration
 source:
   origin: file
-  path: fw-rust-web-frameworks.md
+  path: "fw/fw-rust-web-frameworks.md"
   hash: "sha256:c64c1c491fbc2182dc7d23415b10911fb8b41688741166c2cd848066bd17028d"
 dimensions:
   - correctness

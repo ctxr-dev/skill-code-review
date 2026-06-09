@@ -60,7 +60,7 @@ activation:
     - Controller class with action methods
 source:
   origin: file
-  path: fw-aspnetcore-blazor.md
+  path: "fw/fw-aspnetcore-blazor.md"
   hash: "sha256:1dfcd2def1ac0fbf7842bbb284eb6ec41466a9c332c4f66334aba6530cc70c3b"
 dimensions:
   - security

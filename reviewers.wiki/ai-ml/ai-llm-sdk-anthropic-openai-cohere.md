@@ -56,7 +56,7 @@ activation:
     - missing_max_tokens
 source:
   origin: file
-  path: ai-llm-sdk-anthropic-openai-cohere.md
+  path: "ai/ai-llm-sdk-anthropic-openai-cohere.md"
   hash: "sha256:a1f6b8a9b378c57377fa017f93aee72aa887da0d0a166bd1cdaa3513d024011a"
 dimensions:
   - correctness

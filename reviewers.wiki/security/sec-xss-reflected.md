@@ -85,7 +85,7 @@ activation:
     - Search query displayed in results page
 source:
   origin: file
-  path: sec-xss-reflected.md
+  path: "sec/sec-xss-reflected.md"
   hash: "sha256:3f2e0d1cb593a35532feefdab3482e60d10a5a86fca0401cfcef54b5e19cab3f"
 dimensions:
   - security

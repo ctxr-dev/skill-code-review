@@ -60,7 +60,7 @@ activation:
     - arbitrary_instance
 source:
   origin: file
-  path: test-property-based.md
+  path: "test/test-property-based.md"
   hash: "sha256:3da97202485f33a90d14106b3e6e7f8bb563f2c687ace16f94705801c7faa323"
 dimensions:
   - tests

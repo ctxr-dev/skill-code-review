@@ -30,7 +30,7 @@ activation:
     - Any code change
 source:
   origin: file
-  path: principle-separation-of-concerns.md
+  path: "principle/principle-separation-of-concerns.md"
   hash: "sha256:abac210a0a53a92d2a38521dd796a1b0b647bc179b9052558bcfb14c1f1a2ad8"
 dimensions:
   - architecture

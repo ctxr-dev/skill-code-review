@@ -35,7 +35,7 @@ activation:
     - Module definitions or package structure changes
 source:
   origin: file
-  path: lang-julia.md
+  path: "lang/lang-julia.md"
   hash: "sha256:e95b0e2e670f33feb274b92fdc586587304e24ca728a67a682801883146d00ab"
 dimensions:
   - correctness

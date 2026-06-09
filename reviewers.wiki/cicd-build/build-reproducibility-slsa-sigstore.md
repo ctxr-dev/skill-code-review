@@ -56,7 +56,7 @@ activation:
     - build configuration change
 source:
   origin: file
-  path: build-reproducibility-slsa-sigstore.md
+  path: "build/build-reproducibility-slsa-sigstore.md"
   hash: "sha256:e56ed995be5cac8f159ea0534ac3394c47fa6c30577e9ff69b569e4e10c692f6"
 dimensions:
   - architecture

@@ -44,7 +44,7 @@ activation:
     - factory_pattern
 source:
   origin: file
-  path: smell-parallel-inheritance-hierarchies.md
+  path: "smell/smell-parallel-inheritance-hierarchies.md"
   hash: "sha256:3cf7e61749764330d40563b5035f8f79d0ae50a821fe982791e1590bbbdcccc9"
 dimensions:
   - architecture

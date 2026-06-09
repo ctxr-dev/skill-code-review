@@ -45,7 +45,7 @@ activation:
     - missing tsc type checking step
 source:
   origin: file
-  path: fe-build-esbuild-turbopack.md
+  path: "fe/fe-build-esbuild-turbopack.md"
   hash: "sha256:7a08e2a734323bdeb36010d42eaeb413218a93bf1b4812e57bc7baa9f3ab1070"
 dimensions:
   - performance

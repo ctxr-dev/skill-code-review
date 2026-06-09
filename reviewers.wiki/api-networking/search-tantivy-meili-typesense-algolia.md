@@ -98,7 +98,7 @@ activation:
     - reindex_without_alias_swap
 source:
   origin: file
-  path: search-tantivy-meili-typesense-algolia.md
+  path: "search/search-tantivy-meili-typesense-algolia.md"
   hash: "sha256:7c62f4b7a6dce47fe5484575c1a2e029ce23bc6d6374facd0aab5ae6bf893b1a"
 dimensions:
   - security

@@ -45,7 +45,7 @@ activation:
     - return_type_declaration
 source:
   origin: file
-  path: smell-primitive-obsession.md
+  path: "smell/smell-primitive-obsession.md"
   hash: "sha256:36b697eade72ada19db09b206ae8ed6fc6cc28bd0dc06b68d8d74eda6991a07b"
 dimensions:
   - readability

@@ -70,7 +70,7 @@ activation:
     - Setter methods or state modification patterns
 source:
   origin: file
-  path: principle-immutability-by-default.md
+  path: "principle/principle-immutability-by-default.md"
   hash: "sha256:2ab43a4472cf50ac166f09e68db4386a2e287d8b43bb23c0760c724d05291fc6"
 dimensions:
   - architecture

@@ -51,7 +51,7 @@ activation:
     - intern_or_canonicalize_method
 source:
   origin: file
-  path: pattern-flyweight.md
+  path: "pattern/pattern-flyweight.md"
   hash: "sha256:4e88f42e8e920d0ecfe855ce2badee8abd52a3bcde36d4dc650b365b792e0441"
 dimensions:
   - architecture

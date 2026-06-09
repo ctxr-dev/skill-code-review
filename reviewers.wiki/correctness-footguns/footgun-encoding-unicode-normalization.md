@@ -65,7 +65,7 @@ activation:
     - Username, email, or URL validation
 source:
   origin: file
-  path: footgun-encoding-unicode-normalization.md
+  path: "footgun/footgun-encoding-unicode-normalization.md"
   hash: "sha256:853b0a8e6c8b705bdd7492f0388f7171d59313d1bb1fbb88da35790e980bc1b5"
 dimensions:
   - correctness

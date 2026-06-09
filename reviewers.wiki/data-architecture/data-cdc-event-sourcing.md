@@ -136,7 +136,7 @@ activation:
     - outbox_table_definition
 source:
   origin: file
-  path: data-cdc-event-sourcing.md
+  path: "data/data-cdc-event-sourcing.md"
   hash: "sha256:da0ee51ea22d1fc0d1ba26f957b0713c0426da3e9777fb888fb8758bcb983778"
 dimensions:
   - architecture

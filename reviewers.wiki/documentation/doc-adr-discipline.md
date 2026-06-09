@@ -45,7 +45,7 @@ activation:
     - "Major structural refactor (new module, new service, new database)"
 source:
   origin: file
-  path: doc-adr-discipline.md
+  path: "doc/doc-adr-discipline.md"
   hash: "sha256:174559bab0946e8f171347a4c67d8824bf963d6bb073b217060eb10ebca68443"
 dimensions:
   - documentation

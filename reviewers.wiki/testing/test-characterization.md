@@ -50,7 +50,7 @@ activation:
     - pinning_test
 source:
   origin: file
-  path: test-characterization.md
+  path: "test/test-characterization.md"
   hash: "sha256:67d0e73de0a48968d26fe1caedbcb5c51b0751798022446d2ee3591a900a2a08"
 dimensions:
   - tests

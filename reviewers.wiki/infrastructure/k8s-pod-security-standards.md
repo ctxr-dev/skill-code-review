@@ -74,7 +74,7 @@ activation:
     - "capabilities:"
 source:
   origin: file
-  path: k8s-pod-security-standards.md
+  path: "k8s/k8s-pod-security-standards.md"
   hash: "sha256:0c8e13c1f27f6fcb6333230d5401d2f57abd598a9370b63305ac4a98213a9959"
 dimensions:
   - security

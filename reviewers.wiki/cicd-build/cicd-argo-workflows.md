@@ -90,7 +90,7 @@ activation:
     - CronWorkflow schedule change
 source:
   origin: file
-  path: cicd-argo-workflows.md
+  path: "cicd/cicd-argo-workflows.md"
   hash: "sha256:25f3b084d00cd3d7661d3817ee0d3efc1e57c3d8b9e9d01b55ec1cfd35fc0a48"
 dimensions:
   - architecture

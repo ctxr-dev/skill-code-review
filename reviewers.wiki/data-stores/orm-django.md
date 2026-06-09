@@ -49,7 +49,7 @@ activation:
     - migration
 source:
   origin: file
-  path: orm-django.md
+  path: "orm/orm-django.md"
   hash: "sha256:0c2ff17be5ee6fa1cbbd95a1385c96100dea7d66c6e5d771f7671700dd41a24a"
 dimensions:
   - performance

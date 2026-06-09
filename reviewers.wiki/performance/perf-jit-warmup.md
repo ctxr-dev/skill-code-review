@@ -61,7 +61,7 @@ activation:
     - exception_control_flow
 source:
   origin: file
-  path: perf-jit-warmup.md
+  path: "perf/perf-jit-warmup.md"
   hash: "sha256:db7bad4add3b206c25b8fbb6aa1c785ec570c0ef05ba39adb5e8f226ad8898ef"
 dimensions:
   - performance

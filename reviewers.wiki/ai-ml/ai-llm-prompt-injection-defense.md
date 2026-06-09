@@ -66,7 +66,7 @@ activation:
     - rag_content_unfiltered
 source:
   origin: file
-  path: ai-llm-prompt-injection-defense.md
+  path: "ai/ai-llm-prompt-injection-defense.md"
   hash: "sha256:91f447680f5bf52978dd4353b8cd7fccf259652c61090ec9d981c1f74467b1b6"
 dimensions:
   - security

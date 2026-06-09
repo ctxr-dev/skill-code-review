@@ -69,7 +69,7 @@ activation:
     - file_download_handler
 source:
   origin: file
-  path: sec-owasp-a10-ssrf.md
+  path: "sec/sec-owasp-a10-ssrf.md"
   hash: "sha256:f695ed9b004496af3d40bb10a265b9786b9151a8f7709233a7c0c1ed983114fe"
 dimensions:
   - security

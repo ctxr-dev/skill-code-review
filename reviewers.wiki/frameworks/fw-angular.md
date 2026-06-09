@@ -54,7 +54,7 @@ activation:
     - NgModule declarations array
 source:
   origin: file
-  path: fw-angular.md
+  path: "fw/fw-angular.md"
   hash: "sha256:0177348a007d9d620defd87c5ad6f3d2f514dc123601aa7cbf7fd6d515c984a6"
 dimensions:
   - correctness

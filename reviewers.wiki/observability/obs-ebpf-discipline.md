@@ -66,7 +66,7 @@ activation:
     - verifier_annotation
 source:
   origin: file
-  path: obs-ebpf-discipline.md
+  path: "obs/obs-ebpf-discipline.md"
   hash: "sha256:ec68ca636df9dd4ad883a4854b46e05b6028e874cecbfdb42f2a2fdf65e162c6"
 dimensions:
   - correctness

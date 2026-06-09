@@ -64,7 +64,7 @@ activation:
     - unaligned_load
 source:
   origin: file
-  path: perf-simd-vectorization.md
+  path: "perf/perf-simd-vectorization.md"
   hash: "sha256:0c20a1f2b16241691d17421acdddb3cf75dd1fa3d595b8f8de37bb79c0a68109"
 dimensions:
   - performance

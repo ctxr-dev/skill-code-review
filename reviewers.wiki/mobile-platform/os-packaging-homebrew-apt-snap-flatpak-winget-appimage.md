@@ -71,7 +71,7 @@ activation:
     - hardcoded_install_path
 source:
   origin: file
-  path: os-packaging-homebrew-apt-snap-flatpak-winget-appimage.md
+  path: "os/os-packaging-homebrew-apt-snap-flatpak-winget-appimage.md"
   hash: "sha256:2134651054a912730172384d38772fdd830236c24b1b42cb2e8d120c30d546e9"
 dimensions:
   - security

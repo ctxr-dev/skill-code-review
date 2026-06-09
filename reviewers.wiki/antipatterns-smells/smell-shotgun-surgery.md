@@ -30,7 +30,7 @@ activation:
     - Any code change
 source:
   origin: file
-  path: smell-shotgun-surgery.md
+  path: "smell/smell-shotgun-surgery.md"
   hash: "sha256:9f85370fa009a60ef37f2e451a672cde268a679ecd45541870fb775404b37796"
 dimensions:
   - architecture

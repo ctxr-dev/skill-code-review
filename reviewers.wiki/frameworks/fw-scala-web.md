@@ -56,7 +56,7 @@ activation:
     - "http4s HttpRoutes with IO or F[_] effect type"
 source:
   origin: file
-  path: fw-scala-web.md
+  path: "fw/fw-scala-web.md"
   hash: "sha256:af01decd57382b2442811da80e9d5b7b83c72dd02e93fa2babe5445d1031f895"
 dimensions:
   - security

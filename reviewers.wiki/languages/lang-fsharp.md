@@ -34,7 +34,7 @@ activation:
     - fsproj project file changes
 source:
   origin: file
-  path: lang-fsharp.md
+  path: "lang/lang-fsharp.md"
   hash: "sha256:dffe1cf85eaff56d220d73f5a400f028aae3cc1423e1c1d169c4d0762d16d0ab"
 dimensions:
   - correctness

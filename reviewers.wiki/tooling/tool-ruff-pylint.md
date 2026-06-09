@@ -48,7 +48,7 @@ activation:
     - pylint suppression comment
 source:
   origin: file
-  path: tool-ruff-pylint.md
+  path: "tool/tool-ruff-pylint.md"
   hash: "sha256:59438ce38e31a39f91a5b34b99b130a8a2dc80d4d32a05ffab01ef39c086a880"
 dimensions:
   - architecture

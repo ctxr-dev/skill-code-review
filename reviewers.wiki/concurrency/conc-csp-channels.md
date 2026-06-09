@@ -50,7 +50,7 @@ activation:
     - goroutine_spawning_with_channel
 source:
   origin: file
-  path: conc-csp-channels.md
+  path: "conc/conc-csp-channels.md"
   hash: "sha256:3fa8b224f0122802598cee27876e7c192f059eb1f60eededc8407871f261836b"
 dimensions:
   - correctness

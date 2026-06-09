@@ -48,7 +48,7 @@ activation:
     - abstract_class_definition
 source:
   origin: file
-  path: principle-composition-over-inheritance.md
+  path: "principle/principle-composition-over-inheritance.md"
   hash: "sha256:fd96e07415ffabf6c180eef2f8727b85695f81cf6737b455e5e6aa655a6edb36"
 dimensions:
   - architecture

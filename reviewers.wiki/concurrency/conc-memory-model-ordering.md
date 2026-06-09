@@ -108,7 +108,7 @@ activation:
     - shared_field_without_synchronization
 source:
   origin: file
-  path: conc-memory-model-ordering.md
+  path: "conc/conc-memory-model-ordering.md"
   hash: "sha256:eb21e6e93d9b1179c5f23982dbae71d982ef2c962dad712c3aeba71bbc00ec6a"
 dimensions:
   - correctness

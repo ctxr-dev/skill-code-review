@@ -68,7 +68,7 @@ activation:
     - AsyncAPI document structure
 source:
   origin: file
-  path: doc-openapi-asyncapi.md
+  path: "doc/doc-openapi-asyncapi.md"
   hash: "sha256:989cd6f11670b1eff6a93e09e2de8f59d98c524e47a32f75bb255872b187afed"
 dimensions:
   - documentation

@@ -54,7 +54,7 @@ activation:
     - wait_notify_pair
 source:
   origin: file
-  path: pattern-monitor-object.md
+  path: "pattern/pattern-monitor-object.md"
   hash: "sha256:2e3a83ab667e8669805dc98c38d32229cc8c4d292aef23b7eae1330c112777ea"
 dimensions:
   - architecture

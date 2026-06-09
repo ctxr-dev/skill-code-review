@@ -62,7 +62,7 @@ activation:
     - modal_without_focus_trap
 source:
   origin: file
-  path: a11y-keyboard-navigation.md
+  path: "a11y/a11y-keyboard-navigation.md"
   hash: "sha256:1650ece20f5c6d84ce4b3b7a68dcde2538b7faab5856444d78facd155812031a"
 dimensions:
   - correctness

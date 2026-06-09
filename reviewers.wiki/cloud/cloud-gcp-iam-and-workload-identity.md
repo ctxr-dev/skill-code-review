@@ -50,7 +50,7 @@ activation:
     - service_account_key
 source:
   origin: file
-  path: cloud-gcp-iam-and-workload-identity.md
+  path: "cloud/cloud-gcp-iam-and-workload-identity.md"
   hash: "sha256:e7c9f5443fb427addb20c148c2c65eb647e19093815a0ef5d39cecc6a128d2f1"
 dimensions:
   - security

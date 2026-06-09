@@ -69,7 +69,7 @@ activation:
     - Encryption or decryption of card data
 source:
   origin: file
-  path: compliance-pci-dss.md
+  path: "compliance/compliance-pci-dss.md"
   hash: "sha256:1d305d6ced9cd69b7e69c9f3c8dc7ffcdb8defbee57a3fb452b1b46bdb648b74"
 dimensions:
   - security

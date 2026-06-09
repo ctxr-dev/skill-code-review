@@ -81,7 +81,7 @@ activation:
     - Comparison of signed and unsigned integers
 source:
   origin: file
-  path: footgun-integer-overflow-sign-extension.md
+  path: "footgun/footgun-integer-overflow-sign-extension.md"
   hash: "sha256:965318b316282a415c10e17345e9acf44b33687a2ef744da62f63afc5955d092"
 dimensions:
   - correctness

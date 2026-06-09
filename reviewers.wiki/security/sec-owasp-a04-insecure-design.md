@@ -80,7 +80,7 @@ activation:
     - Endpoint returning all results without pagination
 source:
   origin: file
-  path: sec-owasp-a04-insecure-design.md
+  path: "sec/sec-owasp-a04-insecure-design.md"
   hash: "sha256:c3cfaa485fc434bafa1d9fed1a7e08ceb5b84aa6a6df4e2d0a60f334cc3db881"
 dimensions:
   - security

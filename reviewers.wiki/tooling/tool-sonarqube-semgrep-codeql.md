@@ -48,7 +48,7 @@ activation:
     - CI workflow references SAST tool
 source:
   origin: file
-  path: tool-sonarqube-semgrep-codeql.md
+  path: "tool/tool-sonarqube-semgrep-codeql.md"
   hash: "sha256:3eeaf18fb62e7f96d0e4e22d87b2d42bf75f8750283c5d43b63f24edde9b636d"
 dimensions:
   - architecture

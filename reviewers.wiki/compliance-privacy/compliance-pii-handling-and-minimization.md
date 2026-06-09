@@ -69,7 +69,7 @@ activation:
     - Analytics event emission with user properties
 source:
   origin: file
-  path: compliance-pii-handling-and-minimization.md
+  path: "compliance/compliance-pii-handling-and-minimization.md"
   hash: "sha256:3f962fb3013489a436f0ffe3d8b0ce11a666600dc12f65225650f06b637e4cd2"
 dimensions:
   - security

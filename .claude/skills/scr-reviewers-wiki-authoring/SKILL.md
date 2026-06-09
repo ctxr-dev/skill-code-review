@@ -17,7 +17,7 @@ audience: ai-agents
 **Canonical skill:** [`../../../.agents/skills/scr-reviewers-wiki-authoring/SKILL.md`](../../../.agents/skills/scr-reviewers-wiki-authoring/SKILL.md)
 
 This `.claude/skills/` copy exists so the Claude client discovers the skill. Always
-read and follow the canonical file above — it is the single source of truth for the
+read and follow the canonical file above, it is the single source of truth for the
 two-layer corpus (`reviewers.src/` authored, `reviewers.wiki/` generated), the v2
 frontmatter contract and what each field drives, activation rules (specific globs,
 never `**/*`), leaf-body authoring (bug-hunting heuristics, distinct findings,

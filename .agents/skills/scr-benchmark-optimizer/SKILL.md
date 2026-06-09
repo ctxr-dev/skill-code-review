@@ -1,130 +1,305 @@
 ---
 name: scr-benchmark-optimizer
-version: 2.0.0
+version: 3.0.0
 description: >
   Self-improvement loop for skill-code-review: benchmark it against competing AI
-  code reviewers on the open Greptile/Martian benchmark, diagnose recall/precision
-  losses, and apply PROVEN optimizations to the FSM, dispatch, and reviewer prompts
-  until it sits on (or above) the precision-recall frontier — high bug coverage AND
-  low noise. Reviews run through the PRODUCT runner (the Python FSM + adaptive
-  ThreadPoolExecutor), never a throwaway harness. Every run is a versioned
-  experiment; never stop on a regression; never restructure reviewers.wiki without
-  human confirmation.
+  code reviewers on the open Martian offline-50 set, then drive its bug-finding
+  quality UP (recall and F1) and its review latency DOWN through a strictly gated
+  experiment loop. Reviews run through the PRODUCT runner (the Python FSM + adaptive
+  ThreadPoolExecutor), never a throwaway harness. The tracker is
+  benchmarks/experiments.db (queried via benchmarks/experiments.py); every change is
+  ONE attributable lever, proven by the EXACT 5-gate PROMOTE predicate over N rounds
+  before it is tagged. Never stop the PROGRAM on a regression: revert the CHANGE and
+  record a negative. Nothing is pushed until the USER authorizes it; never restructure
+  reviewers.wiki without human confirmation.
 audience: ai-agents
 when_to_use: >
-  Use whenever you want to measure or improve skill-code-review's bug-finding
-  quality vs competitors, after changing reviewers/handlers/dispatch/prompts, or to
-  continue the optimization loop from the last versioned experiment.
+  Use whenever you want to measure or improve skill-code-review's bug-finding quality
+  (or latency) vs competitors, after changing reviewers/handlers/dispatch/prompts/corpus,
+  or to continue the optimization loop from the generated benchmarks/STATE.md position.
 ---
 
 # scr-benchmark-optimizer
 
-The discipline that keeps `skill-code-review` measurably better than competing AI
-code reviewers. A closed loop: **measure (via the product) → judge consistently →
-diagnose → improve → re-measure → record a versioned experiment → compare.** Never
-stop on a regression; never apply an unproven heuristic; never change the SET or
-STRUCTURE of `reviewers.wiki` without explicit human confirmation.
+The discipline that makes `skill-code-review` measurably better than competing AI
+code reviewers and keeps it from getting lost. A strictly gated loop: **measure (via
+the product) -> judge consistently -> diagnose -> change ONE lever -> re-measure N
+rounds -> apply the 5-gate predicate -> promote-and-tag or revert-and-record.** The
+two woven goals are HIGH-QUALITY reviews (recall and F1 flat-or-up) AND LOWER latency,
+with every speed change held to the SAME 5-gate predicate so speed can never trade
+away recall.
+
+Three locks govern everything below (the anti-chaos engine): **one change per round**,
+**proof-before-scale**, **a never-stale generated state surface**. Never stop the
+PROGRAM on a regression; never apply an unproven heuristic; never change the SET or
+STRUCTURE of `reviewers.wiki` without explicit human confirmation; never push to remote
+until the USER personally authorizes it.
+
+> The canonical, checkbox-tracked master plan is `docs/plans/beating-competitors.md`.
+> This skill is the followable ESSENCE of its methodology (sections 6 and 6.3); read the
+> plan for the full architecture, schemas, calibration design, and phase checklist. When
+> the two disagree, the plan is authoritative and this skill is updated to match.
 
 ## The benchmark and what "winning" means
 
 `withmartian/code-review-benchmark` (MIT): 50 bug-fix PRs across 5 repos
 (Sentry/py, Grafana/go, Cal.com/ts, Discourse/rb, Keycloak/java), ~136
-human-verified golden comments, and committed competitor candidate sets judged by
-three models. The judge rule: a finding is a **true positive** only if it matches a
-golden; **every non-golden finding is a false positive** (a deliberately harsh
-precision metric). So the goal is the **precision-recall frontier**: catch the
-goldens (recall) while emitting few non-golden findings (precision).
+human-verified golden comments, committed competitor candidate sets, judged by a
+**3-model panel** (Claude Opus 4.5, Claude Sonnet 4.5, GPT-5.2). The judge rule: a
+finding is a **true positive** only if it matches a golden; **every non-golden finding
+is a false positive** (a deliberately harsh precision metric). So the goal is the
+**precision-recall frontier**: catch the goldens (recall) while emitting few non-golden
+findings (precision).
 
-**The real bar is the FULL 50, not a sub-slice.** Committed full-50 leaderboard
-(Opus-4.5 judge), top tools:
+**The real bar is the FULL 50, not a sub-slice.** Committed offline leaderboard
+(vendor self-published snapshots, drifting +0.02 to 0.03 per monthly refresh):
 
 | tool | recall | precision | F1 |
 |---|---|---|---|
-| **cubic-v2** | 0.69 | 0.56 | **0.62** |
-| qodo-extended-v2 | 0.61 | 0.55 | 0.58 |
+| qodo-extended (Mar 15) | 0.61 | 0.55 | **~0.64** |
+| cubic-v2 (Mar 25) | 0.69 | 0.56 | 0.62 |
 | augment | 0.61 | 0.47 | 0.54 |
 | macroscope | 0.44 | 0.48 | 0.46 |
 | bugbot | 0.44 | 0.47 | 0.45 |
 | greptile-v4-1 | 0.48 | 0.40 | 0.44 |
-| coderabbit (full) | ~0.40 | ~0.35 | ~0.40 |
 
-**Cubic is the leader at F1 0.62 — and it is NOT a precision wizard:** ~3.5
-findings/PR (mid-pack), and it carries false positives too. Its edge is *framing
-accuracy* on the golden distribution. Beating "all competitors" means **F1 > 0.62
-on the full 50**, on the frontier (don't trade all recall for precision).
+The current bar is **~0.64** (Qodo Extended), not 0.62; Martian's stated recall ceiling
+is "no tool found more than 63% of known issues". Beating "all competitors" means **F1
+above the ~0.62 to 0.64 band on the full 50**, on the frontier (do not trade all recall
+for precision). Treat the offline number as COMPARATIVE, not absolute: the gold set was
+seeded from Augment/Greptile data and the 5 repos may be memorized, so a real bug outside
+the gold set scores as a false positive.
 
-> Do NOT chase the 5-PR pilot number. The pilot (one PR/repo) is a **Cubic-favorable
-> slice** where Cubic scores ~0.83; the full 50 is the honest 0.62. Optimize for the
-> full set.
+> Do NOT chase the 5-PR pilot number. The pilot (one PR/repo) is a SMALL, NOISE-BOUND,
+> cubic-favorable slice; the full 50 is the honest number. Optimize for the full set, and
+> reach it gradually (5, 10, 15, 20 ...), never in one budget-busting run.
 
-## Current standing (measured, honest)
+## Current standing (the generated state surface is the source of truth)
 
-Reviews run through the product runner with `--backend claude`. Measured on the
-**5-PR pilot** (small, noisy, Cubic-favorable), `skill-prod-primary` on the shipped
-deterministic 26-category, 479-leaf wiki (`reviewers.layout.yaml` pins placement):
+**Read "where we are" from the generated surface, never from memory:**
 
-- **Shipped (479-leaf, deterministic wiki):** recall **0.73** (8/11), precision
-  **0.53**, F1 **~0.62**, **~1.4 FP/PR**. Prior emergent baseline: recall 0.73,
-  precision 0.33, F1 0.46, ~3.2 FP/PR. The deterministic cutover plus three added
-  generalized footgun leaves recovered recall to no-worse-than-baseline AND more than
-  halved the noise (3.2 → 1.4 FP/PR), lifting F1 0.46 → 0.62 (see the lesson below).
-- **The 5-PR signal is noise-bound** (the ranker is stochastic; run-to-run F1 swings
-  ±0.05-0.1, rivalling the tuning deltas), so average ≥3 rounds and prefer the full 50.
-- Two goldens remain missed by EVERY wiki (a vague null-state golden and a terse
-  recursion golden): candidates for a future sharpening pass, not blockers.
+```bash
+cd skill-code-review
+uv run python benchmarks/experiments.py status        # one-line current position
+cat benchmarks/STATE.md                                # the live "YOU ARE HERE"
+```
 
-**The full-50 number is the open question** — the pilot is too small/favorable to
-declare "beat all". A full-50 run is gated on human go-ahead (it crosses the locked
-5-repo pilot scope and is token-heavy).
+`benchmarks/STATE.md` is GENERATED by `experiments.py state` from the DB (never
+hand-edited, same discipline as the generated wiki). It shows the current PR set and
+rung, the baseline tag and HEAD-clean flag, baseline F1 with CI, recall, fp/PR,
+dollars/review, stability, the last proven win, open hypotheses (cheapest-proven-win
+first), the dead-ends ledger, and the single next action.
+
+**Baseline@pr5 is LOCKED** (tag `v-bench-0.1.0-pr5`): the `skill-prod-primary` config over
+the 5 pilot PRs x 3 rounds on the `claude -p` backend measured F1 mean **0.593**, CI
+**[0.537, 0.652]**, recall **0.727**, precision **0.500**, fp/PR **1.60**, F1 stdev **0.030**.
+Read this honestly: the F1 CI STRADDLES the ~0.62 to 0.64 competitor bar, so a powered
+verdict (CI clearly above the bar) needs the PR ramp (more PRs), not more 5-PR rounds.
+Confirm the current numbers from `STATE.md`, which always reflects the latest DB state.
+
+## The tracker: benchmarks/experiments.db (NOT a markdown log)
+
+The committed SQLite DB `benchmarks/experiments.db` is the durable program state. It
+carries the `experiments`, `metrics`, `findings`, `dead_ends`, and `timings` tables.
+Query and mutate it ONLY through `benchmarks/experiments.py` (mutating subcommands
+DRY-RUN by default; pass `--apply` to write). Auto-generated markdown views
+(`HISTORY.md`, `LEADERBOARD.md`, `STATE.md`) keep a `git diff` legible.
+
+The subcommands you will use most:
+
+- `record` (`--apply`) - ingest one measurement (config, PR set, point metrics, fp/PR,
+  $/review, diff-stat, n-rounds, git-sha) as one experiment row.
+- `ci` (`--apply`) - attach bootstrap CIs to a recorded run (recall/F1 lo+hi).
+- `gate` - apply the EXACT 5-gate PROMOTE predicate (baseline run vs candidate run).
+- `compare` - paired side-by-side of two runs.
+- `check <hypothesis> <lever> [--pr-set ...]` - the dead-end guard; run it BEFORE you
+  start an iteration. It warns loudly if a matching dead-end exists at this rung or smaller.
+- `state` / `history` / `leaderboard` (`--apply`) - regenerate the markdown views.
+- `status` - the one-line current position.
+- `slowest [--run-id ... --measured-only]` - rank the slowest stages/agents by total wall
+  time (measured rows only by default, so the hallucinated self-reported `runtime_ms`
+  never poisons the ranking). This is the latency-workstream lens.
+
+The full per-finding label path (`build_judge_input_prod.py` carries
+`defect_confidence/severity/idx`; verdicts record per-candidate `matched`;
+`ingest_verdicts.py` populates `findings`) and the timing telemetry
+(`ingest_timings.py`, `timings` table, `slowest`) are wired and live; do not rebuild them.
 
 ## The harness (gitignored, under `skill-code-review/tmp/`)
 
 The benchmark harness lives INSIDE the skill repo at `skill-code-review/tmp/`
-(gitignored) — it travels with the skill it benchmarks. Reviews are driven by the
+(gitignored) - it travels with the skill it benchmarks. Reviews are driven by the
 **product**, not a throwaway orchestrator. `tmp/` holds **only benchmark DATA**
 (regenerable, safe to delete); every durable harness/driver script lives in the
 tracked `skill-code-review/scripts/` dir (NOT in `tmp/`, NOT in the `code_review`
-package). **Every output dir is run-id + pr-shard nested** (`shard` = first 2 hex of
-`sha256(pr_id)`) so no directory ever accumulates thousands of entries (filesystem
-bottleneck) — `scripts/paths.py` is the single source of the layout; all driver
-scripts import it. A `run-id` is one variant/iteration (`default`/`prod`/
-`iter1`/…). Layout:
+package; see the `scr-scripts` cookbook). **Every output dir is run-id + pr-shard
+nested** (`shard` = first 2 hex of `sha256(pr_id)`) so no directory ever accumulates
+thousands of entries (filesystem bottleneck): `scripts/paths.py` is the single source
+of the layout; all driver scripts import it. A `run-id` is one round (`base-pr5`/`iter1`/
+...). Layout:
 
-- `tmp/repos/<ab>/<pr>/` — materialised repo (shared across runs); `scripts/setup_repo.py`
+- `tmp/repos/<ab>/<pr>/` - materialised repo (shared across runs); `scripts/setup_repo.py`
   writes here at the **merge-base** diff (`base_diff` from `bench-index.json`; use
-  `git merge-base(base,head)`, NEVER `baseRefOid..head` — OBSERVATIONS #8).
-- `tmp/runs/<run-id>/<ab>/<pr>/` — one review's output (its `.skill-code-review/<yyyy>/
-  <mm>/<dd>/<ab>/<rest5>/` tree + `run.log`).
-- `tmp/judge/<run-id>/<ab>/<pr>.json` (+ `_input_<pr>.json`) — judge verdicts/inputs.
-- `tmp/results/<run-id>/` — per-run leaderboard/metrics. `bench/` — benchmark clone.
-- `scripts/build_judge_input_prod.py <pr> <run-id>` — extract candidates (skill-prod /
-  skill-prod-primary / skill-prod-scoped) + competitor sets → `judge/<run-id>/<ab>/
-  _input_<pr>.json`.
-- `scripts/score.py <run-id>` — aggregate per-(PR,tool) verdicts → `results/<run-id>/`.
-- `scripts/rerank.py <pr> <src-run-id> <out-run-id>` — **fast ranker-only loop**: re-run
+  `git merge-base(base,head)`, NEVER `baseRefOid..head` - OBSERVATIONS #8).
+- `tmp/runs/<run-id>/<ab>/<pr>/` - one review's output (its `.skill-code-review/<yyyy>/
+  <mm>/<dd>/<ab>/<rest5>/` tree + `run.log` + `timings.json`).
+- `tmp/judge/<run-id>/<ab>/<pr>.json` (+ `_input_<pr>.json`) - judge verdicts/inputs.
+- `tmp/results/<run-id>/` - per-run leaderboard/metrics. `bench/` - benchmark clone.
+- `scripts/build_judge_input_prod.py <pr> <run-id>` - extract candidates (skill-prod /
+  skill-prod-primary / skill-prod-scoped) + competitor sets, emitting each candidate as
+  `{text, defect_confidence, severity, idx}` -> `judge/<run-id>/<ab>/_input_<pr>.json`.
+- `scripts/score.py <run-id>` - aggregate per-(PR,tool) verdicts -> `results/<run-id>/`.
+- `scripts/rerank.py <pr> <src-run-id> <out-run-id>` - **fast ranker-only loop**: re-run
   the product's `rank_findings` worker on an existing review's findings (isolates a
-  finding-ranker.md change without re-rolling specialists; ~1 call/PR).
-- `scripts/migrate_tmp.py` — one-shot migrator to this layout (idempotent, `--apply`).
-- `results/PROD-REPORT.md` — the leaderboard + analysis. `OBSERVATIONS.md` — every
-  bug/friction/finding with a ✅/🛠️/⏳/➖ status board.
+  finding-ranker.md change without re-rolling specialists; ~1 call/PR). This is the N=5
+  cheap loop (see "lever-typed N").
+- `scripts/ingest_verdicts.py` / `scripts/ingest_timings.py` - populate the DB `findings`
+  and `timings` tables (dry-run by default, `--apply` writes).
 
-## Wiki regeneration: the no-regression gate (HARD)
+## Lever-typed N (how many rounds per change class)
 
-Any regeneration of `reviewers.wiki` (a corpus or structure change, and the full
-layout-driven rebuild) must clear this gate BEFORE it is promoted:
+The 5-PR signal is noise-bound (the ranker is stochastic; F1 swings +/-0.05 to 0.10 per
+round, rivalling the tuning deltas), so a single round is never evidence. Average over N
+rounds, where N depends on the change class:
 
-- Re-run the PRODUCT reviewer on the SAME five pilot codebases used throughout:
-  `cal.com-14943`, `discourse-1`, `grafana-80329`, `keycloak-32918`, `sentry-67876`.
-- Compare against the recorded baseline on BOTH axes and require no regression on
-  either: recall/coverage up-or-equal AND false-positives-per-PR down-or-equal
-  (precision up-or-equal). Better on one axis must not come at the cost of the other.
-- If either axis regresses, do NOT promote the regenerated wiki. Revert or iterate.
-- Record the versioned result (`results/<run-id>/`, `PROD-REPORT.md`). The full-50
-  run and any SET/STRUCTURE change remain human-gated on top of this.
+- **Ranker-only** (a `workers/finding-ranker.md` change, re-run via `scripts/rerank.py`,
+  ~1 call/PR, cheap): **N=5**.
+- **Full run** (a specialist / routing / prompt / corpus / infra change, the full product
+  re-run): **N=3** (the floor).
 
-This is the same metric the optimizer already chases (the precision-recall frontier),
-made an explicit promotion precondition: regeneration may only HOLD or IMPROVE the
-frontier, never trade it away.
+Each round is one `run_id`; a Measurement is N rounds of the SAME config on the SAME frozen
+PR set, reduced to mean + bootstrap 95% CI per metric (resample unit = the PR, 10k resamples).
+A Measurement is the atomic unit of evidence; an Iteration (hypothesis, one change,
+measurement, gate, promote-or-revert) is the atomic unit of development.
+
+## The gated experiment loop (one iteration)
+
+```
+HYPOTHESIS  (falsifiable; names ONE lever and the metric it should move)
+  -> DEAD-END GUARD: experiments.py check <hypothesis> <lever> --pr-set <rung>
+       (if a matching dead-end exists at this rung or smaller: warn, pick another)
+  -> ONE CHANGE (single attributable lever; tracker stores `git diff --stat`)
+  -> GREEN GATE: ruff + mypy + pytest (must pass before a benchmark dollar is spent)
+  -> DOGFOOD (code changes only): run the PRODUCT reviewer on the diff, address findings
+  -> MEASURE: N rounds on the FROZEN current PR set (same backend, same judge model)
+  -> reduce to mean + bootstrap 95% CI per metric (experiments.py record + ci --apply)
+  -> PROVE: the 5-gate predicate (experiments.py gate)
+       all green        -> commit + tag vX.Y.Z-<pr_set_id> + POSITIVE row + regen STATE.md
+       G1/G2/G4/G5 red  -> git restore + NEGATIVE dead_ends row (retry_at_pr_set = NULL)
+       only G3 straddles -> git restore + INCONCLUSIVE row (retry_at_pr_set = next rung)
+```
+
+The dev gate ORDER per experiment is non-negotiable: **(a) green first** (ruff + mypy +
+pytest: a broken product can not review), **then (b) dogfood** (run the product reviewer on
+your own diff and ADDRESS its findings), **then (c) the 5-gate benchmark**. Green, then
+dogfood, then benchmark.
+
+### The 5-gate PROMOTE predicate (EXACT, from plan section 6.3)
+
+Let B = baseline Measurement, C = candidate Measurement (each N rounds). Paired bootstrap
+deltas over PRs (10,000 resamples). Promote iff ALL FIVE hold:
+
+```
+GATE-1 RECALL non-regression:  mean(recall_C) >= mean(recall_B)
+                               AND lower-95%-CI(recall_C - recall_B) >= -0.03
+GATE-2 NOISE non-regression:   mean(fp_per_pr_C) <= mean(fp_per_pr_B)
+                               AND upper-95%-CI(fp_per_pr_C - fp_per_pr_B) <= +0.30
+GATE-3 PROGRESS (the teeth):   lower-95%-CI(F1_C - F1_B) > 0   (paired delta-F1 CI strictly above 0)
+GATE-4 STABILITY:              stdev(F1_C over N) <= stdev(F1_B) + 0.02
+GATE-5 COST guard:             mean($/review_C) <= 1.25 * mean($/review_B)
+```
+
+GATE-1 + GATE-2 are the long-standing both-axes no-regression gate (recall up-or-equal AND
+fp-per-PR down-or-equal), now made CI-aware. GATE-3 is the new requirement: a win must be
+CI-separated from the baseline, not a lucky round. GATE-4 and GATE-5 stop erratic configs and
+cost blowups. Outcomes: all green -> PROMOTE; GATE-1/2/4/5 red -> REVERT (genuine regression,
+`retry_at_pr_set = NULL`); only GATE-3 straddles zero -> INCONCLUSIVE (revert,
+`retry_at_pr_set = next rung`, the CI may separate at more PRs). Below ~12 PRs the predicate
+returns `inconclusive` rather than `promote` (underpowered); that is expected at pr5 and is
+why the ramp exists.
+
+For a SPEED change there is an extra CHEAP-FIRST check BEFORE the full N-round measurement:
+one instrumented review (telemetry on) confirming (a) the targeted stage's wall-time dropped
+roughly as predicted and (b) a leaf-set sanity check (the picked-leaf set did not lose any
+leaf the baseline picked, especially no `sec-*`/correctness leaf). Only then is the N=3
+measurement spent. Latency is a first-class metric on the row (`whole_review_ms`,
+`tree_descend+llm_trim ms`) but it does NOT enter the predicate, so a config can never buy a
+quality regression with speed. GATE-1 is the hard floor: revert the instant recall regresses
+outside its CI, no matter how much latency it saved.
+
+### Single-change discipline (the anti "too much" lock)
+
+ONE lever per iteration (ranker OR specialist OR routing OR one threshold OR one corpus batch,
+never two). A change must be attributable to one diff; the tracker stores `git diff --stat` and
+warns (requiring an explicit `--force-multi` with a written reason) when more than one logical
+lever changed. No "while I am here" bundling. The PR set is FROZEN during an iteration (ramp is
+a separate gated step). Green before measure.
+
+### The dead-ends ledger (never re-walk a rabbit hole)
+
+Every Measurement, pass or fail, writes a DB row. The `dead_ends` table keys on
+`hypothesis_hash = sha256(normalized hypothesis + lever)` with `why_failed` (which gate) and
+`retry_at_pr_set`. Before starting an iteration, `experiments.py check <hypothesis> <lever>
+--pr-set <rung>` warns loudly if a matching dead-end exists at the current or smaller PR set
+(a failed hypothesis at N PRs is still a dead-end at N or fewer; it may only be retried at a
+LARGER rung if it was recorded INCONCLUSIVE with `retry_at_pr_set` set). Mirror one-line
+summaries into `tmp/OBSERVATIONS.md` and (optionally) the shared RAG memory via `save_lesson`
+so other sessions inherit the dead-ends. **Never re-walk a failed hypothesis at the same or
+smaller PR set.**
+
+### Proof-before-scale ramp (grow the PR set only after a tagged win)
+
+Ramp from rung k to k+1 iff ALL hold: RAMP-1 at least one PROMOTED, tagged win banked at rung
+k; RAMP-2 HEAD == the rung-k tag, tree clean; RAMP-3 the promoted baseline's `f1_stdev <= 0.06`;
+RAMP-4 projected N-round cost at k+1 within the remaining budget. Ramping is NOT an iteration:
+it FREEZES the new superset PR set (the set always grows, never shrinks), runs the CURRENT
+promoted config N rounds to form `Baseline@(k+1)`, tags it (`-pr<k+1>` suffix only), and records
+a `RAMP` row. Rollback rule: code changes roll back on a regression, but the PR set NEVER rolls
+backward (more PRs is always more honest). If a win fails to generalize at k+1 (paired comparison
+on the shared subset regresses), stay at k+1, flag `regression_on_ramp`, and open an "overfit the
+rung-k slice" hypothesis.
+
+## DOGFOOD: skill-code-review reviews its own code changes
+
+Every CODE change to `skill-code-review` (the Python in `code_review/`, the FSM, dispatch,
+handlers, runner) must be reviewed by `skill-code-review` ITSELF before acceptance. The dev gate
+order per experiment is:
+
+1. **Green** - `ruff check code_review/ tests/` + `mypy code_review/` + `pytest` all pass. A
+   broken product can not review, so green comes first.
+2. **Dogfood** - run the PRODUCT reviewer on the diff and ADDRESS its findings:
+
+   ```bash
+   cd skill-code-review
+   export GITHUB_TOKEN="$(gh auth token)"
+   uv run python -m code_review.cli review --base <merge-base> --head HEAD --backend claude
+   ```
+
+   Treat its `primary` findings as you would any reviewer's: fix them or justify the dismissal in
+   the iteration notes. A product that can not pass its own review has no business reviewing others.
+3. **Benchmark** - the F1 5-gate (above).
+
+DOGFOOD targets CODE (Python). **Pure docs or markdown edits are EXEMPT** (this skill, the rule
+files, the plan, and other `.md`/doc-only changes do not trigger the dogfood pass), but they still
+require green (ruff + mypy + pytest, which pass trivially when no code changed) before commit.
+
+## NO PUSH: the user is the gate
+
+Nothing is pushed to remote (no `git push`, no PR, no merge, no touching `main`) until the FINAL
+number-1 AI-code-reviewer goal is reached AND the USER personally authorizes the push. All work
+stays LOCAL on the `feat/martian-benchmark-program` branch. Commit and tag locally as the loop
+prescribes (each promoted win is a local commit + a local `vX.Y.Z-<pr_set_id>` tag), but the
+remote is untouched until the user says so. This is a HARD gate: do not push "just the docs", do
+not open a "draft" PR, do not merge to `main`. The user is the gate.
+
+## ULTRACODE: how this program is staffed
+
+All code-or-thinking subagent work on this program runs at **ultracode** intensity: parallel deep
+work plus adversarial verification, with nested flows allowed (a subagent may itself fan out and
+verify). The conductor stays ORGANIZATIONAL: it sequences iterations, enforces the gates, keeps the
+single-change discipline, and DELEGATES the deep work (diagnosing a missed golden, authoring a
+narrowed leaf, writing a critic prompt, analyzing a CI). The conductor does not hand-roll the deep
+analysis itself; it orchestrates ultracode workers and holds them to the 5-gate predicate.
 
 ## Running a review (the product, every time)
 
@@ -138,124 +313,164 @@ uv run python -m code_review.cli review \
 # (compute <ab>/<pr> paths via scripts/paths.py: repo_dir(pr) / run_dir(run_id, pr))
 ```
 
-`--backend` is agent-agnostic (`claude` | `codex` | `cursor` | `anthropic` |
-`openai`). `--clean` wipes the run dir's `.skill-code-review` for a fresh,
-cache-free run. The runner drives the FSM in-process with an adaptive thread pool;
-worker + specialist calls are fault-tolerant (retry/backoff, graceful degradation).
+`--backend` is agent-agnostic (`claude` | `codex` | `cursor` | `anthropic` | `openai`; a
+`pydantic-ai` backend covering Anthropic/OpenAI/Gemini with billed usage is planned, see the plan
+section 5). `--clean` wipes the run dir's `.skill-code-review` for a fresh, cache-free run. The
+runner drives the FSM in-process with an adaptive thread pool; worker + specialist calls are
+fault-tolerant (retry/backoff, graceful degradation).
 
-## The loop (one iteration)
+## The loop (one iteration, in full)
 
-1. **Measure.** Run the product CLI over the PR set (5-PR pilot to iterate; full 50
-   to declare). 100% diff coverage: every changed file is sharded into specialist
-   units. Stays fault-free (see robustness below).
-2. **Judge once, consistently.** `build_judge_input_prod.py` per PR, then judge
-   (one model = the session, Martian rule) into `judge/<variant>_<pr>.json`. Reuse
-   committed competitor verdicts (same judge model) for apples-to-apples.
-3. **Diagnose.** Per PR, which goldens were MISSED (recall loss → specialist depth or
-   leaf coverage) and which non-goldens were marked `primary` (precision loss →
-   ranker). Distinguish "real bug outside the golden set" (benchmark incompleteness)
-   from "noise" (genuine over-reporting).
-4. **Improve.** Edit the right layer (see Levers). Gate green (ruff + mypy + pytest).
-5. **Re-measure + record.** For a ranker-only change, use `rerank.py` (fast) and
-   average ≥3 rounds (the ranker is stochastic). For a specialist/routing change,
-   re-run the full review. Record a versioned result; keep only changes that move the
-   frontier; else revert.
-6. **Escalate if blocked.** If the only remaining gain needs a different reviewer SET
-   or STRUCTURE (a COVERAGE problem), STOP and propose a `reviewers.wiki` change
-   (proven statistical methods only) for human confirmation — and follow the
-   `scr-reviewers-wiki-authoring` skill.
+1. **Read STATE.md** (`experiments.py status`) for the current rung, baseline, and next action.
+2. **Pick a falsifiable hypothesis** naming ONE lever and the metric it should move; run the
+   dead-end guard (`experiments.py check`).
+3. **Change the ONE lever.** Edit the right layer (see Levers). Keep the diff attributable.
+4. **Green gate.** `ruff` + `mypy` + `pytest`. Then DOGFOOD if the change touched code.
+5. **Measure** the product CLI over the FROZEN PR set, N rounds (ranker-only N=5 via `rerank.py`;
+   full N=3). 100% diff coverage: every changed file is sharded into specialist units.
+6. **Judge once, consistently.** `build_judge_input_prod.py` per PR, then judge (the panel rule)
+   into `judge/<run-id>/<ab>/<pr>.json`. Reuse committed competitor verdicts for apples-to-apples.
+7. **Record + CI.** `experiments.py record --apply` then `ci --apply`; reduce to mean + bootstrap CI.
+8. **Diagnose.** Per PR, which goldens were MISSED (recall loss -> specialist depth or leaf coverage)
+   and which non-goldens were marked `primary` (precision loss -> ranker). Distinguish "real bug
+   outside the golden set" (benchmark incompleteness) from "noise" (genuine over-reporting).
+9. **Gate.** `experiments.py gate`. All green -> commit + tag + regen STATE.md. Else REVERT the
+   CHANGE and record the negative/inconclusive row. **Never stop the PROGRAM; revert the CHANGE.**
+10. **Ramp only after a tagged win** (proof-before-scale). Escalate a COVERAGE gap to a human-gated
+    `reviewers.wiki` change (see "Coverage" lever and the wiki-build protocol).
 
 ## Where to optimize (levers, by symptom)
 
-- **Precision (too many non-golden primaries):** `workers/finding-ranker.md`. Make
-  `primary` the block-this-PR set; demote real-but-secondary findings (defensive
-  hardening, load/cost-only perf, no-test/magic-number) to advisory. Keep CONCRETE
-  correctness/security bugs primary even when edge-case. The ranker emits compact
-  per-index decisions; the runner re-attaches scores (`dispatch._apply_rank_decisions`).
-- **Recall (a golden no specialist surfaced):** `workers/specialist.md`. Add GENERAL
-  bug-hunting heuristics (unset/missing-state null-deref; external-tool argument
-  format/units; shadowed/duplicate definitions; cache-recursing-through-self). Emit
-  ONE finding per distinct root cause — never bundle a None-deref with a KeyError.
-- **Routing (right leaves not picked):** `workers/tree-descender.md` /
-  `trim-candidates.md` (metadata-only, no file reads) — and leaf `focus`/`activation`
-  in the wiki (the `scr-reviewers-wiki-authoring` skill). Beware broad `**/*` globs:
-  they over-activate and bias routing toward generic leaves.
-- **Coverage (no leaf exists for a bug class):** a reviewers.wiki change — human-gated.
+- **Precision (too many non-golden primaries):** `workers/finding-ranker.md`. Make `primary` the
+  block-this-PR set; demote real-but-secondary findings (defensive hardening, load/cost-only perf,
+  no-test/magic-number) to advisory. Keep CONCRETE correctness/security bugs primary even when
+  edge-case. The ranker emits compact per-index decisions; the runner re-attaches scores
+  (`dispatch._apply_rank_decisions`). This is the cheapest lever (N=5 via `rerank.py`).
+- **Recall (a golden no specialist surfaced):** `workers/specialist.md`. Add GENERAL bug-hunting
+  heuristics (unset/missing-state null-deref; external-tool argument format/units; shadowed/duplicate
+  definitions; cache-recursing-through-self). Emit ONE finding per distinct root cause - never bundle
+  a None-deref with a KeyError.
+- **Consensus / confidence (always-on multi-model):** the planned `critique_findings` +
+  `reconcile_findings` stages (plan section 5.3) inject ALL critic verdicts into reconciliation,
+  reasoning-first. Multi-model is core and always-on by design; the PR count (not disabling consensus)
+  is the cost throttle while developing.
+- **Routing (right leaves not picked):** `workers/tree-descender.md` / `trim-candidates.md`
+  (metadata-only, no file reads) - and leaf `focus`/`activation` in the wiki (the
+  `scr-reviewers-wiki-authoring` skill). Beware broad `**/*` globs: they over-activate and bias
+  routing toward generic leaves (and they are the #1 latency cost; see the speed levers).
+- **Latency (routing dominates the budget):** routing (`tree_descend` + `llm_trim`) costs ~39% of
+  wall-time and buys NO recall. S1 merges the two routing passes into one; S2 cuts the 107 broad
+  `**/*.{lang}` globs to real signals (a human-gated corpus change). Both change the picked-leaf set,
+  so both are F1-5-gated like any quality lever, with the cheap-first leaf-set sanity check first.
+  Embedding routing was tried and REJECTED (OBSERVATIONS #44); see the plan section 5A.3.
+- **Coverage (no leaf exists for a bug class):** a reviewers.wiki change - human-gated; see below.
+
+## Wiki regeneration: the no-regression gate (HARD) and the change protocol
+
+Any regeneration of `reviewers.wiki` (a corpus or structure change, the broad-activation cut, and
+the full layout-driven rebuild) must clear the no-regression gate BEFORE it is promoted, on TOP of
+the normal 5-gate flow:
+
+- Re-run the PRODUCT reviewer on the SAME five pilot codebases used throughout:
+  `cal.com-14943`, `discourse-1`, `grafana-80329`, `keycloak-32918`, `sentry-67876`.
+- Compare against the recorded baseline on BOTH axes and require no regression on either: recall
+  up-or-equal AND false-positives-per-PR down-or-equal. Better on one axis must not come at the
+  cost of the other (this is GATE-1 + GATE-2 expressed at the corpus level).
+- If either axis regresses, do NOT promote the regenerated wiki. Revert or iterate.
+
+A change to the SET or STRUCTURE of reviewers (and any activation/glob narrowing, and any full
+corpus regeneration) is additionally HUMAN-GATED: a written, statistically-justified proposal plus
+explicit sign-off. It must also carry all FIVE parts of the wiki-build methodology change protocol
+(plan section 6.9), recorded IN THE REPO (the plan and/or the authoring skill and the experiment
+row), not just in chat: (1) the METHOD (which leaves, before/after activation, the deterministic
+build/validate/promote flow); (2) the activation SIGNALS taxonomy per leaf (`file_globs`,
+`keyword_matches`, `structural_signals`, `escalation_from`) and which signals replaced the broad
+glob; (3) the GAPS (what the narrowed activation can no longer catch); (4) the SENSITIVITY analysis
+(the recall risk of each narrowing and its mitigation - the half people skip, REQUIRED because recall
+is sacred); (5) the REPRODUCTION steps (the authoring flow, `scripts/check_wiki_drift.py`, and the
+five-PR no-regression benchmark). A wiki/corpus change missing any of the five is INCOMPLETE and must
+not be promoted. Author in `reviewers.src/`, regenerate via `skill-llm-wiki`, validate, byte-verify
+the drift, promote; never hand-edit the generated wiki. Follow `scr-reviewers-wiki-authoring`.
 
 ## Architecture contract (baked into the product)
 
-1. **100% coverage, always.** The dispatch loop shards EVERY changed file into units
-   — 10 files or 1000, review them all; a failed unit is a `status: failed` row, not
-   a lost file.
+1. **100% coverage, always.** The dispatch loop shards EVERY changed file into units - 10 files or
+   1000, review them all; a failed unit is a `status: failed` row, not a lost file.
 2. **Regulated parallelism.** `runner.py` dispatches specialists through an adaptive
    `ThreadPoolExecutor` (AIMD: halve workers on rate-limit, +1 on success, bounded).
-3. **Deterministic, big-data-safe collection.** `collect_findings` is pure Python;
-   per-leaf findings are persisted and merged algorithmically — never one giant agent
-   context.
-4. **Two-stage dedup.** Deterministic location + embedding/token clustering, then a
-   neutral **ranker/deduper agent** adjudicates residual duplicates (compact
-   decisions only). Never silently merge distinct bugs.
-5. **Never overflow context.** Worker inputs are compacted (heavy leaf fields stripped
-   for the prompt, rehydrated by id afterward); overflow sub-shards and retries.
-6. **Fault tolerance.** Worker AND specialist calls retry rate-limit/overflow with
-   backoff; an empty/unparseable agent reply is retryable; best-effort stages (e.g.
-   `tool_discovery`) DEGRADE instead of faulting; null optional fields are stripped
-   before schema validation. A flaky routing worker can never zero a review (the
-   deterministic coverage floor).
-7. **Sharper specialists, neutral ranker.** Specialists favor recall (report every
-   plausible defect with a `confidence`); the ranker is the precision gate
-   (`primary` selection). Selectivity, not suppression — demote, don't drop.
-8. **Agent-agnostic + prompt-externalised.** All prompts live in `workers/*.md`
-   (never hardcoded in Python); any backend (claude/codex/cursor/api) works.
-9. **Wiki structure is human-gated.** Mechanical FSM/dispatch/prompt changes are
-   free. Any change to the SET or STRUCTURE of `reviewers.wiki` needs a written,
-   statistically-justified proposal and human confirmation — see
-   `scr-reviewers-wiki-authoring`.
-10. **Versioned experiments.** Every run is recorded with headline stats; compare
-    across versions; update `OBSERVATIONS.md` status checkmarks.
+3. **Deterministic, big-data-safe collection.** `collect_findings` is pure Python; per-leaf findings
+   are persisted and merged algorithmically - never one giant agent context.
+4. **Two-stage dedup.** Deterministic location + embedding/token clustering, then a neutral
+   ranker/deduper agent adjudicates residual duplicates (compact decisions only). Never silently
+   merge distinct bugs.
+5. **Never overflow context.** Worker inputs are compacted (heavy leaf fields stripped for the
+   prompt, rehydrated by id afterward); overflow sub-shards and retries.
+6. **Fault tolerance.** Worker AND specialist calls retry rate-limit/overflow with backoff; an
+   empty/unparseable agent reply is retryable; best-effort stages (e.g. `tool_discovery`) DEGRADE
+   instead of faulting; null optional fields are stripped before schema validation. A flaky routing
+   worker can never zero a review (the deterministic coverage floor) - but the floor fires only when
+   routing returns EMPTY, NOT per-leaf, so a pre-filter that silently drops a `sec-*` leaf is NOT
+   rescued by it.
+7. **Sharper specialists, neutral ranker.** Specialists favor recall (report every plausible defect
+   with a `confidence`); the ranker is the precision gate (`primary` selection). Selectivity, not
+   suppression - demote, don't drop.
+8. **Agent-agnostic + prompt-externalised.** All prompts live in `workers/*.md` (never hardcoded in
+   Python); any backend (claude/codex/cursor/api) works.
+9. **Wiki structure is human-gated.** Mechanical FSM/dispatch/prompt changes are free. Any change to
+   the SET or STRUCTURE of `reviewers.wiki` needs a written, statistically-justified proposal and
+   human confirmation - see `scr-reviewers-wiki-authoring` and the protocol above.
+10. **Tracked, gated experiments.** Every round is recorded in `benchmarks/experiments.db`; every
+    change is proven by the 5-gate predicate before it is tagged; `STATE.md` is regenerated each
+    promote; `tmp/OBSERVATIONS.md` carries the status board.
 
 ## Hard-won lessons (do not regress these)
 
-- **Drive reviews ONLY through the product** (`cli.py` / `runner.py`). Never build a
-  parallel review orchestrator in `tmp/`. tmp holds DATA + MEASUREMENT only.
-- **Keep all prompts in `workers/*.md`.** Read them; never inline prompt text in
-  Python.
-- **Worker inputs must not be truncated.** Truncating `activated_leaves` at a char
-  cap cut the array mid-list and silently dropped the alphabetically-late
-  (lang-/sec-/footgun-/crypto-) leaves → only generic antipatterns routed. Compact
-  per-leaf (drop `covers`/`audit_surface`), never truncate the SET.
+- **Drive reviews ONLY through the product** (`cli.py` / `runner.py`). Never build a parallel review
+  orchestrator in `tmp/`. tmp holds DATA + MEASUREMENT only.
+- **Keep all prompts in `workers/*.md`.** Read them; never inline prompt text in Python.
+- **Worker inputs must not be truncated.** Truncating `activated_leaves` at a char cap cut the array
+  mid-list and silently dropped the alphabetically-late (lang-/sec-/footgun-/crypto-) leaves -> only
+  generic antipatterns routed. Compact per-leaf (drop `covers`/`audit_surface`), never truncate the SET.
 - **Routing workers decide from metadata, not files.** An agentic wiki-file-reading
-  tree-descender/tool-runner is 6-8 min and times out; reading the brief metadata is
-  ~1 min.
-- **The ranker is stochastic.** At 5 PRs the noise rivals the deltas — average ≥3
-  rounds (use `rerank.py`) and prefer the full 50 for a stable signal. Don't add
-  per-golden rules to chase the pilot: that is over-fitting.
-- **Many "false positives" are real bugs outside the golden set.** Audit before
-  suppressing; don't make the product worse to game an incomplete golden set.
+  tree-descender/tool-runner is 6 to 8 min and times out; reading the brief metadata is ~1 min. The
+  routing cost is INPUT SIZE x DOUBLE PASS (two sequential ~150K-token sonnet passes), not the model
+  tier (routing already runs on sonnet, the cheap tier).
+- **The ranker is stochastic.** At 5 PRs the noise rivals the deltas - average N rounds (ranker-only
+  N=5 via `rerank.py`, full N=3) and prefer the full 50 for a stable signal. Don't add per-golden rules
+  to chase the pilot: that is over-fitting.
+- **Many "false positives" are real bugs outside the golden set.** Audit before suppressing; don't make
+  the product worse to game an incomplete golden set. The gold set was seeded from Augment/Greptile, so
+  treat the offline number as comparative, not absolute.
+- **Embedding/dense-retrieval ROUTING was tried and REJECTED** (OBSERVATIONS #44): a raw code patch is
+  out-of-distribution as a retrieval query and missed every `sec-*` leaf plus `lang-ruby`/`fw-rails`.
+  Any future retrieval pre-filter needs a net-new always-include guardrail (the coverage floor does not
+  protect per-leaf) and a non-raw-patch query; see plan section 5A.3.
+- **Never stop the PROGRAM on a regression; revert the CHANGE and record a negative.** A failing
+  iteration is not a failed program - it is one attributable dead-end recorded so no session re-walks
+  it. The program advances by banking proven wins, not by avoiding failed hypotheses.
 
 ## Lesson: a missed golden is often a missing leaf, not just noise
 
-When a no-regression run shows a recall dip, do NOT just tune the ranker (noise).
-Investigate each MISSED golden and ask "does any leaf own this concern?" A golden the
-corpus misses is often a COVERAGE GAP (a missing reviewer for a common bug class), not
-a routing/noise problem. In this cycle the deterministic-wiki cutover dipped recall by
-one golden; investigation found NO dedicated leaf for three common classes, so three
-GENERALIZED footgun leaves were added (footgun-null-and-missing-state CWE-476,
-footgun-unintended-recursion CWE-674, footgun-destructive-query-scope CWE-1284) plus a
-sharpen to footgun-toctou-race for non-atomic counters. Result: recall recovered to
-no-worse-than-baseline AND noise more than halved (3.2 → 1.4 FP/PR), F1 0.46 → 0.62.
-Encode generalized reviewers (a whole bug class), never per-golden rules (over-fitting).
+When a no-regression run shows a recall dip, do NOT just tune the ranker (noise). Investigate each
+MISSED golden and ask "does any leaf own this concern?" A golden the corpus misses is often a COVERAGE
+GAP (a missing reviewer for a common bug class), not a routing/noise problem. In one cycle the
+deterministic-wiki cutover dipped recall by one golden; investigation found NO dedicated leaf for three
+common classes, so three GENERALIZED footgun leaves were added (footgun-null-and-missing-state CWE-476,
+footgun-unintended-recursion CWE-674, footgun-destructive-query-scope CWE-1284) plus a sharpen to
+footgun-toctou-race for non-atomic counters. Result: recall recovered to no-worse-than-baseline AND noise
+more than halved (3.2 -> 1.4 fp/PR), F1 0.46 -> 0.62. Encode generalized reviewers (a whole bug class),
+never per-golden rules (over-fitting).
 
 Recipe when a golden is missed:
 
-1. Re-judge the run consistently (one judge model, the Martian rule) so the miss is real.
+1. Re-judge the run consistently (the panel rule) so the miss is real.
 2. List the MISSED goldens per PR.
-3. For each, check the corpus for an OWNING leaf (does any reviewer's focus/covers/
-   activation claim this concern?).
-4. For a genuine gap, add a GENERALIZED leaf for the bug class via
-   `scr-reviewers-wiki-authoring` (human-gated SET change); never a per-golden rule.
-5. Re-benchmark through the no-regression gate (recall up-or-equal AND FP/PR
-   down-or-equal); keep only if it holds or improves the frontier, else revert.
+3. For each, check the corpus for an OWNING leaf (does any reviewer's focus/covers/activation claim
+   this concern?).
+4. For a genuine gap, add a GENERALIZED leaf for the bug class via `scr-reviewers-wiki-authoring`
+   (human-gated SET change, with all five protocol parts); never a per-golden rule.
+5. Re-benchmark through the no-regression gate (recall up-or-equal AND fp/PR down-or-equal) plus the
+   5-gate predicate; keep only if it holds or improves the frontier, else revert the CHANGE.
 
 ## Before any commit to skill-code-review
 
@@ -265,5 +480,8 @@ uv run mypy code_review/
 uv run pytest
 ```
 
-All three must pass. A `reviewers.wiki` change additionally requires the
-human-confirmed proposal and the `scr-reviewers-wiki-authoring` build/validate flow.
+All three must pass. A CODE change additionally requires the DOGFOOD pass (run the product reviewer on
+the diff and address its findings). A `reviewers.wiki` change additionally requires the human-confirmed
+proposal, all five parts of the change protocol, the `scr-reviewers-wiki-authoring` build/validate flow,
+and the five-PR no-regression benchmark. And remember the NO-PUSH gate: commit and tag LOCALLY on
+`feat/martian-benchmark-program`; never push, open a PR, or merge until the USER authorizes it.

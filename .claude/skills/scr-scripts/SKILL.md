@@ -14,7 +14,7 @@ audience: ai-agents
 **Canonical skill:** [`../../../.agents/skills/scr-scripts/SKILL.md`](../../../.agents/skills/scr-scripts/SKILL.md)
 
 This `.claude/skills/` copy exists so the Claude client discovers the skill. Read
-and follow the canonical file above — it is the single source of truth for what
+and follow the canonical file above, it is the single source of truth for what
 every script in `skill-code-review/scripts/` does, when/why to run it, its exact
 invocation, and the cookbooks (regenerate the wiki, recover reviewers.src, backfill
 v2 frontmatter, run/score a benchmark iteration, fast ranker tuning, add a leaf).

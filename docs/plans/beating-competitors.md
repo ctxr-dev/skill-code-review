@@ -636,6 +636,99 @@ ranker-confidence problem, not a meta/coverage-class problem.
   EVIDENCE the FP taxonomy in the scored primary set BEFORE authoring a class-specific demotion rule;
   R1 assumed a class the corpus does not exhibit.
 
+### 5A.2e V1: adversarial finding-verification (critic/refuter pass) [DEAD-END, PROVEN at pr5]
+
+**NB: V1 is a QUALITY/precision lever, not a speed lever; it is recorded here alongside the other
+proven dead-ends for one ledger. This subsection also carries the META-FINDING about the precision
+axis at pr5 (see the GROUND-TRUTH boxed note below); it is the reason the program now pivots off
+the precision axis entirely.**
+
+**OUTCOME: PROVEN DEAD-END at pr5, NO TARGET POPULATION, same structural class as R1 (5A.2d). Not
+attempted as a code change; killed at the ground-truth audit stage, before any product run or any
+LLM-judge call.** The V1 hypothesis was that a finding-level adversarial verification / critic
+(refuter) pass can shed the scored `skill-prod-primary` false positives at pr5 and lift measured F1
+by raising precision, without demoting any golden-matching finding, on the assumption that the fp/PR
+driving the precision gap (recall 0.727 already strong, precision 0.50, fp/PR 1.60) is composed of
+REFUTABLE claims (mechanism-absent, misread, or hallucinated). A READ-ONLY ground-truth audit
+falsified that assumption at the source.
+
+**Method (read-only, no product run, no judge call, no benchmark mutation):** every scored
+`skill-prod-primary` false positive across all 5 pilots (cal.com-14943, discourse-1, grafana-80329,
+keycloak-32918, sentry-67876) over the N=3 locked baseline rounds (the `base-r1`/`base-r2`/`base-r3`
+judge verdicts on disk under `tmp/judge/<run>/<shard>/<pr>.json`) was deduplicated to its distinct
+mechanism and traced to the actual shipped code at the PR HEAD worktree (`tmp/repos/<shard>/<pr>`).
+Each FP was classified into one of four buckets: real-but-unlabeled (mechanism genuinely present in
+the PR diff, just not in the gold set), genuinely-wrong (mechanism absent or misread), or ambiguous.
+
+**Result (the audit ground truth):**
+
+| pilot | fp_total | real-but-unlabeled | genuinely-wrong | ambiguous |
+|---|---|---|---|---|
+| cal.com-14943 | 3 | 3 | 0 | 0 |
+| discourse-1 | 2 | 2 | 0 | 0 |
+| grafana-80329 | 2 | 2 | 0 | 0 |
+| keycloak-32918 | 3 | 3 | 0 | 0 |
+| sentry-67876 | 4 | 4 | 0 | 0 |
+| **TOTAL** | **14** | **14** | **0** | **0** |
+
+**real-but-unlabeled rate = 14/14 = 100%. genuinely-wrong = 0. ambiguous = 0.** Each FP was verified
+in code, e.g.: cal.com unguarded `await prisma.workflowReminder.update` inside the `catch` with no
+inner try/catch (`scheduleSMSReminders.ts:189-197`) aborts the whole for-of batch, plus the
+else-branch `retryCount` bump on a `scheduleSMS()`-returns-`undefined` SMS-lock no-op (`:178-187`)
+feeding the `deleteMany` `retryCount > 1` OR-purge (`:38-42`) so a temporary lock silently deletes
+legitimate reminders; discourse downsize loop ignores `OptimizedImage.downsize`'s `false` return and
+the absolute-size-only loop condition (`uploads_controller.rb:65-69`), plus `tempfile.size` nil-deref
+after `rescue nil` (`:55` + `:72`, with `:85` `tempfile.try(:close!)` confirming nil is expected);
+grafana cleanup ticker silently cut 10m -> 1m (`cleanup.go:77`, a 10x cadence change unrelated to the
+PR's SQLite-param-limit purpose) and `t.Cleanup` registered after the inserts/asserts that can
+`FailNow` first (`cleanup_test.go:120`); keycloak `registerIDPInvalidation(storedIdp)` null-deref when
+the alias is unknown (`:103`/`:366`, no null guard), the `getForLogin` else-branch merging
+non-revalidated prior searchKeys (`:239`), and the cache-hit path collecting into a `HashSet` so it
+loses the delegate's iteration order (`:244`/`:254`); sentry broad `except Exception` silently
+swallowing the OAuth token-exchange error with no log/metric (`integration.py:425-429`), uncaught
+`get_user_info` -> `raise_for_status` on the install path (`:434`), the identity guard added on only
+one of two paths to `next_step()` (`:495`/`:481`), and a hardcoded HMAC test signature that does NOT
+match the body (recomputed `ef0b3a...` vs the literal `d184e6...`, so the test 401s where it asserts
+204; `test_integration.py:423`/`:426`).
+
+**Why it is a dead-end (the structural argument):** a CONSERVATIVE refuter operates on
+presence-of-mechanism: if the defect mechanism is genuinely present in the code, it KEEPS the
+finding (it can only refute mechanism-absent / misread / hallucinated claims). With 0 genuinely-wrong
+FPs in the scored set, such a refuter sheds ~0 of the 14 scored FPs. The only way V1 could cut fp/PR
+is by demoting REAL defects, which (a) violates GATE-1 (recall non-regression) the instant any
+demotion catches a golden-adjacent finding, and (b) violates the conservative-refuter contract
+itself. So V1 cannot lift measured F1 at pr5 without demoting real findings: there is no target
+population for the lever in the scored primary set. This is the SAME structural class as R1 (5A.2d):
+R1's named FP class did not exist in the scored set; V1's refutable-FP class does not exist in the
+scored set either. `retry_at_pr_set = NULL`: a larger PR set adds MORE real-but-unlabeled defects
+(more real bugs outside the seeded gold set), not a refutable-FP population, so no ramp rescues V1.
+Recorded as a `dead_ends` row (lever `V1-adversarial-finding-verification`, `pr_set_id = pr5`,
+`retry_at_pr_set = NULL`); nothing was run, nothing pushed, the benchmark was not touched.
+
+> **GROUND-TRUTH META-FINDING (4.0 corollary; both precision levers are structural dead-ends).** At
+> pr5 the precision metric is PARTLY gold-label COVERAGE, not skill error. The offline gold set is
+> seeded from Augment/Greptile data (section 3), so a REAL bug the skill finds that is outside the
+> gold set scores as a false positive. The audit proves this is not a tail effect at pr5: 14/14 of
+> the scored `skill-prod-primary` FPs are real-but-unlabeled defects, 0 are genuinely wrong. Both
+> precision levers tried are therefore STRUCTURAL DEAD-ENDS at pr5, for the SAME root reason (the
+> targeted FP class is absent from the scored set): R1 (demote a meta/coverage FP class that has zero
+> members, 5A.2d) and V1 (refute mechanism-absent FPs that have zero members, this subsection). The
+> precision axis is BLOCKED at pr5: no conservative finding-level lever can raise precision without
+> demoting real findings. The PRODUCTIVE axes now are: (1) COST (it needs cost-capture infra first,
+> plan 5.6: billed `BilledUsage` on `RunnerStats`, then the specialist tier-demote lever), and/or
+> (2) improving GROUND-TRUTH / ramping the PR set (more PRs, or a less-contaminated gold set) for an
+> HONEST F1 read where precision is measured against true labels, not seeded coverage. Do NOT author
+> another finding-level precision lever at pr5; it has no target. See section 3 (gold-set bias /
+> contamination) and 5A.2d (R1) for the companion record.
+
+- **Methodology data point:** the ground-truth audit is the cheapest gate of all: it killed V1 for
+  ZERO product runs and ZERO judge calls, purely by reading the on-disk verdicts and the PR code.
+  The lesson generalizes R1's: before authoring ANY precision lever (a demotion rule OR a refuter),
+  AUDIT the scored FPs against ground truth first. If they are real-but-unlabeled rather than
+  genuinely-wrong, the precision gap is a label-coverage artifact and no finding-level lever can
+  close it; the honest move is to fix the labels (better ground truth) or change axis (cost), not to
+  teach the skill to suppress real bugs.
+
 ### 5A.3 S3 (DEFERRED contingency): sqlite-vec / embedding ROUTING pre-filter
 
 DEFERRED, and now LOWER PRIORITY. The premise that S1 + S2 would land and bank a speed win did NOT

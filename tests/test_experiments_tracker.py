@@ -189,6 +189,81 @@ def test_latest_proven_is_promoted_baseline(
     db_conn.close()
 
 
+def test_connect_sets_busy_timeout(tracker: ModuleType, tmp_path: Path) -> None:
+    """connect() applies a busy_timeout so concurrent CLI/ingest writers retry on a
+    lock instead of failing immediately with SQLITE_BUSY."""
+    db = tmp_path / "bt.db"
+    conn = tracker.connect(db)
+    try:
+        (busy_ms,) = conn.execute("PRAGMA busy_timeout").fetchone()
+        assert busy_ms == tracker.BUSY_TIMEOUT_MS
+        assert busy_ms > 0
+    finally:
+        conn.close()
+
+
+def test_leaderboard_skill_annotation_uses_dash_terminated_prefix(
+    tracker: ModuleType, db_conn: sqlite3.Connection
+) -> None:
+    """The leaderboard '(skill)' annotation keys off SKILL_TOOL_PREFIX ('skill-'),
+    the SAME prefix the verdict-ingest filter and the score.py star use, so a tool
+    like 'skillset' is NOT mis-annotated as a skill variant (the bare-'skill'
+    prefix-drift bug)."""
+    assert tracker.SKILL_TOOL_PREFIX == "skill-"
+    tracker.upsert_experiment(db_conn, _baseline_row())
+    for tool in ("skill-prod", "skillset", "competitor-x"):
+        tracker.upsert_metric(db_conn, {"run_id": "run-001", "tool": tool, "f1": 0.5})
+    db_conn.commit()
+    md = tracker.render_leaderboard(db_conn)
+    assert "skill-prod (skill)" in md
+    assert "skillset (skill)" not in md  # no-dash tool is NOT annotated
+    assert "competitor-x (skill)" not in md
+    db_conn.close()
+
+
+def test_latest_proven_recognizes_ramp_verdict(
+    tracker: ModuleType, db_conn: sqlite3.Connection
+) -> None:
+    """RAMP is a first-class proven-baseline verdict (PROVEN_VERDICTS), so a ramped
+    experiment is a live baseline the same way a promoted one is. This guards the
+    SQL in latest_proven against drifting from the verdict vocabulary."""
+    assert "ramp" in tracker.PROVEN_VERDICTS
+    ramped = _baseline_row()
+    ramped.update({"run_id": "run-ramp", "ts": "2026-06-11T00:00:00+00:00",
+                   "verdict": tracker.VERDICT_RAMP})
+    tracker.upsert_experiment(db_conn, ramped)
+    proven = tracker.latest_proven(db_conn)
+    assert proven is not None
+    assert proven["run_id"] == "run-ramp"
+    db_conn.close()
+
+
+def test_cmd_record_refuses_promoting_verdict(
+    tracker: ModuleType, tmp_path: Path
+) -> None:
+    """The gate subcommand is the SOLE authority for the proven-baseline verdicts.
+    `record --verdict promote|ramp` is rejected so an operator cannot synthesise a
+    baseline that never cleared the gate (latest_proven keys off those verdicts)."""
+    db = tmp_path / "guard.db"
+    for verdict in tracker.PROVEN_VERDICTS:
+        with pytest.raises(SystemExit):
+            tracker.main(["--db", str(db), "record", "run-x",
+                          "--verdict", verdict, "--apply"])
+    # A non-promoting placeholder verdict records fine.
+    rc = tracker.main(["--db", str(db), "record", "run-y",
+                       "--verdict", tracker.VERDICT_INCONCLUSIVE, "--apply"])
+    assert rc == 0
+    conn = tracker.connect(db)
+    try:
+        row = tracker.get_experiment(conn, "run-y")
+        assert row is not None
+        assert row["verdict"] == tracker.VERDICT_INCONCLUSIVE
+        # The rejected run was never persisted.
+        assert tracker.get_experiment(conn, "run-x") is None
+    finally:
+        conn.close()
+
+
 def test_render_state_has_do_not_edit_header_and_baseline(
     tracker: ModuleType, db_conn: sqlite3.Connection
 ) -> None:

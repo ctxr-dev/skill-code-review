@@ -12,18 +12,14 @@ from __future__ import annotations
 import importlib
 import json
 import sqlite3
-import sys
 from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 
 import pytest
 
-SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
-BENCH = Path(__file__).resolve().parent.parent / "benchmarks"
-for _p in (SCRIPTS, BENCH):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
+# scripts/ + benchmarks/ are on sys.path via conftest (the single owner of that
+# setup); no per-module sys.path.insert here.
 
 
 @pytest.fixture
@@ -115,9 +111,10 @@ def test_collect_walks_run_tree_and_dry_run_writes_nothing(
     it is read-only (never creates the DB)."""
     paths_mod, experiments, ingest = harness
     _write_timings(paths_mod, "iter1", "demo-1", _sample_doc())
-    rows = ingest.collect(["iter1"], include_self_reported=False)
+    rows, skipped = ingest.collect(["iter1"], include_self_reported=False)
     # 1 process + 2 fsm_state + 2 agent.
     assert len(rows) == 5
+    assert skipped == 0
     assert not experiments.DB_PATH.exists()  # dry-run / collect never creates the DB
 
 
@@ -128,7 +125,7 @@ def test_apply_writes_rows_into_timings_table(
     connect()/init_db()."""
     paths_mod, experiments, ingest = harness
     _write_timings(paths_mod, "iter1", "demo-1", _sample_doc())
-    rows = ingest.collect(["iter1"], include_self_reported=False)
+    rows, _skipped = ingest.collect(["iter1"], include_self_reported=False)
     n = ingest.write_rows(rows)
     assert n == 5
     assert experiments.DB_PATH.exists()
@@ -170,4 +167,4 @@ def test_missing_run_yields_no_rows(
     harness: tuple[ModuleType, ModuleType, ModuleType],
 ) -> None:
     _paths, _experiments, ingest = harness
-    assert ingest.collect(["nonexistent"], include_self_reported=False) == []
+    assert ingest.collect(["nonexistent"], include_self_reported=False) == ([], 0)

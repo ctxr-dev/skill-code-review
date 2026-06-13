@@ -12,7 +12,6 @@ from __future__ import annotations
 import importlib
 import json
 import sqlite3
-import sys
 from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
@@ -20,9 +19,8 @@ from typing import Any
 
 import pytest
 
-SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
-if str(SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS))
+# scripts/ + benchmarks/ are on sys.path via conftest (the single owner of that
+# setup); no per-module sys.path.insert here.
 
 
 @pytest.fixture

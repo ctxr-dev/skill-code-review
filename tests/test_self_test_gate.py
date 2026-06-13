@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import importlib
 import json
-import sys
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 
@@ -40,26 +40,31 @@ np = pytest.importorskip("numpy")
 pytest.importorskip("scipy")
 pytest.importorskip("statsmodels")
 
-SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
-if str(SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS))
-
-import stats  # noqa: E402  (path inserted just above)
+# scripts/ is on sys.path via conftest (the single owner of that setup).
+import stats  # noqa: E402  (scripts/ on sys.path via conftest)
 
 
 @pytest.fixture
-def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[ModuleType, ModuleType]:
+def harness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[tuple[ModuleType, ModuleType]]:
     """Import paths + score with TMP redirected to an isolated tree.
 
-    Returns (paths, score). Reloading score after monkeypatching paths.TMP makes
+    Yields (paths, score). Reloading score after monkeypatching paths.TMP makes
     its module-level path derivations point at the throwaway tree, so the gate
-    never touches real tmp/ data.
+    never touches real tmp/ data. On teardown score is reloaded AFTER
+    monkeypatch.undo() so its rebound path derivations no longer point at this
+    test's (now-deleted) tmp_path and cannot leak into later tests.
     """
     paths = importlib.import_module("paths")
     monkeypatch.setattr(paths, "TMP", tmp_path / "tmp")
     score = importlib.import_module("score")
     importlib.reload(score)
-    return paths, score
+    try:
+        yield paths, score
+    finally:
+        monkeypatch.undo()
+        importlib.reload(score)  # rebind against the restored (unpatched) paths
 
 
 # --------------------------------------------------------------------------- #

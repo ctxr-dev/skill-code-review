@@ -28,10 +28,17 @@ import json
 import sys
 from functools import cache
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import paths
+
+# experiments.py is pure-stdlib (no numpy/scipy), so importing it at module level
+# adds no third-party dep to the default point-estimate path. It owns
+# SKILL_TOOL_PREFIX so the leaderboard star here never drifts from the verdict-ingest
+# filter (ingest_verdicts.py) or the tracker's own leaderboard annotation.
+sys.path.insert(0, str(paths.BENCH))
+import experiments  # type: ignore[import-not-found]
 
 DEFAULT_TARGET_TOOL = "skill-prod"
 
@@ -205,10 +212,16 @@ def _baseline_block(
     cand_rounds = [cand_round]
     base_rounds = [base_round]
 
-    f1_delta = stats.paired_delta_ci(base_rounds, cand_rounds, "f1")
-    recall_delta = stats.paired_delta_ci(base_rounds, cand_rounds, "recall")
     perm = stats.paired_permutation_f1(base_rounds, cand_rounds)
     gate = stats.gate_predicate(base_rounds, cand_rounds)
+    # The gate ALREADY computes the paired recall/F1 delta CIs internally (same
+    # data, same B, same SEED), so we read them off its GateDetail instead of
+    # re-running the two B=10000 bootstraps a second time. The triples are
+    # (point, lo, hi). gate["detail"] is a GateDetail dataclass (typed `object` in
+    # the gate's dict return), so cast to read its CI fields.
+    detail = cast(stats.GateDetail, gate["detail"])
+    f1_point, f1_lo, f1_hi = detail.f1_delta_ci
+    rec_point, rec_lo, rec_hi = detail.recall_delta_ci
     # GateDetail is a dataclass; drop it from the JSON payload (the booleans and
     # the verdict are the load-bearing summary; the detail is verbose internals).
     gate_summary = {k: v for k, v in gate.items() if k != "detail"}
@@ -238,10 +251,8 @@ def _baseline_block(
     return {
         "tool": tool,
         "baseline_run": baseline_run,
-        "f1_delta": {"point": f1_delta.point, "ci_lo": f1_delta.lo, "ci_hi": f1_delta.hi},
-        "recall_delta": {
-            "point": recall_delta.point, "ci_lo": recall_delta.lo, "ci_hi": recall_delta.hi
-        },
+        "f1_delta": {"point": f1_point, "ci_lo": f1_lo, "ci_hi": f1_hi},
+        "recall_delta": {"point": rec_point, "ci_lo": rec_lo, "ci_hi": rec_hi},
         "mcnemar_recall": mcnemar_block,
         "permutation_f1": {"statistic": perm.statistic, "pvalue": perm.pvalue},
         "gate": gate_summary,
@@ -249,7 +260,7 @@ def _baseline_block(
 
 
 def _star(t: str) -> str:
-    return " ⭐" if t.startswith("skill-") else ""
+    return " ⭐" if t.startswith(experiments.SKILL_TOOL_PREFIX) else ""
 
 
 def _leaderboard_md(run_id: str, pr_ids: list[str], rows: list[dict]) -> str:

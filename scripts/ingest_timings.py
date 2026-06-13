@@ -52,11 +52,6 @@ import experiments  # type: ignore[import-not-found]
 
 logger = logging.getLogger("ingest_timings")
 
-# Count of timings.json files skipped because they were unreadable or not valid
-# JSON / not an object. collect() increments this and main() surfaces it in the
-# summary so a partially-failed ingest is never reported as fully successful.
-SKIPPED_FILES = 0
-
 
 def _find_timings_files(run_id: str) -> list[tuple[str, Path]]:
     """Return (pr_id, timings_json_path) for every PR under tmp/runs/<run-id>/.
@@ -159,45 +154,51 @@ def _self_reported_rows(
     return rows
 
 
-def collect(run_ids: list[str], *, include_self_reported: bool) -> list[dict[str, Any]]:
+def collect(
+    run_ids: list[str], *, include_self_reported: bool
+) -> tuple[list[dict[str, Any]], int]:
     """Walk every run's timings.json artifacts and build the timing rows.
 
     A file that is unreadable (OSError) or not valid JSON / not a JSON object is
-    counted in the module-level ``SKIPPED_FILES`` and logged at WARNING, never
-    silently dropped: main() surfaces the skip count so an ingest that lost N of M
-    files is not reported as fully successful. Returns the flat list of rows.
+    counted in the returned ``skipped`` total and logged at WARNING, never silently
+    dropped: main() surfaces the skip count so an ingest that lost N of M files is
+    not reported as fully successful. Returns ``(rows, skipped)`` so the count is a
+    plain return value (reentrant; no module-global side channel that concurrent or
+    repeated collect() calls would corrupt).
     """
-    global SKIPPED_FILES
-    SKIPPED_FILES = 0
     rows: list[dict[str, Any]] = []
+    skipped = 0
     for run_id in run_ids:
         for pr_id, tj in _find_timings_files(run_id):
             try:
                 doc = json.loads(tj.read_text(encoding="utf-8"))
             except (OSError, ValueError) as exc:
-                SKIPPED_FILES += 1
+                skipped += 1
                 logger.warning("skipping unreadable/invalid timings.json %s: %s", tj, exc)
                 continue
             if not isinstance(doc, dict):
-                SKIPPED_FILES += 1
+                skipped += 1
                 logger.warning("skipping timings.json %s: top-level JSON is not an object", tj)
                 continue
             rows.extend(_measured_rows(run_id, pr_id, doc))
             if include_self_reported:
                 rows.extend(_self_reported_rows(run_id, pr_id, doc))
-    return rows
+    return rows, skipped
 
 
-def write_rows(rows: list[dict[str, Any]]) -> int:
+def write_rows(rows: list[dict[str, Any]], db_path: Path | None = None) -> int:
     """Persist measured timing rows into the tracker `timings` table.
 
     Opens one connection, upserts every row, and owns a SINGLE commit after the
     loop (the upsert helper no longer commits per call, so a 250-row ingest is one
-    transaction / one fsync instead of 250). Reads the DB path off
-    ``experiments.DB_PATH`` at call time (not def time) so callers / tests can
-    redirect the DB. Returns the number of rows written.
+    transaction / one fsync instead of 250). ``db_path`` defaults to
+    ``experiments.DB_PATH`` resolved at CALL time (not def time, so a None default
+    keeps tests/callers able to redirect the DB via monkeypatch + reload), matching
+    ``ingest_verdicts.write_rows``'s explicit db_path parameter. Returns the number
+    of rows written.
     """
-    db_path = experiments.DB_PATH
+    if db_path is None:
+        db_path = experiments.DB_PATH
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = experiments.connect(db_path)
     try:
@@ -221,7 +222,7 @@ def main() -> int:
               "[--apply] [--include-self-reported]")
         return 2
 
-    rows = collect(run_ids, include_self_reported=include_self_reported)
+    rows, skipped = collect(run_ids, include_self_reported=include_self_reported)
     by_scope: dict[str, int] = {}
     for r in rows:
         sc = str(r.get("scope"))
@@ -230,7 +231,7 @@ def main() -> int:
         "run_ids": run_ids,
         "n_rows": len(rows),
         "rows_by_scope": by_scope,
-        "skipped_files": SKIPPED_FILES,
+        "skipped_files": skipped,
         "db": str(experiments.DB_PATH),
         "applied": apply,
     }

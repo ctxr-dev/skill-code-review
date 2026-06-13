@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import importlib
 import json
-import sys
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 
@@ -31,24 +31,30 @@ pytest.importorskip("numpy")
 pytest.importorskip("scipy")
 pytest.importorskip("statsmodels")
 
-SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
-if str(SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS))
+# scripts/ + benchmarks/ are on sys.path via conftest (the single owner of that
+# setup); no per-module sys.path.insert here.
 
 
 @pytest.fixture
-def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ModuleType]:
     """Import paths + score with TMP redirected to an isolated tree.
 
     Reloading score after monkeypatching ``paths.TMP`` makes its module-level path
     derivations point at the throwaway tree, so the test never touches real tmp/
-    data. Returns the freshly reloaded ``score`` module.
+    data. Yields the freshly reloaded ``score`` module, then reloads it again on
+    teardown AFTER monkeypatch.undo() so the module's rebound path derivations no
+    longer point at this test's (now-deleted) tmp_path and cannot leak into later
+    tests (symmetric with the ingest fixtures, which reload in finally).
     """
     paths = importlib.import_module("paths")
     monkeypatch.setattr(paths, "TMP", tmp_path / "tmp")
     score = importlib.import_module("score")
     importlib.reload(score)
-    return score
+    try:
+        yield score
+    finally:
+        monkeypatch.undo()
+        importlib.reload(score)  # rebind against the restored (unpatched) paths
 
 
 def _write_verdict(

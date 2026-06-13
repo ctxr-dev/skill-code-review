@@ -64,7 +64,7 @@ def _is_skill_tool(name: str, verdict: dict) -> bool:
     """A skill tool records per-candidate `matched`; competitors record
     `matched_golden`. Accept either the `skill-` prefix or a `matched` key so a
     rename of the skill variants does not silently drop their labels."""
-    return name.startswith("skill-") or "matched" in verdict
+    return name.startswith(experiments.SKILL_TOOL_PREFIX) or "matched" in verdict
 
 
 def _label_from_meta(meta_entry: object) -> tuple[float | None, str | None]:
@@ -147,7 +147,10 @@ def write_rows(rows: list[tuple], db_path: Path = DB_PATH) -> int:
     per-row fsync). Returns the number of rows written.
     """
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    # Route through experiments.connect so the shared tracker DB gets the same
+    # busy_timeout (concurrent CLI/ingest writers retry on a lock instead of
+    # failing immediately with SQLITE_BUSY).
+    conn = experiments.connect(db_path)
     try:
         init_findings_table(conn)
         conn.executemany(

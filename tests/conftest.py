@@ -2,11 +2,27 @@
 
 from __future__ import annotations
 
+import sys
 import uuid
+from pathlib import Path
 from typing import Any
 
 import pytest
 from ctxr.fsm.core import InlineContext
+
+# The dev-tooling under scripts/ and benchmarks/ is NOT an importable package, so
+# the tests that exercise it (test_stats, test_self_test_gate, test_score_mcnemar,
+# test_ingest_timings, test_ingest_verdicts) import bare module names (paths, stats,
+# experiments, score, ingest_*). conftest is imported before any test module in this
+# directory, so prepending those two dirs ONCE here is the single owner of that
+# path setup: each test file no longer scatters its own sys.path.insert (which had
+# no teardown and risked shadowing later tests with the common-name modules). The
+# guard keeps it idempotent across repeated collection.
+_REPO = Path(__file__).resolve().parent.parent
+for _dev_dir in (_REPO / "scripts", _REPO / "benchmarks"):
+    _entry = str(_dev_dir)
+    if _entry not in sys.path:
+        sys.path.insert(0, _entry)
 
 
 @pytest.fixture

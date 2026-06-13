@@ -235,6 +235,34 @@ def _per_pr_metric_vectors(
     return b_vec, c_vec, shared
 
 
+def _paired_bootstrap_ci(
+    delta: NDArray[np.float64],
+    *,
+    b: int,
+    alpha: float,
+    rng: Generator | None,
+) -> CI:
+    """Percentile bootstrap CI of the MEAN of a per-PR paired-delta vector.
+
+    The single owner of the paired-delta bootstrap tail shared by
+    ``paired_delta_ci`` (metric deltas) and ``_fp_per_pr_delta_ci`` (fp/PR delta):
+    each replicate resamples PR indices with replacement and averages ``delta``,
+    so the interval reflects PR-to-PR variability of the paired difference. ``rng``
+    defaults to a fresh ``default_rng(SEED)`` (a None caller is tolerated and gets
+    the seeded generator, not an AttributeError), keeping every caller bit-stable.
+    """
+    n = int(delta.shape[0])
+    point = float(delta.mean()) if n else 0.0
+    if n == 0:
+        return CI(point=point, lo=point, hi=point)
+    gen = rng if rng is not None else np.random.default_rng(SEED)
+    idx = gen.integers(0, n, size=(b, n))
+    reps = delta[idx].mean(axis=1)
+    lo = float(np.quantile(reps, alpha / 2))
+    hi = float(np.quantile(reps, 1 - alpha / 2))
+    return CI(point=point, lo=lo, hi=hi)
+
+
 def paired_delta_ci(
     baseline: Sequence[PRCounts],
     candidate: Sequence[PRCounts],
@@ -250,18 +278,8 @@ def paired_delta_ci(
     resample unit is the PR: each replicate draws the same PR indices for both
     arms (paired), so per-PR difficulty cancels and the CI is tight.
     """
-    b_vec, c_vec, shared = _per_pr_metric_vectors(baseline, candidate, metric)
-    n = len(shared)
-    delta = c_vec - b_vec
-    point = float(delta.mean()) if n else 0.0
-    if n == 0:
-        return CI(point=point, lo=point, hi=point)
-    gen = rng if rng is not None else np.random.default_rng(SEED)
-    idx = gen.integers(0, n, size=(b, n))
-    reps = delta[idx].mean(axis=1)
-    lo = float(np.quantile(reps, alpha / 2))
-    hi = float(np.quantile(reps, 1 - alpha / 2))
-    return CI(point=point, lo=lo, hi=hi)
+    b_vec, c_vec, _shared = _per_pr_metric_vectors(baseline, candidate, metric)
+    return _paired_bootstrap_ci(c_vec - b_vec, b=b, alpha=alpha, rng=rng)
 
 
 # --------------------------------------------------------------------------- #
@@ -450,31 +468,24 @@ def _fp_per_pr_delta_ci(
     candidate: Sequence[PRCounts],
     *,
     b: int,
-    rng: Generator,
+    rng: Generator | None = None,
     alpha: float = 0.05,
 ) -> CI:
     """Paired bootstrap CI for (candidate - baseline) false-positives-per-PR.
 
     GATE-2 reads the UPPER (1 - alpha/2) bound of this interval. Resample unit =
-    PR; paired by PR id over the shared set, same machinery as the metric deltas.
-    ``alpha`` defaults to 0.05 (a 95% interval), matching ``bootstrap_ci`` /
-    ``paired_delta_ci``; the bounds are derived from alpha rather than hardcoded.
+    PR; paired by PR id over the shared set, same machinery as the metric deltas
+    (shares ``_paired_bootstrap_ci``, so the tail never drifts and a None ``rng``
+    falls back to the seeded generator instead of raising). ``alpha`` defaults to
+    0.05 (a 95% interval), matching ``bootstrap_ci`` / ``paired_delta_ci``.
     """
     b_ids = set(_ordered_prs_union(baseline))
     c_ids = set(_ordered_prs_union(candidate))
     shared = sorted(b_ids & c_ids)
-    n = len(shared)
     b_mat = _pool_rounds(baseline, shared)
     c_mat = _pool_rounds(candidate, shared)
     delta = c_mat[:, 1] - b_mat[:, 1]  # per-PR fp difference
-    point = float(delta.mean()) if n else 0.0
-    if n == 0:
-        return CI(point=point, lo=point, hi=point)
-    idx = rng.integers(0, n, size=(b, n))
-    reps = delta[idx].mean(axis=1)
-    lo = float(np.quantile(reps, alpha / 2))
-    hi = float(np.quantile(reps, 1 - alpha / 2))
-    return CI(point=point, lo=lo, hi=hi)
+    return _paired_bootstrap_ci(delta, b=b, alpha=alpha, rng=rng)
 
 
 def gate_predicate(

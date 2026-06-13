@@ -42,11 +42,11 @@ import json
 import sqlite3
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 # ---------------------------------------------------------------------------
 # Paths. This module lives in skill-code-review/benchmarks/ (tracked). The DB
@@ -86,6 +86,30 @@ DO_NOT_EDIT = (
     "<!-- Regenerate with: uv run python benchmarks/experiments.py "
     "{state|history|leaderboard} --apply -->\n"
 )
+
+# The product reviewer's tools are named "skill-<variant>" (e.g. "skill-prod").
+# This is the SINGLE source of truth for that prefix so the leaderboard annotation
+# (experiments.py), the leaderboard star (score.py), and the verdict-ingest filter
+# (ingest_verdicts.py) never drift: a bare "skill" prefix would annotate a tool like
+# "skillset" that the dash-terminated filter correctly drops.
+SKILL_TOOL_PREFIX = "skill-"
+
+# Canonical verdict vocabulary. The tracker persists verdicts LOWER-cased; this is
+# the single source of truth for those strings so they are not scattered as raw
+# literals across the gate code and the SQL. scripts/stats.py keeps its own
+# UPPER-cased internal Verdict enum (its documented vocabulary) and normalizes to
+# these at the promote_gate boundary via .lower().
+VERDICT_PROMOTE = "promote"
+VERDICT_REVERT = "revert"
+VERDICT_INCONCLUSIVE = "inconclusive"
+# RAMP is a first-class "proven baseline" verdict alongside PROMOTE: a change that
+# has cleared the gate and is being scaled to a larger PR rung. It is not produced
+# by summary_stat_gate / gate_predicate (those normalize to the three above); it is
+# set by the operator when ramping, and latest_proven treats it as a live baseline.
+VERDICT_RAMP = "ramp"
+# Verdicts that mark an experiment as a live, proven baseline (latest_proven keys
+# off this set). PROMOTE and RAMP both qualify; INCONCLUSIVE/REVERT do not.
+PROVEN_VERDICTS: tuple[str, ...] = (VERDICT_PROMOTE, VERDICT_RAMP)
 
 # Gate-5 cost multiplier and the CI tolerances live in section 6.3 of the plan.
 GATE2_FP_DELTA_CEILING = 0.30
@@ -228,10 +252,21 @@ def hypothesis_hash(hypothesis: str, lever: str) -> str:
     return hashlib.sha256(norm.encode("utf-8")).hexdigest()
 
 
+# How long a writer blocks waiting for a competing lock before SQLITE_BUSY. The
+# tracker DB is shared (the CLI, ingest_verdicts, and ingest_timings can all open
+# it), so without a busy timeout a concurrent open returns SQLITE_BUSY immediately
+# instead of retrying. 5s is comfortably longer than any single-transaction write
+# here (a batch upsert + one commit) yet short enough to surface a genuine deadlock.
+BUSY_TIMEOUT_MS = 5000
+
+
 def connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
-    """Open the DB with row access by column name. Caller closes."""
+    """Open the DB with row access by column name and a busy timeout so concurrent
+    CLI/ingest writers retry on a lock instead of failing immediately with
+    SQLITE_BUSY. Caller closes."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     return conn
 
 
@@ -422,10 +457,14 @@ def metrics_for(conn: sqlite3.Connection, run_id: str) -> list[dict[str, Any]]:
 
 
 def latest_proven(conn: sqlite3.Connection) -> dict[str, Any] | None:
-    """The most recent PROMOTED (or RAMP) experiment, our live baseline."""
+    """The most recent PROMOTED (or RAMP) experiment, our live baseline. The proven
+    verdicts come from PROVEN_VERDICTS (single source of truth) rather than inline
+    SQL literals, so the SQL never drifts from the verdict vocabulary."""
+    placeholders = ", ".join("?" for _ in PROVEN_VERDICTS)
     cur = conn.execute(
-        "SELECT * FROM experiments WHERE verdict IN ('promote', 'ramp') "
-        "ORDER BY ts DESC, run_id DESC LIMIT 1"
+        f"SELECT * FROM experiments WHERE verdict IN ({placeholders}) "
+        "ORDER BY ts DESC, run_id DESC LIMIT 1",
+        PROVEN_VERDICTS,
     )
     r = cur.fetchone()
     return dict(r) if r else None
@@ -491,11 +530,18 @@ def summary_stat_gate(
     # falsy 0 that bypasses the underpower guard.
     n_prs = _pr_set_rung(candidate.get("pr_set_id"))
 
-    # GATE-1 recall non-regression. We do not have the paired delta CI here, so we
-    # apply the point-estimate floor and the absolute drop ceiling (-0.03).
-    gate1 = (rec_c >= rec_b) and ((rec_c - rec_b) >= GATE1_RECALL_DELTA_FLOOR)
-    # GATE-2 noise non-regression.
-    gate2 = (fp_c <= fp_b) and ((fp_c - fp_b) <= GATE2_FP_DELTA_CEILING)
+    # GATE-1 recall non-regression. We do not have the paired delta CI here, so the
+    # point estimate (rec_c - rec_b) stands in for the delta-CI lower bound and the
+    # spec tolerance (-0.03) is the binding floor: a recall drop within the tolerance
+    # band still passes (matching the CI-based path, which allows lower-95%-CI >=
+    # -0.03). The tolerance must be the SOLE constraint here; an extra `rec_c >=
+    # rec_b` conjunct would force strict non-regression and make the floor dead code.
+    gate1 = (rec_c - rec_b) >= GATE1_RECALL_DELTA_FLOOR
+    # GATE-2 noise non-regression. Symmetric: the +0.30 ceiling is the binding
+    # constraint (the point estimate stands in for the delta-CI upper bound), so a
+    # small fp/PR increase within tolerance still passes. An extra `fp_c <= fp_b`
+    # conjunct would force strict non-regression and make the ceiling dead code.
+    gate2 = (fp_c - fp_b) <= GATE2_FP_DELTA_CEILING
     # GATE-3 progress: conservative CI separation (candidate lo > baseline hi).
     f1_ci_separated = f1lo_c > f1hi_b
     gate3 = (f1_c > f1_b) and f1_ci_separated
@@ -548,13 +594,13 @@ def summary_stat_gate(
     cost_blocked = cost_baseline_missing and gate1 and gate2 and gate4
     progress_only_red = hard_gates_ok and not gate3
     if underpowered:
-        verdict = "inconclusive"
+        verdict = VERDICT_INCONCLUSIVE
     elif all(gates.values()):
-        verdict = "promote"
+        verdict = VERDICT_PROMOTE
     elif cost_blocked or progress_only_red:
-        verdict = "inconclusive"
+        verdict = VERDICT_INCONCLUSIVE
     else:
-        verdict = "revert"
+        verdict = VERDICT_REVERT
     return {"verdict": verdict, "gates": gates, "detail": detail}
 
 
@@ -595,13 +641,19 @@ def run_gate(
             detail=dict(result["detail"]),
         )
 
-    raw = promote_gate(baseline, candidate)
+    # promote_gate comes from scripts.stats, whose return mypy widens to `object`
+    # in some invocation contexts; cast to the documented mapping contract so the
+    # .get() / dict() normalization below type-checks when mypy runs on this file
+    # directly.
+    raw = cast(Mapping[str, object], promote_gate(baseline, candidate))
     # scripts.stats.promote_gate is expected to return a mapping with at least
     # {"verdict", "gates", "detail"}. Normalize defensively so a partial return
     # still produces a usable GateResult.
-    verdict = str(raw.get("verdict", "inconclusive"))
-    gates = {str(k): bool(v) for k, v in dict(raw.get("gates", {})).items()}
-    detail = dict(raw.get("detail", {}))
+    verdict = str(raw.get("verdict", VERDICT_INCONCLUSIVE))
+    raw_gates = cast(Mapping[str, object], raw.get("gates", {}))
+    raw_detail = cast(Mapping[str, object], raw.get("detail", {}))
+    gates = {str(k): bool(v) for k, v in raw_gates.items()}
+    detail = dict(raw_detail)
     detail.setdefault("engine", "scripts.stats.promote_gate")
     return GateResult(verdict=verdict, gates=gates, detail=detail)
 
@@ -753,7 +805,7 @@ def render_leaderboard(conn: sqlite3.Connection) -> str:
     lines.append("| tool | run_id | pr_set | recall | precision | F1 | FP/PR | $/review |")
     lines.append("|---|---|---|---|---|---|---|---|")
     for r in rows:
-        star = " (skill)" if str(r.get("tool", "")).startswith("skill") else ""
+        star = " (skill)" if str(r.get("tool", "")).startswith(SKILL_TOOL_PREFIX) else ""
         lines.append(
             f"| {r.get('tool')}{star} | {r.get('run_id')} | {r.get('pr_set_id') or 'n/a'} | "
             f"{_fmt(r.get('recall'), 2)} | {_fmt(r.get('precision'), 2)} | "
@@ -849,6 +901,16 @@ def cmd_record(args: argparse.Namespace) -> int:
         "calibration_tag": args.calibration_tag,
         "notes": args.notes,
     }
+    # The 5-gate predicate (the `gate` subcommand) is the SOLE authority for the
+    # proven-baseline verdicts: latest_proven keys off PROVEN_VERDICTS, so letting
+    # `record` write a promote/ramp verdict by hand would synthesise a baseline that
+    # never cleared the gate. record may set a non-promoting placeholder only.
+    if args.verdict is not None and args.verdict in PROVEN_VERDICTS:
+        raise SystemExit(
+            f"refusing to record verdict '{args.verdict}': the proven-baseline "
+            f"verdicts {PROVEN_VERDICTS} are set only by the gate subcommand. "
+            "Record without --verdict, then run `experiments.py gate ... --apply`."
+        )
     if not args.apply:
         print("DRY-RUN: would record experiment row (pass --apply to persist):")
         print(json.dumps({k: v for k, v in row.items() if v is not None}, indent=2, default=str))

@@ -16,9 +16,6 @@ assertions run.
 """
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
 
 # numpy is the load-bearing dep for stats.py; skip the module cleanly if the
@@ -27,13 +24,9 @@ np = pytest.importorskip("numpy")
 pytest.importorskip("scipy")
 pytest.importorskip("statsmodels")
 
-# stats.py lives in the tracked scripts/ dir (not the code_review package), so
-# put it on the path the same way the harness scripts do.
-SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
-if str(SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS))
-
-import stats  # noqa: E402  (path inserted just above)
+# stats.py lives in the tracked scripts/ dir (not the code_review package); conftest
+# puts scripts/ + benchmarks/ on sys.path once (the single owner of that setup).
+import stats  # noqa: E402  (scripts/ on sys.path via conftest)
 
 
 # --------------------------------------------------------------------------- #
@@ -387,3 +380,34 @@ def test_summary_stat_gate_underpower_floor_not_bypassed_by_unknown_pr_set() -> 
     )
     assert unknown["detail"]["n_prs"] is None
     assert unknown["detail"]["underpowered"] is False
+
+
+def test_summary_stat_gate_recall_and_fp_tolerances_are_reachable() -> None:
+    """GATE-1's -0.03 recall floor and GATE-2's +0.30 fp/PR ceiling are the BINDING
+    constraints in the point-estimate fallback (not dead code behind a strict
+    non-regression conjunct). A candidate whose recall drops by 0.02 (within the
+    floor) and whose fp/PR rises by 0.20 (within the ceiling), with F1 strictly up
+    and CIs separated, must PROMOTE: a strict `rec_c >= rec_b` / `fp_c <= fp_b` guard
+    would wrongly REVERT this near-equivalent win."""
+    import experiments
+
+    base_row = {"recall_mean": 0.50, "fp_per_pr_mean": 1.00, "f1_mean": 0.50,
+                "f1_ci_lo": 0.45, "f1_ci_hi": 0.55, "f1_stdev": 0.03,
+                "cost_mean": 1.0, "pr_set_id": "pr16"}
+    cand_row = {"recall_mean": 0.48, "fp_per_pr_mean": 1.20, "f1_mean": 0.70,
+                "f1_ci_lo": 0.60, "f1_ci_hi": 0.80, "f1_stdev": 0.03,
+                "cost_mean": 1.1, "pr_set_id": "pr16"}
+    out = experiments.summary_stat_gate(base_row, cand_row)
+    assert out["gates"]["gate_1_recall"] is True  # -0.02 drop is within the -0.03 floor
+    assert out["gates"]["gate_2_noise"] is True  # +0.20 rise is within the +0.30 ceiling
+    assert out["verdict"] == "promote"
+
+    # Just past the tolerances both gates flip red (the floor/ceiling are binding).
+    rec_too_low = experiments.summary_stat_gate(
+        base_row, {**cand_row, "recall_mean": 0.46}  # -0.04 drop, past -0.03
+    )
+    assert rec_too_low["gates"]["gate_1_recall"] is False
+    fp_too_high = experiments.summary_stat_gate(
+        base_row, {**cand_row, "fp_per_pr_mean": 1.40}  # +0.40 rise, past +0.30
+    )
+    assert fp_too_high["gates"]["gate_2_noise"] is False

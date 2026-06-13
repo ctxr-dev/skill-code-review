@@ -429,23 +429,28 @@ or F1 loss) at LOWER latency. The timing telemetry (4.0, 5.8) localized the priz
 recall. We attack routing in two gated experiments, with a third deferred behind an explicit
 contingency.
 
-**STATUS (routing-speed reduction): DEFERRED to a dedicated follow-up. The two gated rounds proved
-the structural levers are DEAD-ENDS.** Two rounds of structural routing experiments all died at the
-cheap-first 2-review check before any N=3 spend: S1 (merge the two passes) made routing 3 to 4.6x
+**STATUS (routing-speed reduction): EXHAUSTED at pr5. Every lever is a dead-end; L1 (a
+correctness/precision fix, not a speed lever) is the only banked win.** The structural levers died at
+the cheap-first 2-review check before any N=3 spend: S1 (merge the two passes) made routing 3 to 4.6x
 SLOWER (5A.1); L2 (chunk/parallelize the coarse pass) made routing +45% / whole-review +43% (5A.2b);
-S2 (de-glob the 26 keyword-backed megaglobs) shrank nothing (5A.2). The ONE win banked here is L1
-(whole-word activation matcher), a correctness/precision fix shipped at `01275c0`, not a speed lever.
-The cheap-first gate did exactly its job: every dead structural idea died for minutes and dollars.
+S2 (de-glob the 26 keyword-backed megaglobs) shrank nothing (5A.2). L3 (cheaper trim output) was the
+one lever to SURVIVE cheap-first (a real ~26% `llm_trim` decode saving, recall held on 2 pilots) but
+then FAILED the N=3 5-PR no-regression gate on fp/PR (1.60 -> 1.80; 5A.2c). The ONE win banked here is
+L1 (whole-word activation matcher), a correctness/precision fix shipped at `01275c0`, not a speed
+lever. The cheap-first gate did its job on the structural levers; the full N=3 gate did its job on L3,
+catching a fp regression that two pilots missed.
 
 **ROOT CAUSE (grounds every future routing-speed decision): routing is DECODE-bound, not
 INPUT-bound.** The cost is the per-leaf keep/drop reasoning and the cap-K decision in `llm_trim`, not
 the size of the prompt fed in. The two-pass coarse-then-fine design (`tree_descend` cheaply narrows
 the full ~230 to 313 pool, then the expensive cap-K trim runs over only the ~24 survivors) is ALREADY
 the right structure. Every structural lever (merge, chunk) makes the expensive decode run over more
-leaves and loses. The ONLY remaining untried SOUND lever is **CHEAPER TRIM OUTPUT**: make
-`llm_trim`'s mandatory per-reject reason optional or shorter, cutting decode tokens without changing
-which leaves survive. That needs its own F1 A/B (it could shift trim decisions) and is the seed of
-the deferred routing-speed follow-up. Do not re-walk S1/L2/S2.
+leaves and loses. The one remaining SOUND lever, **CHEAPER TRIM OUTPUT** (make `llm_trim`'s mandatory
+per-reject reason optional, cutting decode tokens without changing which leaves survive), was then
+tried as **L3** and is ALSO a dead-end (5A.2c): it earned a real ~26% `llm_trim` decode saving and
+held recall, but its own F1 A/B caught a fp/PR rise (1.60 -> 1.80) it bought no recall for. Routing
+speed is now exhausted at pr5. Do not re-walk S1/L2/S2 ever, nor L3 at pr5 or smaller (L3 is the only
+one re-walkable at all, and only at a larger powered PR set).
 
 Every speed phase obeys the same two-stage proof, in this order:
 
@@ -548,6 +553,27 @@ cap-K `llm_trim` by **+82%**; net routing **+45%** and whole-review **+43%**. Th
 caught it before any N=3 spend. Root cause, same family as S1: the coarse pass's value is that it
 narrows against the WHOLE pool at once; chunking destroys that global view. Recorded as a `dead_ends`
 row (`retry_at_pr_set = NULL`, structural). Do NOT re-attempt chunked descent.
+
+### 5A.2c L3: cheaper trim output (optional per-reject reason) [DEAD-END, PROVEN at pr5]
+
+**OUTCOME: PROVEN DEAD-END at pr5. Reverted (branch `feat/trim-cheaper-output`, commit `8e28022`,
+deleted).** The first speed lever to SURVIVE the cheap-first check, and the first caught by the full
+N=3 gate instead. Making `llm_trim`'s per-reject `reason` optional (drop the `required` + `minLength`
+in `_trim_candidates_schema()`, drop the justify-every-reject rule in `workers/trim-candidates.md` +
+`verifiers/llm_trim.md`) cut real decode: `llm_trim` wall-time **-26%** (356s -> 262s pooled over 2
+pilots) with **identical golden recall** (cal.com 2/2, discourse 2/3 both arms) and no `sec-*` leaf
+dropped, so it earned the expensive N=3. There the strict no-regression gate FAILED on the fp/PR
+axis: recall flat (**0.7273 = 0.7273**), but **fp/PR rose 1.60 -> 1.80 (+0.20)** and F1 slipped
+**0.5926 -> 0.5714**; the formal 5-gate was inconclusive (underpowered n=5: gate_3_progress F,
+gate_4_stability F). The cheaper decode bought no recall and added false positives. Recorded as a
+`dead_ends` row (`retry_at_pr_set = pr10`) and as experiment row `lever3-pr5` in `experiments.db`:
+unlike the structural dead-ends L3 is NOT structurally impossible, so a powered ramp (10/15 PRs) could
+in principle rescue it, but it must NOT be re-walked at pr5 or smaller.
+
+- **Methodology data point:** cheap-first (2 pilots) is NECESSARY but not SUFFICIENT. It correctly
+  killed S1/S2/L2 cheaply, but a +0.20 fp/PR drift only became visible across the N=3 5-PR
+  measurement. The two-stage gate (cheap-first THEN N=3) is exactly what separated L3's real speed
+  win from its quality cost; neither stage alone would have.
 
 ### 5A.3 S3 (DEFERRED contingency): sqlite-vec / embedding ROUTING pre-filter
 

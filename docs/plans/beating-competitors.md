@@ -1,8 +1,12 @@
 # skill-code-review: Master Plan to Top the Martian Code Review Bench
 
 Status: IN PROGRESS (canonical, checkbox-tracked). This file is the single source of truth for
-the benchmark-optimization program. A0 (proof machine), A1 (Baseline@pr5 locked), and the
-timing telemetry are DONE (section 9 checkboxes). The live program now pursues TWO woven goals:
+the benchmark-optimization program. A0 (proof machine), A1 (Baseline@pr5 locked), the timing
+telemetry, and L1 (whole-word activation matcher, a recall-safe precision fix, `01275c0`) are DONE
+(section 9 checkboxes). The routing/leaf-navigation SPEED levers ran as two gated rounds and the
+structural approaches are PROVEN DEAD-ENDS (S1 merge, L2 chunk) or no-benefit (S2 de-glob), each
+caught cheaply before any N=3 spend; routing-speed reduction is DEFERRED (routing is decode-bound,
+not input-bound; section 5A). The live program now pursues TWO woven goals:
 keep HIGH-QUALITY reviews (no recall or F1 loss) AND DECREASE latency, every speed change held to
 the same F1 5-gate predicate that the quality changes are. This is the in-repo canonical doc.
 
@@ -124,6 +128,24 @@ Qodo (qodo.ai/blog/qodo-ranked-1-ai-code-review-tool-in-martians-code-review-ben
     F1 stdev **0.030** (stable across the 3 rounds).
   - Read this honestly: the F1 CI STRADDLES the ~0.62 to 0.64 competitor bar. A powered verdict
     (CI clearly above the bar) needs the PR ramp (more PRs), not more 5-PR rounds.
+- **L1 (whole-word activation matcher) DONE and committed (`01275c0`).** A correctness/precision fix
+  from the routing work: `_keyword_matches` now matches on WHOLE-WORD (token) boundaries instead of
+  substrings, so it no longer false-fires wrong-language/off-topic leaves (e.g. `fw-scala-web` on a
+  diff with no Scala). Deterministically recall-safe: 202 substring false-fires removed across the 5
+  pilot PRs, 0 golden-relevant leaves dropped, activation pool cut ~15 to 21%. Dogfood self-review
+  findings addressed in `68e9e45`, `19ed3be`.
+- **Routing-speed structural levers PROVEN DEAD-ENDS (two gated rounds, no N=3 spend wasted).** S1
+  (merge `tree_descend` + `llm_trim`) made routing 3 to 4.6x SLOWER (289s -> 1,328s on cal.com-14943);
+  L2 (chunk/parallelize `tree_descend`) grew the kept-set 24 -> 92 and pushed routing +45% /
+  whole-review +43%; S2 (de-glob the 26 keyword-backed megaglobs) shrank nothing. Each died at the
+  cheap-first 2-review check. Root cause: routing is DECODE-bound, not input-bound, and the two-pass
+  coarse-then-fine structure is already correct. Routing-speed reduction is DEFERRED to a dedicated
+  follow-up; the only remaining sound lever is CHEAPER TRIM OUTPUT (shorter/optional per-reject
+  reason), which needs its own F1 A/B. See section 5A for the full record.
+- **Proof stack validated by self-dogfood.** The benchmark/proof stack was hardened by a self-dogfood
+  loop that found and fixed ~73 real defects over 3 rounds, reaching 0 major / 0 minor. Separately, a
+  capability-proof review of the ctxr/fsm engine surfaced ~5 to 6 genuine fsm bugs, tracked as a
+  separate fsm follow-up (out of scope for this plan).
 - **Timing telemetry DONE.** The `timings` table + `experiments.py slowest` + per-stage and
   per-agent `wall_ms` in the runner (section 5.8 is implemented, not aspirational). An instrumented
   review of `cal.com-14943` gives the latency budget every speed phase below targets:
@@ -407,6 +429,24 @@ or F1 loss) at LOWER latency. The timing telemetry (4.0, 5.8) localized the priz
 recall. We attack routing in two gated experiments, with a third deferred behind an explicit
 contingency.
 
+**STATUS (routing-speed reduction): DEFERRED to a dedicated follow-up. The two gated rounds proved
+the structural levers are DEAD-ENDS.** Two rounds of structural routing experiments all died at the
+cheap-first 2-review check before any N=3 spend: S1 (merge the two passes) made routing 3 to 4.6x
+SLOWER (5A.1); L2 (chunk/parallelize the coarse pass) made routing +45% / whole-review +43% (5A.2b);
+S2 (de-glob the 26 keyword-backed megaglobs) shrank nothing (5A.2). The ONE win banked here is L1
+(whole-word activation matcher), a correctness/precision fix shipped at `01275c0`, not a speed lever.
+The cheap-first gate did exactly its job: every dead structural idea died for minutes and dollars.
+
+**ROOT CAUSE (grounds every future routing-speed decision): routing is DECODE-bound, not
+INPUT-bound.** The cost is the per-leaf keep/drop reasoning and the cap-K decision in `llm_trim`, not
+the size of the prompt fed in. The two-pass coarse-then-fine design (`tree_descend` cheaply narrows
+the full ~230 to 313 pool, then the expensive cap-K trim runs over only the ~24 survivors) is ALREADY
+the right structure. Every structural lever (merge, chunk) makes the expensive decode run over more
+leaves and loses. The ONLY remaining untried SOUND lever is **CHEAPER TRIM OUTPUT**: make
+`llm_trim`'s mandatory per-reject reason optional or shorter, cutting decode tokens without changing
+which leaves survive. That needs its own F1 A/B (it could shift trim decisions) and is the seed of
+the deferred routing-speed follow-up. Do not re-walk S1/L2/S2.
+
 Every speed phase obeys the same two-stage proof, in this order:
 
 1. **Cheap-first validation (one instrumented review).** Run a single product review (telemetry on)
@@ -426,64 +466,99 @@ activate), they interact with F1 and MUST be F1-gated like any quality lever. Th
 (5A workstream order: S1 then S2, S3 deferred) so each compounding win makes later F1 experiments
 cheaper to run.
 
-### 5A.1 S1: merge `tree_descend` + `llm_trim` into ONE sonnet pass
+### 5A.1 S1: merge `tree_descend` + `llm_trim` into ONE sonnet pass [DEAD-END, PROVEN]
 
-- **Hypothesis (falsifiable):** the two sequential metadata-only sonnet passes (`tree_descend` then
-  `llm_trim`, 142s + 147s) do redundant work over the same leaf metadata. A single combined pass
-  that descends AND trims in one prompt cuts ~120 to 150s of wall time with NO change to the final
-  picked-leaf set (within sampling noise) and therefore NO recall loss. No embeddings, no OOD risk.
-- **Files:** `code_review/spec.py` (`_tree_descend` `:969`, `_llm_trim` `:1003`, the `build_spec`
-  state list `:1474`): collapse to one worker state (keep the second as an `.env`-recoverable
-  degenerate path). New combined prompt `code_review/workers/route-leaves.md` (merging
-  `tree-descender.md` + `trim-candidates.md`; file-reading still forbidden, metadata-only). The
-  combined response schema in `spec.py` (reuse the trim schema shape so `dispatch_specialists`
-  downstream is untouched).
-- **Cheap-first check:** one instrumented review on `cal.com-14943`; confirm the routing stage now
-  reports a single pass near or below ~150 to 170s (vs 289s), and the picked-leaf set equals the
-  baseline's for that PR (leaf-set sanity: zero dropped `sec-*`/correctness leaves).
-- **Full gate:** N=3 vs Baseline@pr5; promote iff all 5 gates green (GATE-1 recall non-regression is
-  the hard floor). Latency delta recorded but out of the predicate.
-- **No-recall-loss guardrail:** if the merged prompt ever trims differently enough to drop a leaf the
-  baseline kept, GATE-1 catches it and S1 reverts. The combined prompt is authored to be at least as
-  inclusive as the two-pass version (when in doubt, keep the leaf; over-inclusion is paid later in
-  specialist tokens, recall is sacred).
+**OUTCOME: PROVEN DEAD-END. Reverted. Caught cheaply by the cheap-first check before any N=3 spend.**
+Merging the two passes made routing 3 to 4.6x SLOWER, not faster (cal.com-14943 routing 289s ->
+1,328s). The original hypothesis (the two passes do redundant work) was FALSE: they are
+complementary, not redundant. `tree_descend` cheaply coarse-narrows the FULL ~230 to 313 leaf pool;
+the expensive cap-K `llm_trim` then runs only over the small ~24 survivor set. Merging forces ONE
+expensive cap-K pass over the WHOLE pool, which is far more decode work, not less. The two-pass
+coarse-then-fine structure is already the right design. Recorded as a `dead_ends` row
+(`retry_at_pr_set = NULL`, structural). Do NOT re-attempt this merge.
 
-### 5A.2 S2: cut broad activation (narrow the 107 `**/*.{lang}` leaves)
+- **Hypothesis (FALSIFIED):** the two sequential metadata-only sonnet passes (`tree_descend` then
+  `llm_trim`, 142s + 147s) do redundant work over the same leaf metadata, so a single combined pass
+  cuts ~120 to 150s with no leaf-set change. FALSE: the passes are not redundant (see outcome), and
+  the merge was strictly slower.
+- **Files (would-be):** `code_review/spec.py` (`_tree_descend` `:969`, `_llm_trim` `:1003`, the
+  `build_spec` state list `:1474`); a combined prompt `code_review/workers/route-leaves.md`. Not
+  shipped; the two-pass states stand.
+- **Cheap-first check (KILLED it):** one instrumented review on `cal.com-14943` showed the single
+  merged pass at ~1,328s vs the 289s two-pass routing, a 3 to 4.6x REGRESSION. The cheap-first
+  wall-time check did exactly its job: a bad structural idea died for minutes and dollars, with zero
+  N=3 budget spent. This is the cheap-first gate paying for itself.
+- **Why it is dead, kept for the next author:** decode cost scales with how many leaves the
+  expensive cap-K reasoning runs over. Two passes keep that expensive pass small (over ~24
+  survivors); one pass makes it large (over ~230 to 313). The coarse-then-fine split is the
+  optimization, not the overhead.
 
-This is the **highest-leverage** latency lever (it shrinks the INPUT to both routing passes, and to
-S1's merged pass) and it is a **wiki-build / corpus change**, so it is **human-gated** and MUST
-follow the section 6.9 "Wiki-build methodology change protocol" in full.
+### 5A.2 S2: de-glob the keyword-backed megaglob leaves [UNPROVEN, NO BENEFIT]
 
-- **Hypothesis (falsifiable):** of the 107 source leaves carrying a broad `**/*.{lang}` glob, most
-  fire on nearly every diff in that language and over-activate the leaf set (132 of 546 leaves
-  activate). Replacing the broad glob on each with REAL signals (specific path globs +
-  `keyword_matches` for the API/symbols that actually signal the concern, + `structural_signals`, +
-  `escalation_from` chains) shrinks the activated set and the routing input by enough to save ~80 to
-  140s, with NO recall loss because the narrowed signals still fire on the diffs the concern truly
-  lives in.
-- **Files:** `reviewers.src/<prefix>/*.md` (the 107 leaves; authored in SOURCE only, never the
-  generated wiki), then the deterministic rebuild via `skill-llm-wiki` and
-  `scripts/check_wiki_drift.py`. The authoring contract is
-  `.agents/skills/scr-reviewers-wiki-authoring/SKILL.md`; the change protocol is section 6.9.
-- **Cheap-first check:** one instrumented review; confirm (a) the activated-leaf count dropped
-  (e.g. from 132 toward the real-signal floor) and the routing wall-time dropped, and (b) the
-  leaf-set sanity check on the SAME diff: every leaf the baseline picked for that diff is still
-  picked. The **sensitivity risk is explicit**: narrowing a glob can drop a leaf that would have
-  caught a bug, which is a RECALL regression, so the leaf-set sanity check plus the benchmark gate
-  are mandatory, not optional.
-- **Full gate:** N=3 vs Baseline@pr5; promote iff all 5 gates green, GATE-1 recall the hard floor.
-  Because this is a corpus change, the section 6.9 protocol's no-regression benchmark gate (the
-  same five pilot PRs, both axes no-worse) is part of the promote decision.
-- **No-recall-loss guardrail:** the coverage floor only fires when routing returns EMPTY, NOT
-  per-leaf (corrected fact, section 4), so a narrowing that silently drops a `sec-*` leaf is NOT
-  rescued. S2 narrows leaf-by-leaf with the recall-risk sensitivity recorded for each, and any
-  recall regression reverts the leaf. Narrow in BATCHES if needed, each batch its own gated
-  iteration, so a regression is attributable to a small diff.
+**OUTCOME: UNPROVEN / no measured benefit. Not banked.** The attempt de-globbed the 26
+keyword-backed megaglob leaves (those whose broad `**/*.{lang}` glob is paired with real
+`keyword_matches`). The activation pool did NOT shrink: the de-globbed leaves still fire on their
+keywords, so removing the redundant broad glob changed nothing about which leaves activate on the
+pilot diffs. With no input shrink there is no routing-time saving to gate, so S2 produced no win.
+The cheap-first check caught this before any N=3 spend.
+
+Note the relationship to L1 below: the activation-pool reduction that L1 (whole-word matching)
+SHIPPED is the recall-safe, deterministically-proven version of what S2 was reaching for. L1 cut the
+pool ~15 to 21% by killing substring false-fires; S2's glob removal added nothing on top because the
+keywords already governed activation.
+
+- **Hypothesis (NOT CONFIRMED):** removing the broad `**/*.{lang}` glob from the 26 keyword-backed
+  leaves shrinks the activated set and the routing input enough to save wall time, with no recall
+  loss because the keyword signals still fire. NOT CONFIRMED: the keywords already drive activation,
+  so the glob removal did not shrink the pool.
+- **Files (touched in source, no benefit):** `reviewers.src/<prefix>/*.md` (the 26 keyword-backed
+  megaglob leaves), rebuilt via `skill-llm-wiki` + `scripts/check_wiki_drift.py` under the section
+  6.9 protocol. The authoring contract is `.agents/skills/scr-reviewers-wiki-authoring/SKILL.md`.
+- **Cheap-first check (showed no shrink):** the activated-leaf count did not drop on the pilot
+  diffs, so there was no routing wall-time delta to take to a full gate. Recorded as no-benefit.
+- **What is left for a future author:** the genuinely-broad leaves with NO keyword backing (the
+  pure `**/*.{lang}` ones) are a different, still-open population; de-globbing those would require
+  authoring real signals (specific path globs + new `keyword_matches` + `structural_signals` +
+  `escalation_from`) under the full section 6.9 recall-risk protocol. That is not what was attempted
+  here and is not proven either way.
+
+### 5A.2a L1: whole-word keyword activation matcher [DONE, SHIPPED]
+
+**OUTCOME: SHIPPED. Committed `01275c0`.** A correctness/precision fix, not a speed lever, that fell
+out of the routing work. The old `_keyword_matches` used SUBSTRING matching, which false-fired
+wrong-language and off-topic leaves (e.g. `fw-scala-web` on a diff with no Scala, `iv` matching
+inside `activerecord`). The fix switches to WHOLE-WORD (token-boundary) matching, guarding a
+boundary only when the edge char is alphanumeric so symbol-edged keywords (`.append(`, `aria-`,
+`@Test`, `_token`, `pg_`) still match.
+
+- **Why it shipped (deterministically gated, recall-safe):** it removes **202 substring
+  false-fires** across the 5 pilot PRs and drops **0 golden-relevant leaves** on any pilot PR
+  (verified deterministically, not statistically), cutting the activation pool **~15 to 21%** with
+  zero recall cost. Because the recall-safety is a deterministic property (no golden leaf removed),
+  it did not need the N=3 F1 gate; the dogfood green gate + the deterministic check sufficed.
+- **Files:** `code_review/handlers.py` (`_keyword_matches`), `tests/test_handlers/test_activate_leaves.py`.
+- **Bank:** committed `01275c0`; dogfood self-review findings addressed in `68e9e45` and `19ed3be`.
+
+### 5A.2b L2: chunk/parallelize `tree_descend` [DEAD-END, PROVEN]
+
+**OUTCOME: PROVEN DEAD-END. Reverted.** Splitting `tree_descend` into parallel chunks looked like
+free speed (parallelize the coarse pass), but each chunk had to keep CONSERVATIVELY without
+full-pool context, so the merged kept-set BLEW UP (24 -> 92 survivors). That inflated the downstream
+cap-K `llm_trim` by **+82%**; net routing **+45%** and whole-review **+43%**. The cheap-first check
+caught it before any N=3 spend. Root cause, same family as S1: the coarse pass's value is that it
+narrows against the WHOLE pool at once; chunking destroys that global view. Recorded as a `dead_ends`
+row (`retry_at_pr_set = NULL`, structural). Do NOT re-attempt chunked descent.
 
 ### 5A.3 S3 (DEFERRED contingency): sqlite-vec / embedding ROUTING pre-filter
 
-DEFERRED. Attempt ONLY if routing STILL dominates the latency budget after S1 + S2 land and are
-banked. Embedding/dense-retrieval routing was already tried and REJECTED (OBSERVATIONS #44): a raw
+DEFERRED, and now LOWER PRIORITY. The premise that S1 + S2 would land and bank a speed win did NOT
+hold (S1 and L2 are proven dead-ends, S2 is no-benefit; see 5A.1, 5A.2, 5A.2b). More importantly, the
+two gated rounds proved routing is DECODE-bound, not INPUT-bound: an embedding pre-filter shrinks the
+INPUT, which is not where the cost lives. So S3 attacks the wrong cost and should be attempted only if
+a future measurement shows input size (not decode reasoning) dominates routing time. The
+routing-speed follow-up should instead start from CHEAPER TRIM OUTPUT (5A root-cause). If S3 is ever
+revisited regardless, the original #44 guardrails still bind. Embedding/dense-retrieval routing was
+already tried and REJECTED (OBSERVATIONS #44): a raw
 code patch is out-of-distribution as a retrieval query and it missed every `sec-*` leaf plus
 `lang-ruby` and `fw-rails`. If revisited, S3 is a PRE-FILTER (it shrinks the candidate set fed to
 the LLM routing pass, it does NOT replace it) and it is admissible only with ALL of:
@@ -799,21 +874,34 @@ regressing recall). Each ends green (`ruff` + `mypy` + `pytest`), records a trac
 ### 9.0 NEW PRIORITY ORDER (explicit, justified)
 
 ```
-[DONE]  A0   proof machine (tracker + stats + 5-gate + per-finding labels + STATE.md)
-[DONE]  A1   Baseline@pr5 LOCKED, tag v-bench-0.1.0-pr5
-[DONE]  TT   timing telemetry (timings table, slowest, per-stage/per-agent wall_ms)
-[NEXT]  A2   calibration (ranker-only, rerank.py N=5): the cheapest proven win, no leaf-set change
-        S1   merge tree_descend + llm_trim into ONE sonnet pass (speed, ~120-150s, NO OOD risk)
-        S2   cut broad activation (107 broad-glob leaves; speed ~80-140s; corpus change, 6.9 gate)
-        A-RAMP-1  first ramp pr5 -> pr10 once >=1 win is banked (powered F1 vs the ~0.64 bar)
-        A3   provider / pydantic / observability (billed usage to dollars; parity-gated)
-        A4   always-on multi-model critic + reconcile stage (the primary F1 lever)
-        A5   cross-model critics (Claude + GPT + Gemini), cost-watched
-        A-RAMP-n  continue ramping pr10 -> 15 -> 20 after each banked win
-        S3   (DEFERRED contingency) sqlite-vec / embedding routing PRE-FILTER, only if routing
-             still dominates after S1 + S2; needs the #44 guardrails (5A.3)
-        PHB  Phase A target met -> Phase B go/no-go (deferred)
+[DONE]    A0   proof machine (tracker + stats + 5-gate + per-finding labels + STATE.md)
+[DONE]    A1   Baseline@pr5 LOCKED, tag v-bench-0.1.0-pr5
+[DONE]    TT   timing telemetry (timings table, slowest, per-stage/per-agent wall_ms)
+[DONE]    L1   whole-word keyword activation matcher (precision fix, pool -15 to 21%, 0 recall cost; 01275c0)
+[DEAD]    S1   merge tree_descend + llm_trim -> ONE pass: PROVEN DEAD-END, routing 3-4.6x SLOWER (5A.1)
+[DEAD]    L2   chunk/parallelize tree_descend: PROVEN DEAD-END, kept-set 24->92, routing +45% (5A.2b)
+[NOBENE]  S2   de-glob the 26 keyword-backed megaglobs: no pool shrink, no benefit (5A.2)
+[NEXT]    A2   calibration (ranker-only, rerank.py N=5): the cheapest proven win, no leaf-set change
+[DEFER]   SPD  routing-speed reduction DEFERRED to a dedicated follow-up; only untried sound lever is
+               CHEAPER TRIM OUTPUT (optional/shorter per-reject reason), needs its own F1 A/B (5A)
+          A-RAMP-1  first ramp pr5 -> pr10 once >=1 win is banked (powered F1 vs the ~0.64 bar)
+          A3   provider / pydantic / observability (billed usage to dollars; parity-gated)
+          A4   always-on multi-model critic + reconcile stage (the primary F1 lever)
+          A5   cross-model critics (Claude + GPT + Gemini), cost-watched
+          A-RAMP-n  continue ramping pr10 -> 15 -> 20 after each banked win
+          S3   (DEFERRED contingency) sqlite-vec / embedding routing PRE-FILTER (5A.3); note routing
+               is decode-bound not input-bound, so an input pre-filter is now LOWER priority
+          PHB  Phase A target met -> Phase B go/no-go (deferred)
 ```
+
+**Speed-workstream update (what actually happened):** the routing/leaf-navigation speed levers were
+run as two gated rounds and the STRUCTURAL approaches are proven dead-ends (S1, L2) or no-benefit
+(S2), each caught cheaply by the cheap-first 2-review check before any N=3 spend. L1 (a
+correctness/precision fix) shipped. Routing is DECODE-bound, not input-bound (5A root-cause), so the
+two-pass coarse-then-fine structure is already right and routing-speed reduction is DEFERRED to a
+dedicated follow-up around the one remaining sound lever (cheaper trim output). The old text below
+("S1 then S2 come BEFORE the heavy F1 work") described the PLAN; it is superseded by this outcome.
+A2 remains the next quality win.
 
 Why this order (the justification the north star demands):
 
@@ -875,29 +963,40 @@ Why this order (the justification the north star demands):
       the product moves up toward the offline-harness frontier it already proves achievable.
 - [ ] Gate + tag the win; record the calibration tag in force on the experiment row.
 
-### S1. Merge tree_descend + llm_trim into ONE sonnet pass (SPEED; 5A.1)
-- [ ] Collapse the two routing states to one combined metadata-only sonnet pass in `spec.py`
-      (`_tree_descend` `:969`, `_llm_trim` `:1003`, `build_spec` `:1474`); new merged prompt
-      `workers/route-leaves.md`; reuse the trim schema so `dispatch_specialists` is untouched; keep
-      the two-pass path `.env`-recoverable.
-- [ ] Cheap-first: one instrumented review on `cal.com-14943`; confirm the routing stage is now a
-      single pass near or below ~150 to 170s (vs 289s) AND the picked-leaf set equals the baseline's
-      (leaf-set sanity, zero dropped sec-/correctness leaves).
-- [ ] Full gate: N=3 vs Baseline@pr5; promote iff all 5 gates green (GATE-1 recall floor). Record
-      the latency delta on the experiment row (out of the predicate). Tag the win.
+### L1. Whole-word keyword activation matcher (PRECISION; 5A.2a) [DONE, SHIPPED]
+- [x] Switched `_keyword_matches` (`code_review/handlers.py`) from SUBSTRING to WHOLE-WORD
+      (token-boundary) matching, guarding a boundary only on an alphanumeric edge char so symbol-edged
+      keywords (`.append(`, `aria-`, `@Test`, `_token`, `pg_`) still match.
+- [x] Deterministically recall-safe: removes 202 substring false-fires across the 5 pilot PRs (wrong-
+      language/off-topic leaves like `fw-scala-web`), drops 0 golden-relevant leaves on any pilot PR,
+      cuts the activation pool ~15 to 21%. No N=3 F1 gate needed (deterministic property, not
+      statistical); dogfood green gate + the deterministic check sufficed.
+- [x] Committed `01275c0`; dogfood self-review findings addressed in `68e9e45`, `19ed3be`.
 
-### S2. Cut broad activation (107 broad-glob leaves) (SPEED + highest leverage; 5A.2)
-- [ ] HUMAN-GATED corpus change: follow the section 6.9 wiki-build change protocol in FULL (method,
-      activation-signals taxonomy, gaps, sensitivity/recall-risk, reproduction). Replace each broad
-      `**/*.{lang}` glob with specific path globs + `keyword_matches` (+ structural_signals /
-      escalation_from), authored in `reviewers.src/` only; rebuild + drift-check via skill-llm-wiki.
-- [ ] Cheap-first: one instrumented review; confirm the activated-leaf count dropped (toward the
-      real-signal floor) and routing wall-time dropped AND the leaf-set sanity check holds (every
-      baseline-picked leaf for that diff still picked). Narrow in BATCHES if needed (each batch an
-      attributable iteration).
-- [ ] Full gate: N=3 vs Baseline@pr5 PLUS the 6.9 no-regression benchmark gate (same five pilot
-      PRs, both axes no worse); promote iff all 5 gates green (GATE-1 recall floor); human sign-off
-      on the SET/STRUCTURE change. Tag the win. Any recall regression reverts the offending leaf.
+### S1. Merge tree_descend + llm_trim into ONE sonnet pass (SPEED; 5A.1) [DEAD-END, PROVEN]
+- [x] Attempted, then REVERTED: the merge made routing 3 to 4.6x SLOWER (cal.com-14943 289s ->
+      1,328s). The two passes are NOT redundant: `tree_descend` cheaply coarse-narrows the full ~230
+      to 313 leaf pool, then cap-K `llm_trim` runs over only the ~24 survivors; merging forces ONE
+      expensive cap-K pass over the whole pool.
+- [x] Killed by the cheap-first instrumented review BEFORE any N=3 spend. `dead_ends` row,
+      `retry_at_pr_set = NULL` (structural). Do NOT re-attempt. The combined `workers/route-leaves.md`
+      prompt was not shipped; the two-pass states stand.
+
+### L2. Chunk/parallelize tree_descend (SPEED; 5A.2b) [DEAD-END, PROVEN]
+- [x] Attempted, then REVERTED: chunking made each chunk keep CONSERVATIVELY without full-pool
+      context, so the merged kept-set grew 24 -> 92, inflating `llm_trim` +82%; net routing +45%,
+      whole-review +43%.
+- [x] Killed by the cheap-first check BEFORE any N=3 spend. `dead_ends` row, `retry_at_pr_set = NULL`
+      (structural, same family as S1: the coarse pass needs the WHOLE-pool view). Do NOT re-attempt.
+
+### S2. De-glob the 26 keyword-backed megaglob leaves (SPEED; 5A.2) [UNPROVEN, NO BENEFIT]
+- [x] Attempted: removed the redundant broad `**/*.{lang}` glob from the 26 leaves that already carry
+      real `keyword_matches`. The activation pool did NOT shrink, because those keywords already drive
+      activation, so the de-globbed leaves still fire on the same diffs.
+- [x] No pool shrink means no routing-time saving to take to a full gate; recorded as no-benefit (not
+      a regression). The activation-pool reduction this was reaching for was actually delivered,
+      recall-safely, by L1. The pure `**/*.{lang}` leaves with NO keyword backing remain a different,
+      still-open population requiring the full section 6.9 recall-risk protocol; not attempted here.
 
 ### A3. Provider / pydantic / observability layer (parity-gated, semantically neutral)
 - [ ] Add deps (`pydantic-ai-slim[anthropic,openai,google]`, `python-dotenv`); `code_review/config.py`
@@ -925,10 +1024,19 @@ Why this order (the justification the north star demands):
 - [ ] Gate: F1 clears the baseline CI AND the dollars/review increase is justified by the tracker
       curve; else keep the full roster as an optional premium tier, not the default.
 
+### SPD. Routing-speed reduction follow-up (DEFERRED; supersedes the S1/S2 speed plan)
+- [ ] Dedicated follow-up. The structural levers are exhausted (S1 merge DEAD-END, L2 chunk
+      DEAD-END, S2 de-glob NO-BENEFIT). Routing is DECODE-bound, not input-bound, so the two-pass
+      coarse-then-fine structure stays. The ONE remaining untried sound lever is CHEAPER TRIM OUTPUT:
+      make `llm_trim`'s mandatory per-reject reason optional or shorter to cut decode tokens.
+- [ ] Gate via its own F1 A/B (5-gate predicate): a shorter/optional reject reason could shift which
+      leaves survive trim, so it interacts with recall and must be F1-gated, not just timed.
+
 ### S3. (DEFERRED contingency) sqlite-vec / embedding routing PRE-FILTER (5A.3)
-- [ ] ATTEMPT ONLY IF routing still dominates the latency budget after S1 + S2 are banked. Build a
-      sqlite-vec index from leaf metadata; a Python PRE-FILTER ahead of `tree_descend` (it trims,
-      does not replace, the LLM routing pass).
+- [ ] LOWER PRIORITY now: routing proved DECODE-bound, not input-bound, so an input-shrinking
+      pre-filter attacks the wrong cost. Attempt only if a future measurement shows input size (not
+      decode) dominates. Build a sqlite-vec index from leaf metadata; a Python PRE-FILTER ahead of
+      `tree_descend` (it trims, does not replace, the LLM routing pass).
 - [ ] Hard guardrails (the #44 caveat): a net-new ALWAYS-INCLUDE for any leaf whose deterministic
       activation fires (the floor only fires on EMPTY routing, not per-leaf, so a dropped sec- leaf
       is NOT rescued); a NON-RAW-PATCH query (paths + identifiers + keywords + profile, never the
@@ -968,8 +1076,13 @@ Why this order (the justification the north star demands):
   regresses recall, OBSERVATIONS #44). RESCOPED as S3, a DEFERRED PRE-FILTER contingency (5A.3)
   admissible only after S1+S2 with the always-include guardrail, a non-raw-patch query, and a #44
   failure-PR benchmark.
-- Speed / latency: now a FIRST-CLASS woven workstream (section 5A, phases S1/S2/S3), not deferred.
-  Every speed change is held to the same F1 5-gate predicate; speed never trades away recall.
+- Speed / latency: was promoted to a FIRST-CLASS woven workstream (section 5A). OUTCOME: the
+  STRUCTURAL routing levers are exhausted and proven dead (S1 merge 3-4.6x slower, L2 chunk +45%, S2
+  de-glob no benefit), all caught by the cheap-first check with no F1 budget wasted. L1 (whole-word
+  matcher) shipped as a precision fix. Routing is DECODE-bound, not input-bound, so routing-speed
+  reduction is DEFERRED to a dedicated follow-up around the one remaining sound lever (cheaper trim
+  output, F1-gated). Every speed change still held to the F1 5-gate predicate; speed never trades
+  away recall.
 - PydanticAI: now IN (the user's reversal: use existing libraries). Introduced behind the
   `AgentRun` seam, typed-boundary-only, not a full engine rewrite.
 - Full Logfire cost-tree / async span aggregation: DEFERRED; minimal billed-usage-to-dollars

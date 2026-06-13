@@ -8,7 +8,8 @@ even before that module exists. The only path that would touch scripts/stats.py
 is the ``gate`` subcommand's lazy import, which is not exercised here.
 
 Coverage:
-  - init creates the four tables (experiments, metrics, findings, dead_ends).
+  - init creates the five tables (experiments, metrics, findings, dead_ends,
+    timings).
   - record persists an experiment row plus metric and finding rows.
   - a round-trip read returns the same values (float tolerance on numerics).
   - render_state produces a do-not-edit header and reflects the recorded baseline.
@@ -20,6 +21,7 @@ from __future__ import annotations
 import importlib.util
 import sqlite3
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 
@@ -46,10 +48,16 @@ def _load_tracker() -> ModuleType:
 
 
 @pytest.fixture(scope="module")
-def tracker() -> ModuleType:
+def tracker() -> Iterator[ModuleType]:
     if not TRACKER_PATH.is_file():
         pytest.skip(f"tracker not present at {TRACKER_PATH}")
-    return _load_tracker()
+    module = _load_tracker()
+    try:
+        yield module
+    finally:
+        # Pop the by-path import so it does not leak into later suites that may
+        # import an `experiments`/`benchmarks_experiments` module of their own.
+        sys.modules.pop("benchmarks_experiments", None)
 
 
 @pytest.fixture
@@ -92,14 +100,14 @@ def _baseline_row() -> dict[str, object]:
     }
 
 
-def test_init_creates_four_tables(db_conn: sqlite3.Connection) -> None:
+def test_init_creates_all_tables(db_conn: sqlite3.Connection) -> None:
     names = {
         r[0]
         for r in db_conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table'"
         ).fetchall()
     }
-    assert {"experiments", "metrics", "findings", "dead_ends"} <= names
+    assert {"experiments", "metrics", "findings", "dead_ends", "timings"} <= names
     db_conn.close()
 
 

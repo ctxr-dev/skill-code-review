@@ -34,72 +34,30 @@ import json
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import paths
 
-# The tracked tracker DB. The benchmarks/ layout is owned by scripts/paths.py
-# (the formal A0 helper, next to the tmp-sharding helpers) so it lives in one
-# place. `benchmarks/` is tracked (committed), unlike the gitignored `tmp/`
-# data, so the accumulated labels survive in git history.
+# The tracker module owns the canonical schema (plan section 8). Import it here
+# (the same way scripts/ingest_timings.py does) so the `findings` table has a
+# SINGLE owner: there is no second embedded CREATE TABLE to drift from it. The
+# `matched` column is an INTEGER boolean (0/1): `1` == the finding matched a
+# golden (`idx in verdict["matched"]`).
 BENCHMARKS = paths.BENCH
 DB_PATH = paths.bench_db_path()
 
-# Duplicated verbatim from the tracker schema (plan section 8). When
-# `benchmarks/experiments.py` lands it will own the canonical CREATE TABLE; this
-# definition MUST stay identical to it (same column names, order, and types) so
-# either entry point can create the table and the other reads it transparently.
-# `matched` is stored as an INTEGER boolean (0/1): `1` == the finding matched a
-# golden (`idx in verdict["matched"]`).
-FINDINGS_SCHEMA = """
-CREATE TABLE IF NOT EXISTS findings (
-    run_id            TEXT    NOT NULL,
-    pr_id             TEXT    NOT NULL,
-    tool              TEXT    NOT NULL,
-    finding_idx       INTEGER NOT NULL,
-    defect_confidence REAL,
-    severity          TEXT,
-    matched           INTEGER NOT NULL,
-    golden_count      INTEGER NOT NULL
-)
-"""
+sys.path.insert(0, str(BENCHMARKS))
+import experiments  # noqa: E402  (path inserted just above)  # type: ignore[import-not-found]
 
 
 def init_findings_table(conn: sqlite3.Connection) -> None:
-    """Create the `findings` table if it does not exist (idempotent).
+    """Create the tracker tables (including `findings`) if they do not exist.
 
-    Lazily imports the tracker's initializer when `benchmarks/experiments.py`
-    is present so the schema has a single owner; otherwise falls back to the
-    duplicated (identical) CREATE TABLE above. Either path yields the same
-    table definition.
+    Delegates to the tracker's ``experiments.init_db`` so the schema has a single
+    owner and this script never carries a divergent copy of the CREATE TABLE.
+    Idempotent.
     """
-    init = _tracker_init()
-    if init is not None:
-        init(conn)
-        return
-    conn.execute(FINDINGS_SCHEMA)
-
-
-def _tracker_init() -> Any:
-    """Return the tracker's findings-table initializer, or None if unavailable.
-
-    Lazy import so this script does not hard-depend on `benchmarks/experiments.py`
-    existing yet (it lands later in plan A0). We look for a callable named
-    `init_findings_table` or `init_db` exposing the same `findings` schema.
-    """
-    if not (BENCHMARKS / "experiments.py").exists():
-        return None
-    sys.path.insert(0, str(BENCHMARKS))
-    try:
-        import experiments  # type: ignore[import-not-found]
-    except Exception:
-        return None
-    for name in ("init_findings_table", "init_db"):
-        fn = getattr(experiments, name, None)
-        if callable(fn):
-            return fn
-    return None
+    experiments.init_db(conn)
 
 
 def _is_skill_tool(name: str, verdict: dict) -> bool:
@@ -109,16 +67,19 @@ def _is_skill_tool(name: str, verdict: dict) -> bool:
     return name.startswith("skill-") or "matched" in verdict
 
 
-def _candidate_label(cand: object, idx: int) -> tuple[float | None, str | None]:
-    """Pull (defect_confidence, severity) off a labelled candidate object.
+def _label_from_meta(meta_entry: object) -> tuple[float | None, str | None]:
+    """Pull (defect_confidence, severity) off a `skill_meta` entry or a legacy
+    inline candidate object.
 
-    Tolerates the legacy bare-string candidate shape (returns no label) so an
-    old judge-input file does not crash ingestion; such rows carry a null
-    confidence and are simply uninformative to the calibrator.
+    The current judge input carries skill labels OUT-OF-BAND in `skill_meta`
+    (idx-aligned with the bare-string candidate list). An older judge input that
+    still inlined the label object on the candidate is also accepted (same key
+    names), so historical files keep ingesting. A bare string / missing entry
+    yields a null label (uninformative to the calibrator), never a crash.
     """
-    if isinstance(cand, dict):
-        conf = cand.get("defect_confidence")
-        sev = cand.get("severity")
+    if isinstance(meta_entry, dict):
+        conf = meta_entry.get("defect_confidence")
+        sev = meta_entry.get("severity")
         return (float(conf) if isinstance(conf, int | float) else None,
                 str(sev) if sev is not None else None)
     return (None, None)
@@ -129,7 +90,9 @@ def rows_for_pr(run_id: str, pr_id: str) -> list[tuple]:
 
     Requires BOTH the verdict and the judge input to exist; emits one row per
     skill candidate present in the input, labelled correct/incorrect by the
-    verdict's `matched` candidate-index list.
+    verdict's `matched` candidate-index list. The per-finding confidence/severity
+    labels come from the judge input's `skill_meta` side-table (idx-aligned), with
+    a fallback to a legacy inline candidate object so old inputs still ingest.
     """
     verdict_path = paths.judge_path(run_id, pr_id)
     input_path = paths.judge_input_path(run_id, pr_id)
@@ -139,6 +102,7 @@ def rows_for_pr(run_id: str, pr_id: str) -> list[tuple]:
     judge_input = json.loads(input_path.read_text())
     golden_count = len(judge_input.get("golden", []))
     in_tools: dict[str, list] = judge_input.get("tools", {})
+    skill_meta: dict[str, list] = judge_input.get("skill_meta", {})
 
     rows: list[tuple] = []
     for tool, tv in verdict.get("tools", {}).items():
@@ -146,14 +110,25 @@ def rows_for_pr(run_id: str, pr_id: str) -> list[tuple]:
             continue
         matched = {int(m) for m in tv.get("matched", [])}
         candidates = in_tools.get(tool, [])
+        meta = skill_meta.get(tool, [])
         for idx, cand in enumerate(candidates):
-            conf, sev = _candidate_label(cand, idx)
+            # Prefer the out-of-band meta entry; fall back to a legacy inline
+            # candidate object (older inputs that still carried the label inline).
+            meta_entry = meta[idx] if idx < len(meta) else cand
+            conf, sev = _label_from_meta(meta_entry)
             correct = 1 if idx in matched else 0
             rows.append((run_id, pr_id, tool, idx, conf, sev, correct, golden_count))
     return rows
 
 
 def collect(run_id: str, explicit: list[str]) -> list[tuple]:
+    """Gather the labelled finding rows for a run across its judged PRs.
+
+    Uses the explicit pr_id list when given, else every judged PR under the run.
+    Read-only: building the rows never creates or writes the DB. Returns the flat
+    list of (run_id, pr_id, tool, finding_idx, defect_confidence, severity,
+    matched, golden_count) tuples.
+    """
     judged = dict(paths.iter_judge_files(run_id))  # pr_id -> verdict path
     pr_ids = explicit or sorted(judged)
     rows: list[tuple] = []
@@ -163,12 +138,20 @@ def collect(run_id: str, explicit: list[str]) -> list[tuple]:
 
 
 def write_rows(rows: list[tuple], db_path: Path = DB_PATH) -> int:
+    """Persist the labelled finding rows into the tracker `findings` table.
+
+    Uses the canonical tracker schema (single owner) via ``init_findings_table``
+    and ``INSERT OR REPLACE`` so a re-ingest of the same (run_id, pr_id, tool,
+    finding_idx) is idempotent against the table's primary key rather than raising
+    a UNIQUE violation. A single executemany + one commit owns the write (no
+    per-row fsync). Returns the number of rows written.
+    """
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     try:
         init_findings_table(conn)
         conn.executemany(
-            "INSERT INTO findings (run_id, pr_id, tool, finding_idx, "
+            "INSERT OR REPLACE INTO findings (run_id, pr_id, tool, finding_idx, "
             "defect_confidence, severity, matched, golden_count) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             rows,

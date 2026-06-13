@@ -291,19 +291,24 @@ def test_run_review_measures_stage_timings_and_writes_timings_json(tmp_path: Any
     # total_wall_ms is finalised (the finally always runs) and stage rows captured.
     assert res.stats.total_wall_ms >= 0
     assert len(res.stats.stage_timings) > 0
-    row = res.stats.stage_timings[0]
-    assert set(row) == {"scope", "name", "iteration_n", "wall_ms"}
-    assert row["scope"] in {"inline", "loop", "worker", "advance"}
+    # Assert the shape contract over EVERY row (not a single index[0], which is
+    # order-coupled under max_workers > 1).
+    for row in res.stats.stage_timings:
+        assert set(row) == {"scope", "name", "iteration_n", "wall_ms"}
+        assert row["scope"] in {"inline", "loop", "worker", "advance"}
 
-    # The persisted timings.json sits next to manifest.json.
-    tj_files = list(Path(storage).rglob("timings.json"))
-    assert len(tj_files) == 1
-    doc = json.loads(tj_files[0].read_text())
+    # The persisted timings.json sits next to manifest.json. write_run_directory
+    # runs once per review, so at least one is written; pick deterministically by
+    # path (newest mtime) rather than assuming a single sequential file.
+    tj_files = sorted(Path(storage).rglob("timings.json"), key=lambda p: (p.stat().st_mtime, str(p)))
+    assert len(tj_files) >= 1
+    doc = json.loads(tj_files[-1].read_text())
     assert isinstance(doc["whole_review_ms"], int)
     assert len(doc["stage_timings"]) > 0
     leaves = {s["leaf_id"]: s for s in doc["specialists"]}
     assert leaves  # at least one specialist row
     # per-specialist measured wall_ms is carried; tokens stay null on the CLI path.
-    any_leaf = next(iter(leaves.values()))
+    # Select the leaf by a deterministic key (sorted leaf_id), not iteration order.
+    any_leaf = leaves[sorted(leaves)[0]]
     assert "wall_ms" in any_leaf
     assert any_leaf["tokens_in"] is None and any_leaf["tokens_out"] is None

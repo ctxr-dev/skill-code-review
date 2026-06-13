@@ -23,8 +23,10 @@ Data shapes:
 """
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import sys
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
@@ -32,14 +34,29 @@ from scipy.stats import permutation_test
 from statsmodels.stats.contingency_tables import mcnemar
 from statsmodels.stats.multitest import multipletests
 
+# benchmarks/experiments.py is the single, pure-stdlib owner of the 5-gate
+# threshold constants and the summary-statistics fallback gate. Import them here
+# (adding benchmarks/ to sys.path the same way the harness scripts do) so the two
+# engines NEVER carry divergent threshold literals or two copies of the summary
+# gate. experiments.py imports cleanly without numpy, so this is side-effect-free.
+_BENCH = Path(__file__).resolve().parent.parent / "benchmarks"
+if str(_BENCH) not in sys.path:
+    sys.path.insert(0, str(_BENCH))
+import experiments as _experiments  # noqa: E402  (path inserted just above)  # type: ignore[import-not-found]
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from numpy.random import Generator
     from numpy.typing import NDArray
 
 # Bootstrap resample count (plan sections 6.3 / 7.3: B = 10,000, resample = PR).
 B_DEFAULT = 10_000
-# Below this many PRs the gate is underpowered, so it never PROMOTEs (plan 6.3).
-MIN_PRS_FOR_PROMOTE = 12
+# The 5-gate thresholds and the underpower floor are OWNED by experiments.py;
+# alias them here so both engines read one source of truth (plan 6.3).
+MIN_PRS_FOR_PROMOTE = _experiments.MIN_PRS_FOR_PROMOTE
+GATE1_RECALL_DELTA_FLOOR = _experiments.GATE1_RECALL_DELTA_FLOOR
+GATE2_FP_DELTA_CEILING = _experiments.GATE2_FP_DELTA_CEILING
+GATE4_STDEV_SLACK = _experiments.GATE4_STDEV_SLACK
+GATE5_COST_MULTIPLIER = _experiments.GATE5_COST_MULTIPLIER
 # A fixed seed makes every CI and permutation p-value bit-stable across reruns.
 SEED = 0
 
@@ -56,21 +73,26 @@ def _safe_div(num: float, den: float) -> float:
 
 
 def recall_from_counts(tp: float, fp: float, fn: float) -> float:
+    """Recall = tp / (tp + fn); 0.0 when there are no positives (score.py rule)."""
     return _safe_div(tp, tp + fn)
 
 
 def precision_from_counts(tp: float, fp: float, fn: float) -> float:
+    """Precision = tp / (tp + fp); 0.0 when there are no predicted positives."""
     return _safe_div(tp, tp + fp)
 
 
 def f1_from_counts(tp: float, fp: float, fn: float) -> float:
+    """F1 = harmonic mean of precision and recall; 0.0 when both are 0."""
     prec = precision_from_counts(tp, fp, fn)
     rec = recall_from_counts(tp, fp, fn)
     return _safe_div(2 * prec * rec, prec + rec)
 
 
-# metric name -> function over pooled (tp, fp, fn) sums.
-_METRIC_FNS: dict[str, object] = {
+# metric name -> function over pooled (tp, fp, fn) sums. Typed precisely as the
+# (tp, fp, fn) -> metric signature so callers need no `# type: ignore[operator]`.
+_MetricFn = Callable[[float, float, float], float]
+_METRIC_FNS: dict[str, _MetricFn] = {
     "recall": recall_from_counts,
     "precision": precision_from_counts,
     "f1": f1_from_counts,
@@ -126,7 +148,7 @@ def _metric_over_matrix(mat: NDArray[np.float64], metric: str) -> float:
     """Micro-averaged metric over a (n_prs, 3) [tp, fp, fn] matrix."""
     tp, fp, fn = mat[:, 0].sum(), mat[:, 1].sum(), mat[:, 2].sum()
     fn_obj = _METRIC_FNS[metric]
-    return float(fn_obj(tp, fp, fn))  # type: ignore[operator]
+    return float(fn_obj(tp, fp, fn))
 
 
 def bootstrap_ci(
@@ -160,7 +182,7 @@ def bootstrap_ci(
     for k in range(b):
         sample = mat[idx[k]]
         tp, fp, fn = sample[:, 0].sum(), sample[:, 1].sum(), sample[:, 2].sum()
-        reps[k] = fn_obj(tp, fp, fn)  # type: ignore[operator]
+        reps[k] = fn_obj(tp, fp, fn)
     lo = float(np.quantile(reps, alpha / 2))
     hi = float(np.quantile(reps, 1 - alpha / 2))
     return CI(point=point, lo=lo, hi=hi)
@@ -203,11 +225,11 @@ def _per_pr_metric_vectors(
     c_mat = _pool_rounds(candidate, shared)
     fn_obj = _METRIC_FNS[metric]
     b_vec = np.array(
-        [fn_obj(b_mat[i, 0], b_mat[i, 1], b_mat[i, 2]) for i in range(len(shared))],  # type: ignore[operator]
+        [fn_obj(b_mat[i, 0], b_mat[i, 1], b_mat[i, 2]) for i in range(len(shared))],
         dtype=np.float64,
     )
     c_vec = np.array(
-        [fn_obj(c_mat[i, 0], c_mat[i, 1], c_mat[i, 2]) for i in range(len(shared))],  # type: ignore[operator]
+        [fn_obj(c_mat[i, 0], c_mat[i, 1], c_mat[i, 2]) for i in range(len(shared))],
         dtype=np.float64,
     )
     return b_vec, c_vec, shared
@@ -295,6 +317,9 @@ def mcnemar_recall(
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class PermutationResult:
+    """Result of a paired permutation test: the observed statistic and its
+    two-sided p-value (secondary evidence on the delta-F1 axis, plan 7.3)."""
+
     statistic: float
     pvalue: float
 
@@ -341,6 +366,9 @@ def paired_permutation_f1(
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class FDRResult:
+    """Benjamini-Hochberg FDR outcome: per-hypothesis reject flags and the
+    BH-corrected p-values, aligned with the input p-value order (plan 7.3)."""
+
     reject: list[bool]
     pvalues_corrected: list[float]
 
@@ -423,11 +451,14 @@ def _fp_per_pr_delta_ci(
     *,
     b: int,
     rng: Generator,
+    alpha: float = 0.05,
 ) -> CI:
     """Paired bootstrap CI for (candidate - baseline) false-positives-per-PR.
 
-    GATE-2 reads the UPPER 95% bound of this interval. Resample unit = PR;
-    paired by PR id over the shared set, same machinery as the metric deltas.
+    GATE-2 reads the UPPER (1 - alpha/2) bound of this interval. Resample unit =
+    PR; paired by PR id over the shared set, same machinery as the metric deltas.
+    ``alpha`` defaults to 0.05 (a 95% interval), matching ``bootstrap_ci`` /
+    ``paired_delta_ci``; the bounds are derived from alpha rather than hardcoded.
     """
     b_ids = set(_ordered_prs_union(baseline))
     c_ids = set(_ordered_prs_union(candidate))
@@ -441,8 +472,8 @@ def _fp_per_pr_delta_ci(
         return CI(point=point, lo=point, hi=point)
     idx = rng.integers(0, n, size=(b, n))
     reps = delta[idx].mean(axis=1)
-    lo = float(np.quantile(reps, 0.025))
-    hi = float(np.quantile(reps, 0.975))
+    lo = float(np.quantile(reps, alpha / 2))
+    hi = float(np.quantile(reps, 1 - alpha / 2))
     return CI(point=point, lo=lo, hi=hi)
 
 
@@ -521,19 +552,21 @@ def gate_predicate(
     detail.cost_candidate = cost_c
 
     # GATE-1 RECALL non-regression.
-    detail.gate_1_recall = (rec_c.point >= rec_b.point) and (rec_delta.lo >= -0.03)
+    detail.gate_1_recall = (rec_c.point >= rec_b.point) and (
+        rec_delta.lo >= GATE1_RECALL_DELTA_FLOOR
+    )
     # GATE-2 NOISE non-regression.
-    detail.gate_2_noise = (fp_c <= fp_b) and (fp_delta.hi <= 0.30)
+    detail.gate_2_noise = (fp_c <= fp_b) and (fp_delta.hi <= GATE2_FP_DELTA_CEILING)
     # GATE-3 PROGRESS: paired delta-F1 CI strictly excludes 0 (lower bound > 0).
     detail.gate_3_progress = f1_delta.lo > 0.0
     # GATE-4 STABILITY.
-    detail.gate_4_stability = std_c <= (std_b + 0.02)
+    detail.gate_4_stability = std_c <= (std_b + GATE4_STDEV_SLACK)
     # GATE-5 COST guard: vacuously true when cost was not recorded for both arms.
     if cost_b is None or cost_c is None:
         detail.gate_5_cost = True
         detail.notes.append("cost not recorded for both arms; GATE-5 treated as pass")
     else:
-        detail.gate_5_cost = cost_c <= (1.25 * cost_b)
+        detail.gate_5_cost = cost_c <= (GATE5_COST_MULTIPLIER * cost_b)
 
     # Underpower guard (plan 6.3): too few shared PRs -> never PROMOTE.
     _, _, shared = _per_pr_metric_vectors(baseline_rounds, candidate_rounds, "f1")
@@ -639,81 +672,6 @@ def _embedded_cost(row: Mapping[str, object]) -> list[float] | None:
     return None
 
 
-def _f(row: Mapping[str, object], key: str, default: float = 0.0) -> float:
-    v = row.get(key)
-    try:
-        return float(v) if v is not None else default  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return default
-
-
-def _pr_rung(row: Mapping[str, object]) -> int:
-    pid = row.get("pr_set_id")
-    if not isinstance(pid, str):
-        return 0
-    digits = "".join(ch for ch in pid if ch.isdigit())
-    return int(digits) if digits else 0
-
-
-def _summary_stat_gate(
-    baseline: Mapping[str, object],
-    candidate: Mapping[str, object],
-) -> dict[str, object]:
-    """Evaluate the 5 gates over recorded summary stats (no per-PR samples).
-
-    This mirrors the tracker's pure-stdlib fallback, but lives here so the
-    tracker prefers a single owner of the gate arithmetic. GATE-3 is approximated
-    conservatively by CI separation: the candidate F1 CI lower bound exceeding the
-    baseline F1 CI upper bound is a sufficient condition for the paired delta-F1
-    CI to exclude 0.
-    """
-    rec_b, rec_c = _f(baseline, "recall_mean"), _f(candidate, "recall_mean")
-    fp_b, fp_c = _f(baseline, "fp_per_pr_mean"), _f(candidate, "fp_per_pr_mean")
-    f1_b, f1_c = _f(baseline, "f1_mean"), _f(candidate, "f1_mean")
-    f1hi_b = _f(baseline, "f1_ci_hi")
-    f1lo_c = _f(candidate, "f1_ci_lo")
-    std_b, std_c = _f(baseline, "f1_stdev"), _f(candidate, "f1_stdev")
-    cost_b, cost_c = _f(baseline, "cost_mean"), _f(candidate, "cost_mean")
-    n_prs = _pr_rung(candidate)
-
-    gate1 = (rec_c >= rec_b) and ((rec_c - rec_b) >= -0.03)
-    gate2 = (fp_c <= fp_b) and ((fp_c - fp_b) <= 0.30)
-    f1_ci_separated = f1lo_c > f1hi_b
-    gate3 = (f1_c > f1_b) and f1_ci_separated
-    gate4 = std_c <= (std_b + 0.02)
-    gate5 = (cost_b <= 0) or (cost_c <= 1.25 * cost_b)
-
-    gates = {
-        "gate_1_recall": gate1,
-        "gate_2_noise": gate2,
-        "gate_3_progress": gate3,
-        "gate_4_stability": gate4,
-        "gate_5_cost": gate5,
-    }
-    hard_ok = gate1 and gate2 and gate4 and gate5
-    underpowered = bool(n_prs) and n_prs < MIN_PRS_FOR_PROMOTE
-    if underpowered:
-        verdict = "inconclusive"
-    elif all(gates.values()):
-        verdict = "promote"
-    elif hard_ok and not gate3:
-        verdict = "inconclusive"
-    else:
-        verdict = "revert"
-    detail: dict[str, object] = {
-        "engine": "scripts.stats.summary-stat",
-        "recall_delta": round(rec_c - rec_b, 4),
-        "fp_per_pr_delta": round(fp_c - fp_b, 4),
-        "f1_delta": round(f1_c - f1_b, 4),
-        "f1_ci_separated": f1_ci_separated,
-        "stdev_delta": round(std_c - std_b, 4),
-        "cost_ratio": round(cost_c / cost_b, 4) if cost_b > 0 else None,
-        "n_prs": n_prs,
-        "underpowered": underpowered,
-    }
-    return {"verdict": verdict, "gates": gates, "detail": detail}
-
-
 def promote_gate(
     baseline_row: Mapping[str, object],
     candidate_row: Mapping[str, object],
@@ -723,8 +681,10 @@ def promote_gate(
     Each argument is an experiment row (a DB summary dict). When BOTH rows carry
     embedded per-PR `rounds` (one of the keys in `_ROUNDS_KEYS`), the exact
     paired-bootstrap `gate_predicate` runs; otherwise the gates are evaluated
-    over the recorded summary statistics. Returns the tracker's expected mapping
-    with keys: verdict (lower-cased), gates (per-gate booleans), detail.
+    over the recorded summary statistics via the SINGLE owner of that arithmetic,
+    ``experiments.summary_stat_gate`` (so the two engines never drift). Returns
+    the tracker's expected mapping with keys: verdict (lower-cased), gates
+    (per-gate booleans), detail.
     """
     base_rounds = _embedded_rounds(baseline_row)
     cand_rounds = _embedded_rounds(candidate_row)
@@ -754,7 +714,7 @@ def promote_gate(
                 "notes": notes,
             },
         }
-    return _summary_stat_gate(baseline_row, candidate_row)
+    return _experiments.summary_stat_gate(dict(baseline_row), dict(candidate_row))
 
 
 __all__ = [

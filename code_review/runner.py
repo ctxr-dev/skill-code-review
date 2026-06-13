@@ -439,13 +439,14 @@ def run_review(
                                  findings=env.get("findings", []), stats=stats)
 
             if st.kind == StateKind.inline:
-                # Hand the live timing snapshot to write_run_directory so it can
-                # persist timings.json next to manifest.json. The product runner
-                # never writes an FSM journal, so this in-process channel is the
-                # only way the persisted artifact sees per-state/per-specialist
-                # wall time.
-                if state_id == "write_run_directory":
-                    env["timings"] = _timings_artifact(stats, unit_results, _run_t0)
+                # Refresh the live timing snapshot before every inline state so the
+                # write_run_directory handler can read env["timings"] off a generic
+                # channel rather than this dispatcher special-casing one state name.
+                # The product runner never writes an FSM journal, so this in-process
+                # channel is the only way the persisted artifact sees per-state /
+                # per-specialist wall time. Assembling it is a cheap dict build over
+                # the stats / unit_results already in hand.
+                env["timings"] = _timings_artifact(stats, unit_results, _run_t0)
                 _t0 = time.perf_counter()
                 res = execute_inline(state=st, ctx=ctx(), args=env.get("args", {}),
                                      inputs=env, registry=reg)

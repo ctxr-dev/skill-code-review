@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import paths
 
 DEFAULT_TARGET_TOOL = "skill-prod"
+
+
+@cache
+def _load_verdict(path: Path) -> dict[str, Any]:
+    """Parse one judge verdict file ONCE (memoized by path).
+
+    On the --ci --baseline path the same candidate verdict file is needed by
+    _aggregate, per_pr_counts (CI + baseline blocks) and per_pr_golden_caught
+    (McNemar); routing every read through this cache parses each file once per
+    process instead of ~4x per PR.
+    """
+    return json.loads(path.read_text())  # type: ignore[no-any-return]
 
 
 def _aggregate(run_id: str, pr_ids: list[str]) -> dict[str, dict]:
@@ -43,7 +56,7 @@ def _aggregate(run_id: str, pr_ids: list[str]) -> dict[str, dict]:
         f = judged.get(pid) or paths.judge_path(run_id, pid)
         if not f.exists():
             continue
-        data = json.loads(f.read_text())
+        data = _load_verdict(f)
         for tool, v in data.get("tools", {}).items():
             a = agg.setdefault(tool, {"tp": 0, "fp": 0, "fn": 0, "n_prs": 0, "n_cand": 0, "prs": []})
             a["tp"] += v.get("tp", 0)
@@ -84,7 +97,7 @@ def per_pr_counts(run_id: str, pr_ids: list[str], tool: str) -> dict[str, dict[s
         f = judged.get(pid) or paths.judge_path(run_id, pid)
         if not f.exists():
             continue
-        v = json.loads(f.read_text()).get("tools", {}).get(tool)
+        v = _load_verdict(f).get("tools", {}).get(tool)
         if not isinstance(v, dict):
             continue
         out[pid] = {
@@ -113,7 +126,7 @@ def per_pr_golden_caught(
         f = judged.get(pid) or paths.judge_path(run_id, pid)
         if not f.exists():
             continue
-        data = json.loads(f.read_text())
+        data = _load_verdict(f)
         n_golden = data.get("n_golden")
         if not isinstance(n_golden, int) or n_golden <= 0:
             continue

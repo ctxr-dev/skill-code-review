@@ -37,10 +37,12 @@ def cmd_review(a: argparse.Namespace) -> int:
     res = run_review(args, dispatch_worker=dispatch_worker,
                      dispatch_specialist=dispatch_specialist,
                      max_workers=a.max_workers, min_workers=a.min_workers)
+    # total_wall_ms is reported once, inside the nested `stats` dump (vars(res.stats)),
+    # so the value lives in exactly one place and cannot diverge from a duplicated
+    # top-level copy.
     summary = {
         "faulted": res.faulted, "fault": res.fault, "verdict": res.verdict,
         "run_dir_path": res.run_dir_path, "n_findings": len(res.findings),
-        "total_wall_ms": res.stats.total_wall_ms,
         "stats": vars(res.stats),
     }
     print(json.dumps(summary, indent=2, default=str))

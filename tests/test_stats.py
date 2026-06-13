@@ -303,3 +303,87 @@ def test_gate_predicate_cost_guard_reverts_on_blowup() -> None:
     )
     assert out["gate_5_cost"] is False
     assert out["verdict"] == "REVERT"
+
+
+# --------------------------------------------------------------------------- #
+# (3) gate-key naming + threshold-constant contract across BOTH engines.
+# --------------------------------------------------------------------------- #
+_GATE_KEYS = {
+    "gate_1_recall",
+    "gate_2_noise",
+    "gate_3_progress",
+    "gate_4_stability",
+    "gate_5_cost",
+}
+
+
+def test_gate_key_naming_is_identical_across_engines() -> None:
+    """The per-PR bootstrap engine (gate_predicate), the row-based dispatcher
+    (promote_gate, summary-stat path) and the tracker's stdlib owner
+    (experiments.summary_stat_gate) MUST all emit the SAME underscored gate keys,
+    so any consumer keying on the gate dict is engine-independent (the divergence
+    this contract test guards against)."""
+    import experiments  # the tracker is on sys.path via stats' own import
+
+    # per-PR bootstrap engine: the gate booleans live at the top level.
+    n = 16
+    rounds = _measurement([[(6, 2, 4)] * n] * 3)
+    predicate = stats.gate_predicate(rounds, rounds, b=500)
+    assert set(predicate.keys()) >= _GATE_KEYS
+
+    # row-based summary-stat path (no embedded rounds) and the tracker owner both
+    # nest the booleans under "gates" with the identical key set.
+    base_row = {"recall_mean": 0.5, "fp_per_pr_mean": 1.8, "f1_mean": 0.5,
+                "f1_ci_lo": 0.4, "f1_ci_hi": 0.6, "f1_stdev": 0.03,
+                "cost_mean": 1.0, "pr_set_id": "pr16"}
+    cand_row = {"recall_mean": 0.6, "fp_per_pr_mean": 1.0, "f1_mean": 0.7,
+                "f1_ci_lo": 0.65, "f1_ci_hi": 0.75, "f1_stdev": 0.02,
+                "cost_mean": 1.1, "pr_set_id": "pr16"}
+    via_promote = stats.promote_gate(base_row, cand_row)
+    via_tracker = experiments.summary_stat_gate(base_row, cand_row)
+    assert set(via_promote["gates"].keys()) == _GATE_KEYS
+    assert set(via_tracker["gates"].keys()) == _GATE_KEYS
+    # The two summary-stat engines are the SAME implementation, so they agree.
+    assert via_promote["gates"] == via_tracker["gates"]
+    assert via_promote["verdict"] == via_tracker["verdict"]
+
+
+def test_summary_stat_gate_fails_closed_on_missing_baseline_cost() -> None:
+    """A 0/NULL baseline cost cannot bound the cost ratio, so GATE-5 fails CLOSED
+    and the run is held INCONCLUSIVE with a 'cost_baseline_missing' note rather
+    than waved through (the GATE-5 fail-open bug)."""
+    import experiments
+
+    base_row = {"recall_mean": 0.5, "fp_per_pr_mean": 1.8, "f1_mean": 0.5,
+                "f1_ci_lo": 0.4, "f1_ci_hi": 0.6, "f1_stdev": 0.03,
+                "cost_mean": 0.0, "pr_set_id": "pr16"}  # baseline cost unset (0)
+    cand_row = {"recall_mean": 0.6, "fp_per_pr_mean": 1.0, "f1_mean": 0.7,
+                "f1_ci_lo": 0.65, "f1_ci_hi": 0.75, "f1_stdev": 0.02,
+                "cost_mean": 0.5, "pr_set_id": "pr16"}
+    out = experiments.summary_stat_gate(base_row, cand_row)
+    assert out["gates"]["gate_5_cost"] is False
+    assert out["verdict"] == "inconclusive"
+    assert "cost_baseline_missing" in out["detail"]["notes"]
+
+
+def test_summary_stat_gate_underpower_floor_not_bypassed_by_unknown_pr_set() -> None:
+    """A small NUMERIC rung (<12) is held underpowered, and a non-numeric pr_set_id
+    yields n_prs=None (not a falsy 0 that silently bypasses the floor)."""
+    import experiments
+
+    base_row = {"recall_mean": 0.5, "fp_per_pr_mean": 1.8, "f1_mean": 0.5,
+                "f1_ci_lo": 0.4, "f1_ci_hi": 0.6, "f1_stdev": 0.03,
+                "cost_mean": 1.0, "pr_set_id": "pr3"}
+    cand_row = {"recall_mean": 0.6, "fp_per_pr_mean": 1.0, "f1_mean": 0.7,
+                "f1_ci_lo": 0.65, "f1_ci_hi": 0.75, "f1_stdev": 0.02,
+                "cost_mean": 1.1, "pr_set_id": "pr3"}
+    small = experiments.summary_stat_gate(base_row, cand_row)
+    assert small["detail"]["underpowered"] is True
+    assert small["verdict"] == "inconclusive"
+
+    unknown = experiments.summary_stat_gate(
+        {**base_row, "pr_set_id": "unknown"},
+        {**cand_row, "pr_set_id": "unknown"},
+    )
+    assert unknown["detail"]["n_prs"] is None
+    assert unknown["detail"]["underpowered"] is False

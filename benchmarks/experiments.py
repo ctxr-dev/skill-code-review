@@ -70,7 +70,12 @@ try:
     STATE_MD = _paths.state_md_path()
     HISTORY_MD = _paths.history_md_path()
     LEADERBOARD_MD = _paths.leaderboard_md_path()
-except Exception:  # paths.py unavailable: derive the identical layout locally.
+except (ImportError, ModuleNotFoundError):
+    # paths.py genuinely unavailable (e.g. exec'd by path with scripts/ off
+    # sys.path): derive the identical layout locally. We narrow to import errors
+    # so a real breakage inside paths.py (a renamed helper -> AttributeError, an
+    # OSError) is NOT silently routed to a divergent fallback that would write to
+    # a DIFFERENT DB or emit markdown to different files; those propagate.
     DB_PATH = BENCH_DIR / "experiments.db"
     STATE_MD = BENCH_DIR / "STATE.md"
     HISTORY_MD = BENCH_DIR / "HISTORY.md"
@@ -280,7 +285,8 @@ EXPERIMENT_COLUMNS: tuple[str, ...] = (
 def upsert_experiment(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
     """Insert or replace one experiment row. Unknown keys are ignored; missing
     keys default to NULL. config_json/gate_detail_json are JSON-encoded if a dict
-    or list is passed.
+    or list is passed. The CALLER owns the commit (so a batch of upserts is one
+    transaction / one fsync, not one per row).
     """
     payload: dict[str, Any] = {}
     for col in EXPERIMENT_COLUMNS:
@@ -291,10 +297,11 @@ def upsert_experiment(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
     cols = ", ".join(EXPERIMENT_COLUMNS)
     marks = ", ".join(f":{c}" for c in EXPERIMENT_COLUMNS)
     conn.execute(f"INSERT OR REPLACE INTO experiments ({cols}) VALUES ({marks})", payload)
-    conn.commit()
 
 
 def upsert_metric(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    """Insert or replace one per-tool metric row (keyed by run_id + tool). The
+    CALLER owns the commit so a batch of metric rows is a single transaction."""
     cols = (
         "run_id",
         "tool",
@@ -313,16 +320,16 @@ def upsert_metric(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
     col_sql = ", ".join(cols)
     marks = ", ".join(f":{c}" for c in cols)
     conn.execute(f"INSERT OR REPLACE INTO metrics ({col_sql}) VALUES ({marks})", payload)
-    conn.commit()
 
 
 def upsert_dead_end(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    """Insert or replace one dead-end ledger row (keyed by hypothesis_hash). The
+    CALLER owns the commit so a batch of dead-ends is a single transaction."""
     cols = ("hypothesis_hash", "lever", "pr_set_id", "summary", "why_failed", "retry_at_pr_set")
     payload = {c: row.get(c) for c in cols}
     col_sql = ", ".join(cols)
     marks = ", ".join(f":{c}" for c in cols)
     conn.execute(f"INSERT OR REPLACE INTO dead_ends ({col_sql}) VALUES ({marks})", payload)
-    conn.commit()
 
 
 TIMING_COLUMNS: tuple[str, ...] = (
@@ -343,7 +350,9 @@ TIMING_COLUMNS: tuple[str, ...] = (
 
 def upsert_timing(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
     """Insert or replace one timing row. n_calls defaults to 1 and status to
-    'measured' when the caller omits them, matching the table defaults."""
+    'measured' when the caller omits them, matching the table defaults. The CALLER
+    owns the commit so a bulk ingest of timing rows is a single transaction / one
+    fsync, not one per row."""
     payload: dict[str, Any] = {c: row.get(c) for c in TIMING_COLUMNS}
     if payload.get("n_calls") is None:
         payload["n_calls"] = 1
@@ -352,7 +361,6 @@ def upsert_timing(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
     col_sql = ", ".join(TIMING_COLUMNS)
     marks = ", ".join(f":{c}" for c in TIMING_COLUMNS)
     conn.execute(f"INSERT OR REPLACE INTO timings ({col_sql}) VALUES ({marks})", payload)
-    conn.commit()
 
 
 def slowest_timings(
@@ -392,17 +400,20 @@ def slowest_timings(
 
 
 def get_experiment(conn: sqlite3.Connection, run_id: str) -> dict[str, Any] | None:
+    """Return one experiment row as a dict, or None if no such run_id exists."""
     cur = conn.execute("SELECT * FROM experiments WHERE run_id = ?", (run_id,))
     r = cur.fetchone()
     return dict(r) if r else None
 
 
 def all_experiments(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """All experiment rows, oldest first (ts then run_id), as dicts."""
     cur = conn.execute("SELECT * FROM experiments ORDER BY ts ASC, run_id ASC")
     return [dict(r) for r in cur.fetchall()]
 
 
 def metrics_for(conn: sqlite3.Connection, run_id: str) -> list[dict[str, Any]]:
+    """Per-tool metric rows for one run_id, best F1 first, as dicts."""
     cur = conn.execute(
         "SELECT * FROM metrics WHERE run_id = ? ORDER BY f1 DESC NULLS LAST, tool ASC",
         (run_id,),
@@ -436,22 +447,27 @@ class GateResult:
         )
 
 
-def _fallback_gate(
+def summary_stat_gate(
     baseline: dict[str, Any],
     candidate: dict[str, Any],
-) -> GateResult:
+) -> dict[str, Any]:
     """Pure-stdlib evaluation of the 5-gate predicate from the recorded row means
-    and CIs. This is the standalone path used when scripts/stats.py (which carries
-    the paired-bootstrap machinery) is not importable. It evaluates the gate
-    arithmetic over the persisted summary statistics; it does NOT recompute paired
-    bootstrap deltas (that requires the per-PR samples and numpy, which live in
-    scripts/stats.py).
+    and CIs. This is the SINGLE owner of the summary-statistics gate arithmetic:
+    it is the standalone path used when scripts/stats.py (which carries the paired
+    bootstrap machinery) is not importable, and scripts/stats.py imports it so the
+    fallback never drifts from a second copy. It evaluates the gate arithmetic over
+    the persisted summary statistics; it does NOT recompute paired bootstrap deltas
+    (that requires the per-PR samples and numpy, which live in scripts/stats.py).
 
     GATE-3 here is approximated by the SIGN of (f1_mean_C - f1_mean_B) and the
     overlap of the two F1 CIs: if the candidate CI lower bound exceeds the baseline
     CI upper bound, the delta CI strictly excludes 0 (a sufficient, conservative
     condition). When the CIs overlap, GATE-3 is reported as not-separated and the
     outcome is inconclusive unless another gate already forced a revert.
+
+    Returns the tracker's mapping contract: {"verdict", "gates", "detail"} with
+    lower-cased verdicts ("promote" | "revert" | "inconclusive") and the
+    underscored gate keys (gate_1_recall ...) that scripts/stats.py also emits.
     """
 
     def f(row: dict[str, Any], key: str, default: float = 0.0) -> float:
@@ -465,9 +481,15 @@ def _fallback_gate(
     f1lo_c = f(candidate, "f1_ci_lo")
     std_b = f(baseline, "f1_stdev")
     std_c = f(candidate, "f1_stdev")
-    cost_b = f(baseline, "cost_mean")
+    # cost_mean is kept as Optional so a missing baseline cost fails GATE-5 CLOSED
+    # (we cannot bound the cost ratio, so we must not silently pass the guard).
+    cost_b_raw = baseline.get("cost_mean")
+    cost_b = float(cost_b_raw) if cost_b_raw is not None else None
     cost_c = f(candidate, "cost_mean")
-    n_prs = _pr_set_rung(candidate.get("pr_set_id")) or 0
+    # The PR rung is the sample-size floor input. Distinguish "unknown" (None)
+    # from a real zero so a missing/unparseable pr_set_id never collapses to a
+    # falsy 0 that bypasses the underpower guard.
+    n_prs = _pr_set_rung(candidate.get("pr_set_id"))
 
     # GATE-1 recall non-regression. We do not have the paired delta CI here, so we
     # apply the point-estimate floor and the absolute drop ceiling (-0.03).
@@ -479,17 +501,21 @@ def _fallback_gate(
     gate3 = (f1_c > f1_b) and f1_ci_separated
     # GATE-4 stability.
     gate4 = std_c <= (std_b + GATE4_STDEV_SLACK)
-    # GATE-5 cost guard. If baseline cost is unknown/0 we cannot bound it; pass.
-    gate5 = (cost_b <= 0) or (cost_c <= GATE5_COST_MULTIPLIER * cost_b)
+    # GATE-5 cost guard. A missing/zero baseline cost cannot bound the candidate's
+    # ratio, so we FAIL CLOSED: GATE-5 is red and the run is held INCONCLUSIVE
+    # pending a real baseline cost rather than waved through.
+    cost_baseline_missing = cost_b is None or cost_b <= 0
+    gate5 = (not cost_baseline_missing) and cost_c <= GATE5_COST_MULTIPLIER * cost_b  # type: ignore[operator]
 
     gates = {
-        "gate1_recall": gate1,
-        "gate2_noise": gate2,
-        "gate3_progress": gate3,
-        "gate4_stability": gate4,
-        "gate5_cost": gate5,
+        "gate_1_recall": gate1,
+        "gate_2_noise": gate2,
+        "gate_3_progress": gate3,
+        "gate_4_stability": gate4,
+        "gate_5_cost": gate5,
     }
-    detail = {
+    underpowered = n_prs is not None and n_prs < MIN_PRS_FOR_PROMOTE
+    detail: dict[str, Any] = {
         "recall_delta": round(rec_c - rec_b, 4),
         "fp_per_pr_delta": round(fp_c - fp_b, 4),
         "f1_delta": round(f1_c - f1_b, 4),
@@ -497,24 +523,39 @@ def _fallback_gate(
         "baseline_f1_ci": [f1lo_b, f1hi_b],
         "candidate_f1_ci_lo": f1lo_c,
         "stdev_delta": round(std_c - std_b, 4),
-        "cost_ratio": round(cost_c / cost_b, 4) if cost_b > 0 else None,
+        "cost_ratio": (
+            round(cost_c / cost_b, 4)
+            if cost_b is not None and cost_b > 0
+            else None
+        ),
         "n_prs": n_prs,
         "engine": "fallback-stdlib",
-        "underpowered": n_prs < MIN_PRS_FOR_PROMOTE,
+        "underpowered": underpowered,
+        "notes": [],
     }
+    if cost_baseline_missing:
+        detail["notes"].append("cost_baseline_missing")
 
     # Outcome rules (plan 6.3): all green -> promote; only GATE-3 straddles 0 ->
-    # inconclusive (retry at next rung); any of GATE-1/2/4/5 red -> revert.
+    # inconclusive (retry at next rung); any of GATE-1/2/4/5 red -> revert. A
+    # missing baseline cost is treated as not-yet-provable, not a regression, so it
+    # routes to inconclusive rather than revert.
     hard_gates_ok = gate1 and gate2 and gate4 and gate5
-    if n_prs and n_prs < MIN_PRS_FOR_PROMOTE:
+    # Two distinct not-yet-provable cases route to inconclusive (vs a genuine
+    # regression -> revert): (a) the only failing gate is GATE-5 because the
+    # baseline cost is missing (the other hard gates pass), or (b) the only
+    # failing gate is GATE-3 (the progress CI straddles zero).
+    cost_blocked = cost_baseline_missing and gate1 and gate2 and gate4
+    progress_only_red = hard_gates_ok and not gate3
+    if underpowered:
         verdict = "inconclusive"
     elif all(gates.values()):
         verdict = "promote"
-    elif hard_gates_ok and not gate3:
+    elif cost_blocked or progress_only_red:
         verdict = "inconclusive"
     else:
         verdict = "revert"
-    return GateResult(verdict=verdict, gates=gates, detail=detail)
+    return {"verdict": verdict, "gates": gates, "detail": detail}
 
 
 def run_gate(
@@ -535,13 +576,24 @@ def run_gate(
         raise SystemExit(f"candidate run not found: {candidate_run}")
 
     # Lazy import: only attempted inside this function so the module is importable
-    # without numpy/scipy/statsmodels and without scripts/stats.py present.
+    # without numpy/scipy/statsmodels and without scripts/stats.py present. We
+    # narrow to IMPORT errors only: an ImportError/ModuleNotFoundError genuinely
+    # means the bench stack is absent, so the stdlib summary-stat path is correct.
+    # A different exception (a real bug inside scripts.stats: SyntaxError,
+    # AttributeError, a failed numpy import surfacing as ImportError is still an
+    # import error) must NOT be swallowed into a silent engine swap, so it
+    # propagates and the operator sees it.
     try:
         if str(REPO) not in sys.path:
             sys.path.insert(0, str(REPO))
-        from scripts.stats import promote_gate  # type: ignore
-    except Exception:  # any import failure means use the stdlib fallback.
-        return _fallback_gate(baseline, candidate)
+        from scripts.stats import promote_gate  # type: ignore[import-not-found, import-untyped]
+    except (ImportError, ModuleNotFoundError):
+        result = summary_stat_gate(baseline, candidate)
+        return GateResult(
+            verdict=result["verdict"],
+            gates={str(k): bool(v) for k, v in result["gates"].items()},
+            detail=dict(result["detail"]),
+        )
 
     raw = promote_gate(baseline, candidate)
     # scripts.stats.promote_gate is expected to return a mapping with at least

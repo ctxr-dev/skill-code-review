@@ -13,6 +13,7 @@ import importlib
 import json
 import sqlite3
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -25,21 +26,29 @@ if str(SCRIPTS) not in sys.path:
 
 
 @pytest.fixture
-def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[ModuleType, ModuleType]:
+def harness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[tuple[ModuleType, ModuleType]]:
     """Import ``paths`` + ``ingest_verdicts`` with TMP and DB_PATH redirected.
 
     Returns the two modules. ``paths.TMP`` points at an isolated tree and
     ``ingest_verdicts.DB_PATH`` at a throwaway sqlite file, so the test is
-    hermetic.
+    hermetic. On teardown ``ingest_verdicts`` is re-reloaded after monkeypatch has
+    reverted paths, so its rebound module-level references do not leak this test's
+    deleted tmp_path into later tests.
     """
     paths = importlib.import_module("paths")
     monkeypatch.setattr(paths, "TMP", tmp_path / "tmp")
     ingest = importlib.import_module("ingest_verdicts")
     importlib.reload(ingest)  # rebind module-level DB_PATH/BENCHMARKS after reload
     monkeypatch.setattr(ingest, "DB_PATH", tmp_path / "benchmarks" / "experiments.db")
-    # Force the duplicated CREATE TABLE path (no real benchmarks/experiments.py).
-    monkeypatch.setattr(ingest, "_tracker_init", lambda: None)
-    return paths, ingest
+    # The findings table is created by the tracker's canonical init_db (single
+    # schema owner); there is no longer a duplicated CREATE TABLE to force.
+    try:
+        yield paths, ingest
+    finally:
+        monkeypatch.undo()
+        importlib.reload(ingest)  # rebind against the restored (unpatched) paths
 
 
 def _write_pair(
@@ -186,3 +195,50 @@ def test_missing_files_yield_no_rows(harness: tuple[ModuleType, ModuleType]) -> 
     """No verdict or no input for a PR -> no rows (never a partial/garbage row)."""
     _paths_mod, ingest = harness
     assert ingest.rows_for_pr("iter1", "nonexistent") == []
+
+
+def test_apples_to_apples_skill_meta_side_table(
+    harness: tuple[ModuleType, ModuleType],
+) -> None:
+    """Skill candidates are bare strings in the judge prompt (apples-to-apples with
+    competitors); the per-finding labels come from the idx-aligned `skill_meta`
+    side-table, which ingest joins back on idx."""
+    paths_mod, ingest = harness
+    in_path = paths_mod.judge_input_path("iter1", "demo-meta")
+    in_path.parent.mkdir(parents=True, exist_ok=True)
+    in_path.write_text(json.dumps({
+        "pr_id": "demo-meta",
+        "golden": ["G0", "G1"],
+        # Bare-string candidate lists for EVERY tool (no inline confidence/severity).
+        "tools": {
+            "skill-prod": ["finding zero", "finding one", "finding two"],
+            "coderabbit": ["comp a", "comp b"],
+        },
+        # Out-of-band labels, idx-aligned with the skill candidate list.
+        "skill_meta": {
+            "skill-prod": [
+                {"defect_confidence": 0.2, "severity": "minor", "idx": 0},
+                {"defect_confidence": 0.9, "severity": "critical", "idx": 1},
+                {"defect_confidence": 0.5, "severity": "important", "idx": 2},
+            ],
+        },
+    }))
+    verdict_path = paths_mod.judge_path("iter1", "demo-meta")
+    verdict_path.parent.mkdir(parents=True, exist_ok=True)
+    verdict_path.write_text(json.dumps({
+        "pr_id": "demo-meta",
+        "tools": {
+            "skill-prod": {"tp": 1, "fp": 2, "fn": 1, "matched": [1], "n_candidates": 3},
+            "coderabbit": {"tp": 1, "fp": 0, "fn": 1, "matched_golden": [0], "n_candidates": 2},
+        },
+    }))
+    rows = ingest.rows_for_pr("iter1", "demo-meta")
+    # Only skill rows; competitor (matched_golden, no per-candidate label) skipped.
+    assert {r[2] for r in rows} == {"skill-prod"}
+    by_idx = {r[3]: r for r in rows}
+    # Labels are recovered from skill_meta, joined on idx.
+    assert by_idx[1][4] == 0.9 and by_idx[1][5] == "critical"
+    assert by_idx[0][4] == 0.2 and by_idx[2][5] == "important"
+    # matched flag still set from the verdict's candidate-index list.
+    assert by_idx[0][6] == 0 and by_idx[1][6] == 1 and by_idx[2][6] == 0
+    assert all(r[7] == 2 for r in rows)  # golden_count on every row

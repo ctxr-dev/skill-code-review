@@ -13,6 +13,7 @@ import importlib
 import json
 import sqlite3
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 
@@ -28,16 +29,25 @@ for _p in (SCRIPTS, BENCH):
 @pytest.fixture
 def harness(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> tuple[ModuleType, ModuleType, ModuleType]:
+) -> Iterator[tuple[ModuleType, ModuleType, ModuleType]]:
     """Import ``paths`` + ``experiments`` + ``ingest_timings`` with TMP and the
-    tracker DB redirected to an isolated tree. Returns the three modules."""
+    tracker DB redirected to an isolated tree. Returns the three modules.
+
+    On teardown ``ingest_timings`` is re-reloaded AFTER monkeypatch has reverted
+    paths/experiments, so the module's rebound module-level references no longer
+    point at this test's (now-deleted) tmp_path and do not leak into later tests.
+    """
     paths = importlib.import_module("paths")
     monkeypatch.setattr(paths, "TMP", tmp_path / "tmp")
     experiments = importlib.import_module("experiments")
     monkeypatch.setattr(experiments, "DB_PATH", tmp_path / "benchmarks" / "experiments.db")
     ingest = importlib.import_module("ingest_timings")
     importlib.reload(ingest)  # rebind module-level paths/experiments after monkeypatch
-    return paths, experiments, ingest
+    try:
+        yield paths, experiments, ingest
+    finally:
+        monkeypatch.undo()
+        importlib.reload(ingest)  # rebind against the restored (unpatched) paths
 
 
 def _write_timings(paths_mod: ModuleType, run_id: str, pr_id: str, doc: dict) -> Path:

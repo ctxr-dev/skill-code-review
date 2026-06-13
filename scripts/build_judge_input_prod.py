@@ -12,15 +12,16 @@ Competitor candidate sets are copied from the committed Opus-4.5 candidates so
 score.py compares apples-to-apples against the same judge. Output goes to
 `paths.judge_input_path(run_id, pr_id)`.
 
-SKILL candidate shape (the per-finding label prerequisite, plan 7.1): each
-skill candidate is emitted as an object
-`{"text", "defect_confidence", "severity", "idx"}` (not bare text), so the
-judge verdict can record per-candidate `matched: [idx...]` and
-`scripts/ingest_verdicts.py` can write one labelled row per finding (the input
-the calibrator needs). The `text` field is unchanged readable text, so a judge
-that reads `candidate["text"]` (or that still tolerates a bare string) keeps
-working. Competitor candidates stay bare-string lists (no idx/confidence is
-available for them), so their shape is untouched and apples-to-apples holds.
+Apples-to-apples judge prompt: EVERY tool (skill and competitor) emits its
+candidates as a bare-string list, so the LLM judge sees the same shape for all
+tools and the product's self-reported confidence/severity are NOT presented as
+anchoring cues for the skill tools only. The per-finding labels the calibrator
+needs (plan 7.1) are carried OUT-OF-BAND in a sibling `skill_meta` block
+(`{tool: [{defect_confidence, severity, idx}, ...]}`, idx-aligned with that
+tool's bare-string candidate list), which the judge never reads and
+`scripts/ingest_verdicts.py` joins back on idx to write one labelled row per
+skill finding. The judge verdict still records per-candidate `matched: [idx...]`
+for skill tools; idx is the position in the bare-string list.
 """
 from __future__ import annotations
 
@@ -70,27 +71,38 @@ def _text(i: dict) -> str:
     return ((i.get("title") or "") + ". " + (i.get("description") or "")).strip()
 
 
-def _skill_candidates(issues: list[dict]) -> list[dict]:
-    """Emit each skill issue as a labelled candidate object.
+def _skill_candidates(issues: list[dict]) -> list[str]:
+    """The bare-string candidate list for a skill tool (the judge-prompt shape).
 
-    Shape per the per-finding label prerequisite (plan 7.1):
-      {"text": <readable>, "defect_confidence": <float|None>,
-       "severity": <str|None>, "idx": <position in this candidate list>}
-    `idx` is the candidate's position in THIS list (0-based, stable for the
-    emitted order), which is the index the judge records in `matched` and that
-    ingest_verdicts uses as `correct = idx in matched`. `defect_confidence`
-    sources the product's self-reported `confidence`; `severity` is carried
-    verbatim so the calibrator can bucket per severity.
+    Returns one readable string per issue, position-aligned (idx) with the
+    `skill_meta` block built by `_skill_meta`. Keeping skill candidates bare
+    matches the competitor shape so the judge sees no anchoring cue (confidence /
+    severity) for the skill tools only.
     """
-    out: list[dict] = []
-    for idx, i in enumerate(issues):
-        out.append({
-            "text": _text(i),
+    return [_text(i) for i in issues]
+
+
+def _skill_meta(issues: list[dict]) -> list[dict]:
+    """The OUT-OF-BAND per-finding labels for a skill tool (the calibrator input).
+
+    Shape per the per-finding label prerequisite (plan 7.1), idx-aligned with the
+    bare-string candidate list from `_skill_candidates`:
+      {"defect_confidence": <float|None>, "severity": <str|None>,
+       "idx": <position in the candidate list>}
+    `idx` is the candidate's 0-based position (the index the judge records in
+    `matched` and that ingest_verdicts joins on as `correct = idx in matched`).
+    `defect_confidence` sources the product's self-reported `confidence`;
+    `severity` is carried verbatim so the calibrator can bucket per severity. The
+    judge never sees this block, so it cannot anchor on it.
+    """
+    return [
+        {
             "defect_confidence": i.get("confidence"),
             "severity": i.get("severity"),
             "idx": idx,
-        })
-    return out
+        }
+        for idx, i in enumerate(issues)
+    ]
 
 
 def main() -> None:
@@ -104,20 +116,28 @@ def main() -> None:
         i for i in issues
         if i.get("severity") in ("critical", "important") and _is_correctness(i)
     ]
-    # Skill tools carry labelled candidate objects; competitors stay bare-string
-    # lists (no idx/confidence exists for them). `tools` is therefore a union
-    # type, hence the `list[object]` annotation.
-    tools: dict[str, list[object]] = {
-        "skill-prod": list(_skill_candidates(issues)),
-        "skill-prod-primary": list(_skill_candidates(primary_issues)),
-        "skill-prod-scoped": list(_skill_candidates(scoped_issues)),
+    # Every tool emits a bare-string candidate list so the judge sees one uniform
+    # shape (apples-to-apples; no confidence/severity anchoring for skill tools).
+    skill_issue_sets = {
+        "skill-prod": issues,
+        "skill-prod-primary": primary_issues,
+        "skill-prod-scoped": scoped_issues,
+    }
+    tools: dict[str, list[str]] = {
+        name: _skill_candidates(iss) for name, iss in skill_issue_sets.items()
+    }
+    # Out-of-band per-finding labels (idx-aligned with each skill tool's
+    # candidate list); the judge never reads this, ingest_verdicts joins on idx.
+    skill_meta: dict[str, list[dict]] = {
+        name: _skill_meta(iss) for name, iss in skill_issue_sets.items()
     }
     comp = CAND.get(key, {})
     for t in COMPETITORS:
         if t in comp:
             tools[t] = [c.get("text", "") for c in comp[t] if c.get("text")]
     out = {"pr_id": pr_id, "original_key": key, "lang": e["lang"],
-           "n_issues_prod": len(issues), "golden": golden, "tools": tools}
+           "n_issues_prod": len(issues), "golden": golden, "tools": tools,
+           "skill_meta": skill_meta}
     ip = paths.judge_input_path(VARIANT, pr_id)
     ip.parent.mkdir(parents=True, exist_ok=True)
     ip.write_text(json.dumps(out, indent=2))

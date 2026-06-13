@@ -142,6 +142,18 @@ Qodo (qodo.ai/blog/qodo-ranked-1-ai-code-review-tool-in-martians-code-review-ben
   coarse-then-fine structure is already correct. Routing-speed reduction is DEFERRED to a dedicated
   follow-up; the only remaining sound lever is CHEAPER TRIM OUTPUT (shorter/optional per-reject
   reason), which needs its own F1 A/B. See section 5A for the full record.
+- **R1 (ranker demote meta/coverage FP class) PROVEN DEAD-END at pr5, MIS-SCOPED (the first QUALITY
+  lever tried, not a speed lever).** The hypothesis was that fp/PR is driven by meta/process and
+  pure-coverage findings carried into the scored primary set, so demoting that class out of primary
+  cuts fp/PR at zero recall cost. Cheap-first (ranker-only `rerank.py`, n=4 samples per arm to control
+  ranker stochasticity, on 2 pilots) showed the target metric did NOT move: the named FP class has
+  ZERO members in the scored `skill-prod-primary` set across all 5 pilots, so the prompt-demotion rules
+  have nothing to bite on (the FPs the judge actually flags are concrete correctness/security claims).
+  Recall held in every sample (no golden TP demoted). Per the gate plan (no FP shed => mis-scoped, not
+  underpowered) STOPPED before any N=5 spend. Recorded as a `dead_ends` row with `retry_at_pr_set =
+  NULL` (structural: a larger PR set cannot make a demotion rule bite on a class the primary set does
+  not contain). Branch `feat/R1-ranker-demote-meta-and-coverage-fp-class` deleted, nothing pushed. See
+  section 5A.2d for the full record.
 - **Proof stack validated by self-dogfood.** The benchmark/proof stack was hardened by a self-dogfood
   loop that found and fixed ~73 real defects over 3 rounds, reaching 0 major / 0 minor. Separately, a
   capability-proof review of the ctxr/fsm engine surfaced ~5 to 6 genuine fsm bugs, tracked as a
@@ -574,6 +586,55 @@ in principle rescue it, but it must NOT be re-walked at pr5 or smaller.
   killed S1/S2/L2 cheaply, but a +0.20 fp/PR drift only became visible across the N=3 5-PR
   measurement. The two-stage gate (cheap-first THEN N=3) is exactly what separated L3's real speed
   win from its quality cost; neither stage alone would have.
+
+### 5A.2d R1: demote meta/process + pure-coverage findings out of primary [DEAD-END, PROVEN at pr5]
+
+**NB: R1 is a QUALITY/precision lever, not a speed lever; it is recorded here alongside the other
+proven dead-ends for one ledger, not because it touches routing latency.**
+
+**OUTCOME: PROVEN DEAD-END at pr5, MIS-SCOPED. Reverted (branch
+`feat/R1-ranker-demote-meta-and-coverage-fp-class`, deleted; nothing pushed).** The baseline F1 gap is
+all precision (recall 0.727 already strong, fp/PR 1.60), so the hypothesis was that a recurring
+false-positive class drives it: meta/process findings ABOUT THE REVIEW ITSELF (unaddressed-by-other
+-reviewer, release-readiness gating, procedural block-merge) and PURE coverage/testability opinions
+(added-without-a-test, magic-threshold-untestable) carried into the scored primary set. The change
+added two LOW-class rules to `workers/finding-ranker.md` (meta/process never primary; pure
+missing-test advisory) plus a `dispatch.py` fallback guard so `primary` requires an AFFIRMATIVE ranker
+vote (an OMITTED index keeps its severity-derived confidence but is no longer auto-floated to
+primary), with a supporting `handlers.py` corroboration tightening and a dormant
+`verifiers/rank_findings.md` gate-4 relaxation.
+
+Cheap-first via `scripts/rerank.py` (ranker-only, ~1 call/PR), n=4 samples per arm to control ranker
+stochasticity (`claude -p`, no temp/seed), lever HEAD vs baseline `origin/main` on 2 pilots. The
+target metric did NOT move: cal.com-14943 baseline {4,3,3,4} mean **3.5** vs lever {3,4,4,3} mean
+**3.5** (identical); discourse-1 baseline {4,4,4,6} mean **4.5** vs lever {4,4,4,4} mean **4.0**, the
+only delta being one baseline d=6 sample (baseline itself hit 4 in 3/4 samples), so the apparent drop
+is inside baseline noise, NOT lever-attributable. **ROOT CAUSE: the named FP class does not exist in
+the scored primary set.** Scanning the `skill-prod-primary` set across all 5 pilots found ZERO genuine
+meta/process or pure-coverage findings; the FPs the judge actually flags are concrete
+correctness/security claims (cal.com: catch-all-retry-increment, Prisma-update-in-catch; discourse:
+decompression-bomb, ImageMagick-extension-check, resize-loop-no-cap), so the prompt demotion rules
+have nothing to bite on. The `dispatch.py` fallback guard (the load-bearing half) only fires for
+OMITTED ranker indices, but specialists supply parseable confidence on every primary finding here, so
+it is INERT on the measured path (deterministically correct per new unit tests, never triggered on
+this corpus). **RECALL HELD** in every sample of both arms: all golden-matching primaries stayed
+primary (cal.com deleteMany-OR-clause + retryCount-stale; discourse downsize-duplicate +
+hardcoded-10MB); no golden TP was ever demoted. Green gate fully passes (ruff clean, mypy clean, 231
+pytest pass) including the new omitted-critical-not-primary tests.
+
+Per the gate plan (if no FP is shed, STOP, the rule is mis-scoped not underpowered) and the lever's
+own falsifiability clause (deterministic recall-safety means a null is a real null), did NOT proceed
+to the N=5 spend. Recorded as a `dead_ends` row with **`retry_at_pr_set = NULL`**: this is STRUCTURAL,
+not power-limited. A larger PR set cannot make a demotion rule bite on a class the primary set does not
+contain, so unlike L3 there is no ramp that rescues R1 as written. A future precision lever must
+target the ACTUAL FP family (concrete-but-wrong correctness/security claims), which is a specialist /
+ranker-confidence problem, not a meta/coverage-class problem.
+
+- **Methodology data point:** cheap-first earned its keep again, this time on a QUALITY lever. It
+  killed R1 for ~8 ranker calls (n=4 x 2 pilots) by showing the target metric is flat AND, decisively,
+  by surfacing that the hypothesized FP class is absent from the scored set. The lesson is to
+  EVIDENCE the FP taxonomy in the scored primary set BEFORE authoring a class-specific demotion rule;
+  R1 assumed a class the corpus does not exhibit.
 
 ### 5A.3 S3 (DEFERRED contingency): sqlite-vec / embedding ROUTING pre-filter
 

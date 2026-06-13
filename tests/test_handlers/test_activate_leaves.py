@@ -10,6 +10,7 @@ import pytest
 from code_review.handlers import (
     _enumerate_wiki_leaves,
     _evaluate_activation,
+    _keyword_matches,
     _minimatch,
     handle_activate_leaves,
 )
@@ -115,6 +116,102 @@ def test_evaluate_activation_skips_leaves_without_id() -> None:
         diff_text="",
     )
     assert [leaf["id"] for leaf in activated] == ["ok"]
+
+
+# ---------------------------------------------------------------------------
+# Whole-word keyword matching: precision (no substring false-fires) while
+# preserving recall (genuine whole-word / token / multi-word matches fire).
+# ---------------------------------------------------------------------------
+
+
+def test_keyword_no_substring_false_fires() -> None:
+    """The documented substring false-fires must NOT match any more."""
+    # "io" must not fire inside "integrations" (fw-scala-web on a Python diff).
+    assert _keyword_matches(["io"], "+ from app.integrations import x") is False
+    # "iv" must not fire inside "active" (crypto-nonce-iv-management).
+    assert _keyword_matches(["iv"], "+ user.active = True") is False
+    # "rp" must not fire inside "pipeline" (crypto-webauthn-passkeys).
+    assert _keyword_matches(["rp"], "+ run the pipeline now") is False
+
+
+def test_keyword_whole_word_still_matches() -> None:
+    """A short keyword must still fire on a genuine whole-word occurrence."""
+    assert _keyword_matches(["iv"], "+ iv = os.urandom(16)") is True
+    # Adjacent punctuation keeps the boundary intact.
+    assert _keyword_matches(["iv"], "+ cipher.update(iv;)") is True
+    assert _keyword_matches(["iv"], "+ aes.encrypt(data, (iv))") is True
+    # But the same keyword must reject the substring-of-a-word case.
+    assert _keyword_matches(["iv"], "+ if user.active:") is False
+
+
+def test_keyword_token_in_identifier_fires() -> None:
+    """The keyword as a hyphen/dot/path-separated token still fires."""
+    assert _keyword_matches(["io"], "+ import io.circe.parser") is True
+    assert _keyword_matches(["rp"], "+ webauthn.rp.id = 'example.com'") is True
+
+
+def test_keyword_multi_word_phrase_matches() -> None:
+    """Multi-word phrases match with boundaries only at the two ends."""
+    assert _keyword_matches(["sql injection"], "+ guard against SQL injection") is True
+    # Embedded in a larger word at either end must not fire.
+    assert (
+        _keyword_matches(["sql injection"], "+ nosql injectionsafe helper") is False
+    )
+
+
+def test_keyword_case_insensitive() -> None:
+    assert _keyword_matches(["csrf"], "+ added CSRF token") is True
+    assert _keyword_matches(["CSRF"], "+ added csrf token") is True
+
+
+def test_keyword_symbol_edge_keywords_still_match() -> None:
+    """Keywords whose first/last char is a SYMBOL must keep matching where they
+    actually occur in code. The alnum-boundary guard is applied per-edge ONLY on
+    an alphanumeric edge; a symbol edge gets no constraint. A naive ``\\b``-style
+    boundary would zero these channels (405 such keywords live in the corpus:
+    annotations, method-chains, prefixes, suffixes, operators, URIs)."""
+    # Leading-symbol keywords (method-chain / member-access) after an identifier.
+    assert _keyword_matches([".append("], "+ result.append(item)") is True
+    assert _keyword_matches([".get("], "+ val = user.get(name)") is True
+    assert _keyword_matches([".unwrap()"], "+ let x = res.unwrap();") is True
+    assert _keyword_matches(["?."], "+ const x = a?.b") is True
+    # Annotations butted against a preceding token.
+    assert _keyword_matches(["@Test"], "+ foo@Test bar") is True
+    assert _keyword_matches(["@Injectable"], "+ x@Injectable()") is True
+    # Trailing-symbol prefix keywords that continue into an identifier.
+    assert _keyword_matches(["aria-"], '+ <div aria-hidden="true">') is True
+    assert _keyword_matches(["pg_"], "+ SELECT * FROM pg_stat_activity") is True
+    assert _keyword_matches(["is_"], "+ if user.is_admin:") is True
+    assert _keyword_matches(["ws://"], "+ connect('ws://host:8080')") is True
+    # Leading-symbol suffix keyword preceded by an identifier char.
+    assert _keyword_matches(["_token"], "+ form.csrf_token = gen()") is True
+    # Operator keywords flanked by alnum on both sides.
+    assert _keyword_matches(["!="], "+ if a!=b:") is True
+    assert _keyword_matches([">="], "+ while x>=0:") is True
+    # A symbol-internal keyword with an alnum tail still anchors that tail.
+    assert _keyword_matches(["c++"], "+ written in c++") is True
+
+
+def test_keyword_alnum_edge_still_guarded_after_symbol_fix() -> None:
+    """The per-edge rule must NOT reintroduce substring false-fires for keywords
+    with alphanumeric edges: those keep the whole-word boundary on both sides."""
+    assert _keyword_matches(["io"], "+ from app.integrations import x") is False
+    assert _keyword_matches(["auth"], "+ use oauth2 here") is False
+    assert _keyword_matches(["iv"], "+ user.active = True") is False
+
+
+def test_keyword_evaluate_activation_no_false_fire() -> None:
+    """Integration through the gate: a leaf does not activate on a substring."""
+    leaves = [
+        {"id": "fw-scala-web", "activation": {"keyword_matches": ["io"]}},
+    ]
+    activated, _ = _evaluate_activation(
+        leaves=leaves,
+        changed_paths=[],
+        project_profile={},
+        diff_text="+ from app.integrations import handler",
+    )
+    assert activated == []
 
 
 # ---------------------------------------------------------------------------

@@ -30,6 +30,7 @@ import os
 import re
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
 from secrets import token_hex
@@ -508,19 +509,44 @@ def _file_globs_match(globs: Any, changed_paths: list[Any]) -> bool:
     return False
 
 
+@lru_cache(maxsize=2048)
+def _compile_keyword(norm: str) -> re.Pattern[str]:
+    """Compile a whole-word, case-insensitive matcher for one keyword.
+
+    Token boundaries are alphanumeric-aware, and the no-adjacent-alnum guard is
+    applied to an EDGE only when that edge character is itself alphanumeric. An
+    all-letters keyword like ``"io"`` therefore only matches as a standalone
+    token, killing substring false-fires (``"io"`` inside ``integrations``,
+    ``"iv"`` inside ``active``, ``"rp"`` inside ``pipeline``) while still firing
+    next to punctuation (``iv;``, ``(iv)``) or as a token in an identifier.
+
+    Keywords whose edge is a SYMBOL get NO boundary constraint on that side, so
+    intentional method-chain / prefix / suffix / operator keywords keep matching
+    where they actually occur: ``.append(`` in ``result.append(``, ``aria-`` in
+    ``aria-hidden``, ``_token`` in ``csrf_token``, ``@Test`` after ``foo@Test``,
+    ``!=`` in ``a!=b``. Applying an alnum-boundary to a symbol edge (the naive
+    ``\\b``-style approach) would silently zero those keyword channels, a recall
+    regression for every leaf that relies on a symbol-edged keyword. Multi-word
+    phrases (``sql injection``) are escaped whole; the same per-edge rule applies
+    to the two ends of the phrase.
+    """
+    left = r"(?<![A-Za-z0-9])" if norm[:1].isalnum() else ""
+    right = r"(?![A-Za-z0-9])" if norm[-1:].isalnum() else ""
+    return re.compile(left + re.escape(norm) + right, re.IGNORECASE)
+
+
 def _keyword_matches(keywords: Any, diff_text: str) -> bool:
     if not isinstance(keywords, list) or not keywords:
         return False
     if not diff_text:
         return False
-    lower = diff_text.lower()
     for kw in keywords:
         if not isinstance(kw, str):
             continue
         norm = kw.strip()
         if not norm:
             continue
-        if norm.lower() in lower:
+        if _compile_keyword(norm).search(diff_text) is not None:
             return True
     return False
 

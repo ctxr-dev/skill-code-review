@@ -211,11 +211,17 @@ def _call_backend(
     test fakes) or a ``(text, usage)`` tuple. Normalising here means the cost
     capture is additive: a str-returning backend yields ``usage=None`` and the
     findings are identical to the pre-capture path (the (text, None) golden
-    equality the test asserts)."""
+    equality the test asserts).
+
+    Defensive on shape: only a 2-tuple is destructured as ``(text, usage)``, and a
+    non-dict usage is coerced to ``None`` rather than flowed into cost stamping.
+    Any other return (a 1- or 3-tuple, or a bare value) degrades to the legacy
+    ``str(out)`` path with ``usage=None``, so a backend that returns an unexpected
+    shape costs only its cost telemetry, never a hard unpack crash mid-review."""
     out = run(prompt, cwd, tier)
-    if isinstance(out, tuple):
+    if isinstance(out, tuple) and len(out) == 2:
         text, usage = out
-        return str(text), usage
+        return str(text), usage if isinstance(usage, dict) else None
     return str(out), None
 
 

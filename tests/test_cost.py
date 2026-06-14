@@ -94,3 +94,26 @@ def test_call_cost_fields_no_usage_falls_back_to_char_estimate() -> None:
     assert f["cache_create"] == 0 and f["cache_read"] == 0
     assert f["cost_usd"] is None  # nothing billed under the proxy
     assert f["est_cost"] == cost.est_cost("strong", 10, 20)
+
+
+def test_call_cost_fields_zero_token_usage_falls_back_but_keeps_cost_usd() -> None:
+    """A usage dict present but with ALL token counts zero (an envelope that carried
+    total_cost_usd but no usage block) must NOT price the call at est_cost 0 (a real
+    call masquerading as free). It falls back to the char estimate for tokens while
+    PRESERVING the CLI-billed cost_usd."""
+    usage = {"in_tokens": 0, "out_tokens": 0, "cache_create": 0, "cache_read": 0,
+             "cost_usd": 0.2198}
+    f = cost.call_cost_fields("strong", usage, "a" * 40, "b" * 80)
+    assert f["tokens_in"] == 10 and f["tokens_out"] == 20  # char estimate kicked in
+    assert f["cost_usd"] == 0.2198  # billed figure preserved
+    assert f["est_cost"] == cost.est_cost("strong", 10, 20) > 0
+
+
+def test_call_cost_fields_zero_usage_with_empty_text_stays_zero() -> None:
+    """With all-zero usage AND empty prompt/response there is genuinely nothing to
+    estimate, so est_cost stays 0 (no fabricated proxy from empty strings)."""
+    usage = {"in_tokens": 0, "out_tokens": 0, "cache_create": 0, "cache_read": 0,
+             "cost_usd": None}
+    f = cost.call_cost_fields("cheap", usage, "", "")
+    assert f["tokens_in"] == 0 and f["tokens_out"] == 0
+    assert f["est_cost"] == 0.0

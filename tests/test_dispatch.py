@@ -11,6 +11,7 @@ import pytest
 from code_review import cost
 from code_review.dispatch import (
     _apply_rank_decisions,
+    _call_backend,
     _compact_inputs,
     _index_by_id,
     _parse_json,
@@ -213,6 +214,27 @@ def test_cost_capture_does_not_change_the_prompt_or_tier(tmp_path: Path) -> None
     assert "git diff B..H" in prompt
     assert "lang-python" in prompt
     assert "cost" not in prompt.lower().split("review target")[0]
+
+
+def test_call_backend_normalises_malformed_return_shapes() -> None:
+    """_call_backend must degrade gracefully on an unexpected backend return shape
+    rather than crash the review: a bare str -> (str, None); a proper 2-tuple ->
+    (text, usage); a (text, non-dict) -> usage coerced to None; a non-2-tuple ->
+    legacy str(out) path with usage None. So a misbehaving backend costs only its
+    cost telemetry, never a hard ValueError at unpack mid-dispatch."""
+    # Bare text (legacy / test fakes).
+    assert _call_backend(lambda p, c, t: "hello", "p", "/tmp", "cheap") == ("hello", None)
+    # Proper (text, usage dict).
+    u = {"in_tokens": 1}
+    assert _call_backend(lambda p, c, t: ("txt", u), "p", "/tmp", "cheap") == ("txt", u)
+    # (text, non-dict usage) -> usage coerced to None, text preserved.
+    assert _call_backend(lambda p, c, t: ("txt", "oops"), "p", "/tmp", "cheap") == ("txt", None)
+    assert _call_backend(lambda p, c, t: ("txt", 42), "p", "/tmp", "cheap") == ("txt", None)
+    # Non-2-tuple (1- or 3-tuple) -> legacy str(out) path, usage None, no unpack crash.
+    text1, usage1 = _call_backend(lambda p, c, t: ("only",), "p", "/tmp", "cheap")
+    assert usage1 is None and "only" in text1
+    _text3, usage3 = _call_backend(lambda p, c, t: ("a", {}, "extra"), "p", "/tmp", "cheap")
+    assert usage3 is None
 
 
 def test_text_only_backend_yields_identical_findings_to_tuple_backend(tmp_path: Path) -> None:

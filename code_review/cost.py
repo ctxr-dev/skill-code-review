@@ -178,6 +178,16 @@ def call_cost_fields(
         cache_create = int(usage.get("cache_create") or 0)
         cache_read = int(usage.get("cache_read") or 0)
         cost_usd = usage.get("cost_usd")
+        # A usage dict can be present yet carry NO token counts: usage_from_envelope
+        # returns a dict whenever total_cost_usd is present even if the usage block
+        # itself was absent. All-zero tokens against a non-empty prompt/response is
+        # missing token telemetry, not a free call; estimating est_cost at 0 there
+        # would make a real call look free and pull total_est_cost toward 0. Fall
+        # back to the char estimate for the token counts (PRESERVING the CLI-billed
+        # cost_usd if it was provided) so est_cost stays a positive proxy.
+        if in_tok == 0 and out_tok == 0 and cache_create == 0 and cache_read == 0 and (prompt or response_text):
+            in_tok = est_tokens_from_chars(prompt)
+            out_tok = est_tokens_from_chars(response_text)
     else:
         in_tok = est_tokens_from_chars(prompt)
         out_tok = est_tokens_from_chars(response_text)

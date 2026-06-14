@@ -117,6 +117,33 @@ def _accumulate_cost(stats: RunnerStats, out: dict[str, Any]) -> None:
             stats.total_est_cost += float(ec)
 
 
+def _num(value: Any) -> float | None:
+    """Coerce a cost-stamp field to float, excluding bool (a subclass of int)."""
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _sum_cost_stamp(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Sum the per-call cost stamp (wall_ms + token/cost fields) across the
+    sub-dispatches of one overflow-split leaf, so the merged result carries a stamp
+    consistent with what _accumulate_cost already folded into the run totals.
+
+    A field is summed only over sub-results that actually carry it; if NO sub-result
+    carried a numeric value the field stays None (never a fabricated 0), matching the
+    fail-closed convention the ingest layer reads. tier is taken from the first
+    sub-result that has one (the split shares the routed tier)."""
+    keys = ("wall_ms", "tokens_in", "tokens_out", "cost_usd", "est_cost")
+    stamp: dict[str, Any] = {}
+    for key in keys:
+        vals = [n for r in results if (n := _num(r.get(key))) is not None]
+        if vals:
+            stamp[key] = int(sum(vals)) if key in ("wall_ms", "tokens_in", "tokens_out") else sum(vals)
+    for r in results:
+        if r.get("tier") is not None:
+            stamp["tier"] = r["tier"]
+            break
+    return stamp
+
+
 # Best-effort worker states: a transient outage degrades to a safe fallback
 # output and the review continues, rather than faulting the whole PR. Only
 # stages whose absence the downstream FSM tolerates belong here. tool_discovery
@@ -315,11 +342,23 @@ def _dispatch_one(
                 return failed("context overflow; single file too large")
             stats.overflow_splits += 1
             merged: list[Any] = []
+            sub_results: list[dict[str, Any]] = []
             for su in sub:
                 r = _dispatch_one(su, shared, dispatch_specialist, limiter, stats,
                                   max_retries=max_retries, base_backoff=base_backoff, sleep=sleep)
                 merged.extend(r.get("findings", []))
-            return {"id": leaf_id, "status": "completed", "findings": merged}
+                sub_results.append(r)
+            # Each sub-dispatch already folded its own cost into the run totals via
+            # _accumulate_cost, so the run-level rollup is correct. But the merged
+            # result must ALSO carry the summed cost stamp, else _per_specialist_timings
+            # records est_cost:null for this leaf while the rollup counts it, an
+            # inconsistency between the per-specialist row and the run total. Sum the
+            # stamps (NOT a re-accumulate; this only labels the merged row).
+            overflow_out: dict[str, Any] = {
+                "id": leaf_id, "status": "completed", "findings": merged,
+            }
+            overflow_out.update(_sum_cost_stamp(sub_results))
+            return overflow_out
         except Exception as exc:  # a bad unit must not kill the run
             limiter.release()
             attempt += 1

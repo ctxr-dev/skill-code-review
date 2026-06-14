@@ -308,6 +308,36 @@ def test_dispatch_units_accumulates_specialist_cost() -> None:
     assert abs(stats.total_est_cost - 0.002) < 1e-9
 
 
+def test_overflow_split_carries_summed_cost_stamp_onto_merged_result() -> None:
+    """The context-overflow split path returns a merged result that ALSO carries the
+    summed per-call cost stamp from its sub-dispatches, so _per_specialist_timings
+    records a real est_cost for that leaf instead of null, consistent with the
+    run-level total_est_cost the sub-calls already folded in via _accumulate_cost."""
+    def dispatch(unit: dict[str, Any], shared: dict[str, Any]) -> dict[str, Any]:
+        # The multi-file unit overflows; each single-file sub-unit succeeds with a stamp.
+        if unit["leaf_id"] == "big" and len(unit.get("files", [])) > 1:
+            raise ContextOverflowError
+        return {"id": unit["leaf_id"], "status": "completed", "findings": [],
+                "wall_ms": 5, "tokens_in": 2, "tokens_out": 11,
+                "cost_usd": 0.03, "est_cost": 0.0007, "tier": "strong"}
+
+    units = [{"leaf_id": "big", "sub_index": 1, "files": ["a.py", "b.py"]}]
+    stats = RunnerStats()
+    res = _dispatch_units(units, {}, dispatch, max_workers=2, min_workers=1,
+                          max_retries=1, base_backoff=0.0, sleep=lambda _s: None, stats=stats)
+    merged = res[("big", 1)]
+    assert merged["status"] == "completed"
+    # 2 single-file sub-units, each stamped: the merged row sums them.
+    assert merged["tokens_in"] == 4 and merged["tokens_out"] == 22
+    assert abs(merged["est_cost"] - 0.0014) < 1e-12
+    assert abs(merged["cost_usd"] - 0.06) < 1e-12
+    assert merged["wall_ms"] == 10
+    assert merged["tier"] == "strong"
+    # The run-level rollup matches what the sub-calls accumulated (no double count,
+    # no loss): the per-specialist row is now consistent with the run total.
+    assert abs(stats.total_est_cost - 0.0014) < 1e-12
+
+
 def test_run_review_measures_stage_timings_and_writes_timings_json(tmp_path: Any) -> None:
     """run_review measures per-state wall time LIVE and persists a timings.json
     artifact next to manifest.json carrying whole_review_ms + stage_timings +

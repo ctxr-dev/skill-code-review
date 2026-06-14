@@ -1468,3 +1468,13 @@ ANTHROPIC_API_KEY=...  OPENAI_API_KEY=...  GEMINI_API_KEY=...
   `.agents/rules/docs-and-wiki-stewardship.md`: the human-gated corpus rules (still apply).
 - `skill-code-review/scripts/`: the durable harness (`score.py`, `rerank.py`,
   `build_judge_input_prod.py`, `setup_repo.py`, `paths.py`).
+
+> **Follow-up (lang-free safe subset has zero EV, cost axis exhausted):** the lever's own
+> lang-block fallback (the 11 non-lang leaves: a11y-*, antipattern-magic-numbers-strings,
+> cli-tui-ux-design, principle-least-astonishment, qa-usability-beyond-a11y,
+> ai-llm-hallucination-handling, fe-hydration-mismatch) was estimated read-only from the
+> base-cost-n1 artifacts: those leaves are NEVER dispatched on the 5 backend-heavy pilots,
+> so demoting them saves 0.0 proxy-USD (0 percent). The entire tier-demote cost win came
+> from the recall-risky lang-* leaves. Conclusion: blanket model-tier demotion is exhausted
+> at pr5 (full set regresses recall/F1, recall-safe subset saves nothing). A cost lever must
+> instead target the dominant cost (cache_creation tokens per specialist call), not the tier.

@@ -462,6 +462,9 @@ def test_gate5_binds_once_cost_mean_is_populated(tracker: ModuleType) -> None:
     assert r_zero["gates"]["gate_5_cost"] is False
     assert "cost_candidate_missing" in r_zero["detail"]["notes"]
     assert r_zero["verdict"] == tracker.VERDICT_INCONCLUSIVE
+    # The displayed cost_ratio follows the SAME positive-cost-only rule as the gate:
+    # a non-positive candidate shows None, not a misleading 0.0 next to a failing gate.
+    assert r_zero["detail"]["cost_ratio"] is None
 
     # bool is a subclass of int: a malformed cost_mean: True must NOT coerce to 1.0
     # and bind GATE-5 on garbage; it reads as missing and fails closed on both sides.

@@ -173,11 +173,18 @@ def call_cost_fields(
     the response text; ``cost_usd`` stays None and ``est_cost`` is the proxy.
     """
     if usage is not None:
-        in_tok = int(usage.get("in_tokens") or 0)
-        out_tok = int(usage.get("out_tokens") or 0)
-        cache_create = int(usage.get("cache_create") or 0)
-        cache_read = int(usage.get("cache_read") or 0)
-        cost_usd = usage.get("cost_usd")
+        # Coerce via _as_int (excludes bool, returns None on non-numeric) so a
+        # malformed usage value degrades to 0 rather than raising in int(...) and
+        # crashing dispatch: the dispatch layer is meant to drop only cost telemetry
+        # on bad shapes, never hard-fail the review.
+        in_tok = _as_int(usage.get("in_tokens")) or 0
+        out_tok = _as_int(usage.get("out_tokens")) or 0
+        cache_create = _as_int(usage.get("cache_create")) or 0
+        cache_read = _as_int(usage.get("cache_read")) or 0
+        # cost_usd is a billed float (kept None when absent); validate it is numeric
+        # and not bool, else drop it rather than stamping a non-numeric value.
+        cu = usage.get("cost_usd")
+        cost_usd = float(cu) if isinstance(cu, (int, float)) and not isinstance(cu, bool) else None
         # A usage dict can be present yet carry NO token counts: usage_from_envelope
         # returns a dict whenever total_cost_usd is present even if the usage block
         # itself was absent. All-zero tokens against a non-empty prompt/response is

@@ -638,9 +638,13 @@ def summary_stat_gate(
         "baseline_f1_ci": [f1lo_b, f1hi_b],
         "candidate_f1_ci_lo": f1lo_c,
         "stdev_delta": round(std_c - std_b, 4),
+        # Display the ratio only when BOTH costs are present and positive (the same
+        # rule gate_5_cost gates on, via cost_missing). A non-positive candidate is
+        # invalid telemetry, so surfacing a 0.0/negative ratio next to a correctly
+        # failing gate_5 would mislead; show None instead.
         "cost_ratio": (
-            round(cost_c / cost_b, 4)
-            if cost_b is not None and cost_b > 0 and cost_c is not None
+            round(cost_c / cost_b, 4)  # type: ignore[operator]
+            if not cost_missing
             else None
         ),
         "n_prs": n_prs,

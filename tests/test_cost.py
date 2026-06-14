@@ -109,6 +109,21 @@ def test_call_cost_fields_zero_token_usage_falls_back_but_keeps_cost_usd() -> No
     assert f["est_cost"] == cost.est_cost("strong", 10, 20) > 0
 
 
+def test_call_cost_fields_tolerates_non_numeric_usage_values() -> None:
+    """A usage dict with non-numeric or bool token/cost values must NOT raise in
+    int(...)/float(...) and crash dispatch (the dispatch layer degrades by dropping
+    only cost telemetry). Bad values coerce to 0 / cost_usd None; a still-valid
+    field is honoured. Char fallback then prices the call from the prompt/response."""
+    usage = {"in_tokens": "oops", "out_tokens": None, "cache_create": True,
+             "cache_read": [], "cost_usd": "free"}
+    f = cost.call_cost_fields("cheap", usage, "a" * 40, "b" * 80)
+    # All token fields were unusable -> treated as all-zero -> char fallback kicks in.
+    assert f["tokens_in"] == 10 and f["tokens_out"] == 20
+    assert f["cache_create"] == 0 and f["cache_read"] == 0
+    assert f["cost_usd"] is None  # non-numeric cost_usd dropped, not stamped raw
+    assert f["est_cost"] == cost.est_cost("cheap", 10, 20)
+
+
 def test_call_cost_fields_zero_usage_with_empty_text_stays_zero() -> None:
     """With all-zero usage AND empty prompt/response there is genuinely nothing to
     estimate, so est_cost stays 0 (no fabricated proxy from empty strings)."""

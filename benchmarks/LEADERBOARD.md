@@ -3,7 +3,7 @@
 
 # Benchmark LEADERBOARD
 
-Generated: 2026-06-09T20:42:57+00:00
+Generated: 2026-06-14T20:08:01+00:00
 
 | tool | run_id | pr_set | recall | precision | F1 | FP/PR | $/review |
 |---|---|---|---|---|---|---|---|

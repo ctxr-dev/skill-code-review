@@ -933,6 +933,75 @@ restored to `4bdd93d`, working tree clean, ruff + mypy + full pytest green.
   frames recursive-cache-through-session as a recursion defect, not an N+1 / perf observation), not
   the routing layer.
 
+### 5A.2i FGSPEC: raise footgun specialist QUALITY (the 5A.2h follow-up) [DEAD-END, PROVEN at pr5]
+
+**NB: FGSPEC is the direct follow-up that 5A.2h named.** 5A.2h proved the keycloak recursion
+gold is a SPECIALIST finding-generation gap, not a routing loss, and prescribed the fix:
+strengthen the leaf bodies so the footgun specialist frames the bug as a defect rather than a
+perf observation. FGSPEC authored exactly those edits and ran the experiment. It also FAILED.
+
+**Lever (one attributable change):** leaf-body edits to two footgun leaves, authored in
+`reviewers.src/footgun/` and rebuilt into the wiki:
+- `footgun-null-and-missing-state.md`: sharpen the fail-open guard check where the LEFT operand
+  of a `fetch_state(X) != obj[k]` comparison is itself nullable (sentry-67876 gold 0).
+- `footgun-unintended-recursion.md`: a new "Facade / Session Self-Recursion" section telling the
+  specialist NOT to mis-frame a cache-front calling `session.<sameEntity>().<op>()` (the facade
+  returns this same instance, so the call re-enters) as an N+1 / chatty-coupling perf finding
+  (keycloak-32918 gold 0).
+
+**Method:** N=3 product runs over the 5 pilot PRs on `feat/footgun-specialist-quality`
+(HEAD `92396ff`, merge-base `a2fd836`), headline tool `skill-prod-primary`, Opus 4.8 judge,
+Martian rule. Recorded as experiment row `fgspec-pr5` in `experiments.db`.
+
+| axis | baseline (base-pr5) | candidate (fgspec-pr5) | verdict |
+|---|---|---|---|
+| recall mean | 0.727 | 0.788 | UP, but unstable (see below) |
+| F1 mean | 0.593 | 0.648 | up point, CI straddles 0 |
+| fp/PR mean | 1.60 | 1.467 | held (under ceiling) |
+| cost_mean | 9.7715 | 8.4355 | cheaper (ratio 0.863) |
+| F1 stdev | 0.030 | 0.108 | EXPLODED (GATE-4 fail) |
+| delta-F1 CI | n/a | [-0.005, 0.088] | straddles 0 (GATE-3 fail) |
+| delta-recall CI | n/a | [0.0, 0.089] | lo at the boundary |
+| sentry gold 0 (null fail-open) caught | 0/3 | 2/3 | newly caught (r2, r3 only) |
+| sentry gold 2 (KeyError missing sender key) caught | 3/3 | 2/3 | CAUGHT GOLD LOST (r3) |
+| keycloak gold 0 (recursion vs delegate) caught | 0/3 | 0/3 | NOT recovered (still N+1 in 3/3) |
+
+**Why it is a dead-end (the KEEP-rule argument):** the user KEEP rule requires recall UP with NO
+caught gold lost AND a delta-F1 that clears the baseline CI. Two independent failures:
+1. A CAUGHT GOLD WAS LOST. sentry gold 2 (the KeyError on a missing `sender` key, unrelated to
+   either patched leaf) fell 3/3 to 2/3. In r3 the strengthened fail-open / None framing absorbed
+   the sender-deref line into a single "both operands nullable" narrative and no standalone
+   KeyError-on-missing-key finding was emitted, so the gold the baseline caught every round was
+   dropped. The leaf edit reshaped how the specialist narrates that one line, and the reshaping
+   cost a previously reliable TP.
+2. THE KEYCLOAK GOLD WAS NOT RECOVERED. Even with the new "do not call this N+1" section in the
+   leaf body, the specialist still emitted N+1 / chatty-coupling framings of
+   `session.identityProviders().getById(id)` in 3/3 rounds (it even traces the delegate fall-through
+   and concludes "extra DB queries"). The body edit had ZERO empirical effect on this gold. A leaf
+   body that explicitly forbids the wrong frame still did not flip the model's frame.
+
+The only real gain (sentry gold 0) showed up in just r2 and r3, and r2 was a bimodal outlier
+(recall 0.909, F1 0.80) while r1 and r3 sat at F1 0.571 (BELOW the 0.593 baseline). The mean looked
+up, but the per-round signal is two baseline-equivalent-or-worse rounds plus one lucky round, which
+is exactly the noise the stdev gate exists to catch (0.030 to 0.108).
+
+`retry_at_pr_set = pr12`: the delta-F1 straddle and the stdev blow-up could in principle be a power
+artifact at 5 PRs, so a larger rung MAY re-open the sentry-null half. But the keycloak-recursion half
+and the sentry-gold-2 loss are structural (a leaf body forbidding a frame did not change the frame;
+an unrelated gold was displaced), so the lever as authored does not promote. Branch
+`feat/footgun-specialist-quality` deleted, nothing pushed; main restored to `a2fd836`, wiki drift
+check clean (506 files match), corpus byte-identical to a2fd836.
+
+- **Methodology data point:** a leaf-body instruction that NAMES the wrong frame and tells the
+  specialist not to use it is NOT sufficient to flip a strong-model framing bias. The keycloak
+  recursion gold survived both a routing pin (5A.2h) and an explicit anti-frame body edit (5A.2i);
+  the open path is upstream of the leaf prose (a dedicated critic / reconcile stage that re-reads a
+  perf-framed `session.<self>()` finding and re-classifies it, or a few-shot exemplar in the
+  worker prompt, not more checklist text). And: when strengthening one leaf's framing, re-check that
+  it does not CANNIBALIZE a sibling gold on the same code line (sentry gold 0 vs gold 2 share the
+  `metadata["sender"]["login"]` deref); a body edit that consolidates a multi-defect line into one
+  narrative can drop a gold the baseline split out.
+
 ### 5A.3 S3 (DEFERRED contingency): sqlite-vec / embedding ROUTING pre-filter
 
 DEFERRED, and now LOWER PRIORITY. The premise that S1 + S2 would land and bank a speed win did NOT

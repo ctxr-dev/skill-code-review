@@ -189,6 +189,31 @@ def test_per_review_cost_none_when_no_cost_block(
     assert mean is None and n == 0 and skipped == 0
 
 
+def test_per_review_cost_skips_non_positive_cost(
+    harness: tuple[ModuleType, ModuleType, ModuleType],
+) -> None:
+    """A 0 (or negative) total_est_cost is missing/invalid telemetry, not a priced
+    review: per_review_cost must skip it so cost_mean_proxy never reads 0.0 instead
+    of None and fail-closed for GATE-5 holds. A run that dispatched specialists
+    always costs > 0, so a 0 here means an empty/malformed cost block."""
+    paths_mod, _experiments, ingest = harness
+    good, zero = _sample_doc(), _sample_doc()
+    zero["cost"]["total_est_cost"] = 0.0  # malformed/empty cost block
+    _write_timings(paths_mod, "iter1", "demo-1", good)
+    _write_timings(paths_mod, "iter1", "demo-2", zero)
+    mean, n, skipped = ingest.per_review_cost(["iter1"])
+    assert n == 1 and skipped == 0  # zero is not "priced", and not "corrupt" either
+    assert mean == 0.0026  # only the genuinely-priced PR contributes
+
+    # And when EVERY PR has a non-positive cost, cost_mean is None (fully fail-closed),
+    # never a fabricated 0 that would pass GATE-5 trivially.
+    only_zero = _sample_doc()
+    only_zero["cost"]["total_est_cost"] = 0.0
+    _write_timings(paths_mod, "iter2", "demo-1", only_zero)
+    mean2, n2, skipped2 = ingest.per_review_cost(["iter2"])
+    assert mean2 is None and n2 == 0 and skipped2 == 0
+
+
 def test_per_review_cost_counts_corrupt_files(
     harness: tuple[ModuleType, ModuleType, ModuleType],
 ) -> None:

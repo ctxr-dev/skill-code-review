@@ -102,10 +102,13 @@ def _measured_rows(
     cost_block = doc.get("cost")
     review_cost = cost_block.get("total_est_cost") if isinstance(cost_block, dict) else None
     # Exclude bool (a subclass of int) so a malformed total_est_cost: true/false is
-    # NOT silently coerced to 1.0/0.0 (the same guard per_review_cost applies).
+    # NOT silently coerced to 1.0/0.0, AND require strictly positive: a real run that
+    # dispatched specialists always costs > 0, so a 0/negative value is an
+    # empty/malformed cost block, not a measurement. Leave it None (same guard
+    # per_review_cost applies) so it never ingests as a fabricated 0.
     review_cost = (
         float(review_cost)
-        if isinstance(review_cost, int | float) and not isinstance(review_cost, bool)
+        if isinstance(review_cost, int | float) and not isinstance(review_cost, bool) and review_cost > 0
         else None
     )
 
@@ -188,7 +191,11 @@ def per_review_cost(run_ids: list[str]) -> tuple[float | None, int, int]:
                 continue
             block = doc.get("cost")
             val = block.get("total_est_cost") if isinstance(block, dict) else None
-            if isinstance(val, int | float) and not isinstance(val, bool):
+            # Strictly positive only: a 0/negative (or bool-coerced) proxy cost is
+            # missing/invalid telemetry, not a priced review. Counting it would pull
+            # cost_mean_proxy toward 0.0 and undermine the fail-closed contract, so it
+            # is skipped (cost_mean stays None when no PR records a real positive cost).
+            if isinstance(val, int | float) and not isinstance(val, bool) and val > 0:
                 costs.append(float(val))
     if not costs:
         return None, 0, skipped

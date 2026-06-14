@@ -455,6 +455,20 @@ def test_gate5_binds_once_cost_mean_is_populated(tracker: ModuleType) -> None:
     assert r_cand["detail"]["cost_ratio"] is None
     assert r_cand["verdict"] == tracker.VERDICT_INCONCLUSIVE
 
+    # A non-positive candidate cost is invalid telemetry, not a real 0-cost review:
+    # it must fail GATE-5 CLOSED too, symmetric with the baseline <= 0 guard, so a
+    # 0.0 does NOT pass 0.0 <= 1.25*baseline trivially.
+    r_zero = tracker.summary_stat_gate(base, {**cand, "cost_mean": 0.0})
+    assert r_zero["gates"]["gate_5_cost"] is False
+    assert "cost_candidate_missing" in r_zero["detail"]["notes"]
+    assert r_zero["verdict"] == tracker.VERDICT_INCONCLUSIVE
+
+    # bool is a subclass of int: a malformed cost_mean: True must NOT coerce to 1.0
+    # and bind GATE-5 on garbage; it reads as missing and fails closed on both sides.
+    r_bool = tracker.summary_stat_gate({**base, "cost_mean": True}, cand)
+    assert r_bool["gates"]["gate_5_cost"] is False
+    assert "cost_baseline_missing" in r_bool["detail"]["notes"]
+
 
 def test_check_warns_on_known_dead_end(
     tracker: ModuleType, db_conn: sqlite3.Connection

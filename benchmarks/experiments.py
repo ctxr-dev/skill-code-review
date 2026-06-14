@@ -575,10 +575,14 @@ def summary_stat_gate(
     # Symmetry matters: defaulting a missing CANDIDATE cost to 0.0 would make
     # 0.0 <= 1.25*cost_b trivially true and pass GATE-5 on no data, the same
     # fail-open hole the baseline branch avoids.
-    cost_b_raw = baseline.get("cost_mean")
-    cost_b = float(cost_b_raw) if cost_b_raw is not None else None
-    cost_c_raw = candidate.get("cost_mean")
-    cost_c = float(cost_c_raw) if cost_c_raw is not None else None
+    # bool is a subclass of int, so a malformed cost_mean: true/false would coerce
+    # to 1.0/0.0 and bind GATE-5 on garbage; exclude bool so it reads as missing.
+    def _cost(row: dict[str, Any]) -> float | None:
+        v = row.get("cost_mean")
+        return float(v) if isinstance(v, int | float) and not isinstance(v, bool) else None
+
+    cost_b = _cost(baseline)
+    cost_c = _cost(candidate)
     # The PR rung is the sample-size floor input. Distinguish "unknown" (None)
     # from a real zero so a missing/unparseable pr_set_id never collapses to a
     # falsy 0 that bypasses the underpower guard.
@@ -606,8 +610,12 @@ def summary_stat_gate(
     # CLOSED: GATE-5 is red and the run is held INCONCLUSIVE pending a real cost
     # rather than waved through. (Defaulting a missing candidate cost to 0.0 would
     # make 0.0 <= 1.25*cost_b trivially true and pass GATE-5 on no data.)
+    # A non-positive proxy cost on EITHER side is missing/invalid telemetry, not a
+    # real measurement: zero per-review proxy cost cannot happen on a run that
+    # actually dispatched specialists. Treat candidate <= 0 as missing too, symmetric
+    # with the baseline, so a 0.0 candidate does not pass 0.0 <= 1.25*cost_b trivially.
     cost_baseline_missing = cost_b is None or cost_b <= 0
-    cost_candidate_missing = cost_c is None
+    cost_candidate_missing = cost_c is None or cost_c <= 0
     cost_missing = cost_baseline_missing or cost_candidate_missing
     # The trailing ignore[operator] is needed because mypy cannot narrow cost_b /
     # cost_c (float | None) through the `not cost_missing` guard; but cost_missing is

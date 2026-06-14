@@ -154,6 +154,22 @@ Qodo (qodo.ai/blog/qodo-ranked-1-ai-code-review-tool-in-martians-code-review-ben
   NULL` (structural: a larger PR set cannot make a demotion rule bite on a class the primary set does
   not contain). Branch `feat/R1-ranker-demote-meta-and-coverage-fp-class` deleted, nothing pushed. See
   section 5A.2d for the full record.
+- **KP1 (pin footgun-unintended-recursion on keycloak-32918) PROVEN DEAD-END at pr5, RECALL-NEUTRAL
+  (the first deterministic-pin lever).** The hypothesis was that the keycloak-32918 Critical recursion
+  gold (recursive caching uses session not delegate, owned by `footgun-unintended-recursion`) is a
+  ROUTING loss (the LLM `tree_descend` drops the owning leaf 2 of 3 rounds), so a deterministic
+  high-specificity-keyword pin (`getById`) that forces the owning specialist to run every round
+  recovers it. Part 1 read-only pin audit was CLEAN (gold pins on keycloak, no generic-denylist pins,
+  all 34 pinned keywords pass `_is_high_specificity_keyword`, counts at most cap//2, ruff/mypy/12 pin
+  pytest green). Part 2 product runner (keycloak-32918 x3, non-faulted, `pins_used` 12/11/13) showed
+  the pin FIXED routing (the owning specialist ran every round) but the gold stayed caught 0/3,
+  identical to the 0/3 base-pr5 baseline: the specialist emitted only N+1 / perf-framed
+  `session.getById` findings (the documented baseline FN class), so the bottleneck is the specialist's
+  finding generation, NOT routing. `caught_golds_held = TRUE` (keycloak alias gold 3/3, cal.com control
+  both golds held; additive only, no fault), so this is a clean recall-NEUTRAL, not a regression.
+  Recorded as a `dead_ends` row with `retry_at_pr_set = NULL` (the miss is a reproducible specialist
+  gap on a gold the routing pin provably reached, not a power artifact). Branch
+  `feat/recall-keycloak-pin` deleted, nothing pushed. See section 5A.2h for the full record.
 - **Proof stack validated by self-dogfood.** The benchmark/proof stack was hardened by a self-dogfood
   loop that found and fixed ~73 real defects over 3 rounds, reaching 0 major / 0 minor. Separately, a
   capability-proof review of the ctxr/fsm engine surfaced ~5 to 6 genuine fsm bugs, tracked as a
@@ -847,6 +863,75 @@ pushed; the cost-capture instrumentation at c1a7b5f is independent and stays.
   The open cost path is therefore NOT blanket tier-demotion; it is either (a) a narrower demotion
   restricted to leaves empirically proven golden-free on a powered set, or (b) a non-tier cost lever
   (fewer/cheaper calls in routing or trim) that does not touch specialist model quality.
+
+### 5A.2h KP1: pin footgun-unintended-recursion via a high-specificity keyword on keycloak-32918 [DEAD-END, PROVEN at pr5]
+
+**NB: KP1 is a RECALL lever (the first deterministic-pin lever), not a speed or cost lever. The KEEP
+RULE for this autonomous round was: ship iff recall UP (mean above 0.727 AND the gold caught strictly
+more often AND no caught gold lost) AND F1 at least 0.593 AND fp/PR at most 1.90 AND cost at most
+1.25x.**
+
+**OUTCOME: PROVEN DEAD-END at pr5, RECALL-NEUTRAL (not a regression, but no gain, so the KEEP RULE
+fails). The pin is recall-safe (additive only, schema-safe, no fault, no caught gold lost) and it
+demonstrably fixed routing, but it moved zero recall on this corpus because the bottleneck is not
+where the pin acts.** Measured on the product runner (`code_review.cli`, `backend=claude`, Opus 4.8
+judge, Martian rule), candidate branch `feat/recall-keycloak-pin` (HEAD `db08c14`, merge-base
+`origin/main` `4bdd93d`), recorded as a `dead_ends` row (lever
+`keycloak-recursion-pin-via-high-specificity-keyword`, `pr_set_id = pr5`, `retry_at_pr_set = NULL`).
+
+**The bug it targeted (verified):** the keycloak-32918 Critical gold (recursive caching uses the
+session not the delegate) is owned by `footgun-unintended-recursion`, which activates deterministically
+(keyword `getById`, df=1) but the LLM `tree_descend` drops it 2 of 3 rounds; the coverage floor in
+`runner.py` only rescues a WHOLLY-empty `llm_trim` set, so the owning specialist never ran on the
+rounds that dropped it.
+
+**The lever:** deterministically PIN `footgun-unintended-recursion` into the kept set on
+keycloak-32918 via its high-specificity keyword `getById` (interior uppercase, symbol-bearing, not in
+`_PIN_COMMON_TOKENS`, so `_is_high_specificity_keyword` returns true), so the owning specialist runs
+every round regardless of the LLM trim's stochastic drop. Pin logic in `code_review/runner.py`
+(`_compute_pins` / `_is_high_specificity_keyword` / `_high_specificity_hit` / `_pin_cap`), diff
+carry-forward in `code_review/handlers.py:813`.
+
+**Part 1 (read-only pin audit) CLEAN.** Drove the actual shipped runner functions over each pilot's
+real diff via `handlers._evaluate_activation` + `_enumerate_wiki_leaves`. (a)
+`footgun-unintended-recursion` pins on keycloak-32918 via `getById`. (b) Per-pilot pin counts
+4/4/8/8/10 all at most `cap // 2` (4/4/10/10/10). (c) NO generic-denylist pins: all 34 pinned keywords
+pass `_is_high_specificity_keyword`; the brush-by generic tokens an earlier df-only version wrongly
+pinned (name, time, date, list, length, Session, cache, self, this, super, property, getattr, size,
+type, role, status, token) are all rejected as `high_spec = False` even though they DO match the pilot
+diffs. Green gate on the pin code: ruff clean, mypy clean, 12 pin pytest pass.
+
+**Part 2 (full product reviews) FAILED to move recall.** keycloak-32918 x3 (18 / 16 / 17 findings,
+all non-faulted, `pins_used` 12 / 11 / 13) plus control cal.com-14943 x1 (23 findings, non-faulted):
+
+| axis | baseline (base-pr5) | candidate (KP1) | verdict |
+|---|---|---|---|
+| recursion gold caught | 0/3 | 0/3 | NOT strictly greater, GATE fails |
+| keycloak alias gold (OrganizationCacheTest.java:381) | 3/3 | 3/3 | held |
+| cal.com control golds (retryCount race :184, deleteMany scope :31) | both | both | held |
+
+**Why it is a dead-end (the empirical argument):** the pin worked exactly as designed at the routing
+layer (the owning specialist `footgun-unintended-recursion` ran every round, confirmed by
+`pins_used`), but the specialist itself emitted no finding matching the recursion gold; the only
+`session.getById` findings it produced are N+1 / perf-framed, which is the documented baseline FN
+class. So the pin moved the bottleneck OFF the routing / tree-descend stage and ONTO the specialist's
+finding-generation stage, and recall did not change. `caught_golds_held = TRUE` (no caught gold lost,
+additive only, no fault), so this is a clean recall-NEUTRAL, not a regression.
+
+`retry_at_pr_set = NULL`: this is not a power artifact (the miss is a concrete, reproducible
+specialist finding-generation gap on a gold the routing pin provably reached, not bootstrap noise), so
+a larger PR set does not rescue it. Branch `feat/recall-keycloak-pin` deleted, nothing pushed; main
+restored to `4bdd93d`, working tree clean, ruff + mypy + full pytest green.
+
+- **Methodology data point:** a deterministic activation/routing pin can only recover a gold whose
+  loss is a ROUTING loss (the owning specialist was not run). Before spending an N=3 product round on
+  a pin, confirm the FN class is a routing drop and NOT a specialist finding-generation gap: run the
+  owning specialist in isolation on the diff and check it emits the matching finding at all. If the
+  specialist does not produce the finding even when forced to run, the bottleneck is the specialist
+  (its prompt / framing / model), and no routing pin can move recall. The open recall path for this
+  gold is therefore the specialist layer (strengthen `footgun-unintended-recursion`'s body so it
+  frames recursive-cache-through-session as a recursion defect, not an N+1 / perf observation), not
+  the routing layer.
 
 ### 5A.3 S3 (DEFERRED contingency): sqlite-vec / embedding ROUTING pre-filter
 

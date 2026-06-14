@@ -5,10 +5,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from code_review.runner import (
     ContextOverflowError,
     RateLimitError,
     RunnerStats,
+    _accumulate_cost,
     _AdaptiveLimiter,
     _call_worker_resilient,
     _coverage_floor,
@@ -180,6 +183,28 @@ def test_pool_bounded_concurrency_and_total_coverage_under_chaos() -> None:
     assert res[("leaf-13", 1)]["status"] == "failed"
 
 
+def test_dispatched_count_is_exact_under_high_concurrency() -> None:
+    """The worker-thread counters (dispatched / failed) are incremented under the
+    stats lock, so they stay EXACT under heavy concurrency: a plain += could lose an
+    increment to a read-modify-write race and report fewer dispatches than results.
+    Every unit succeeds, so dispatched must equal the unit count with no loss."""
+    def dispatch(unit: dict[str, Any], shared: dict[str, Any]) -> dict[str, Any]:
+        return {"id": unit["leaf_id"], "status": "completed", "findings": [],
+                "tokens_in": 1, "tokens_out": 1, "est_cost": 0.001}
+
+    n = 300
+    units = [{"leaf_id": f"leaf-{i}", "sub_index": 1, "files": [f"f{i}.py"]} for i in range(n)]
+    stats = RunnerStats()
+    res = _dispatch_units(units, {}, dispatch, max_workers=16, min_workers=1,
+                          max_retries=1, base_backoff=0.0, sleep=lambda _s: None, stats=stats)
+    assert len(res) == n
+    assert stats.dispatched == n  # no lost increment under the race
+    assert stats.failed == 0
+    # The locked cost rollup is consistent with the (now also locked) dispatched count.
+    assert stats.total_in_tokens == n
+    assert stats.total_est_cost == pytest.approx(0.001 * n)
+
+
 def test_overflow_recursion_no_deadlock_at_min_concurrency() -> None:
     """Overflow recursion releases its permit before recursing — must not deadlock
     even with max_workers=1."""
@@ -270,6 +295,74 @@ def test_runner_stats_carries_stage_timings_defaults() -> None:
     assert b.stage_timings == []  # field(default_factory=list): not shared across instances
 
 
+def test_runner_stats_cost_defaults_zero() -> None:
+    s = RunnerStats()
+    assert s.total_in_tokens == 0 and s.total_out_tokens == 0
+    assert s.total_cost_usd == 0.0 and s.total_est_cost == 0.0
+
+
+def test_accumulate_cost_sums_stamped_fields() -> None:
+    """_accumulate_cost folds a dispatch output's cost stamp into the run totals;
+    a stamp-less output (degraded worker / test spec) contributes 0."""
+    s = RunnerStats()
+    _accumulate_cost(s, {"tokens_in": 4, "tokens_out": 50, "cost_usd": 0.21, "est_cost": 0.0017})
+    _accumulate_cost(s, {"tokens_in": 6, "tokens_out": 10, "cost_usd": 0.07, "est_cost": 0.0009})
+    _accumulate_cost(s, {"findings": []})  # no stamp -> contributes 0
+    assert s.total_in_tokens == 10 and s.total_out_tokens == 60
+    # Tolerance, not exact equality: 0.21 + 0.07 is not an exact binary float.
+    assert s.total_cost_usd == pytest.approx(0.28)
+    assert s.total_est_cost == pytest.approx(0.0026)
+
+
+def test_dispatch_units_accumulates_specialist_cost() -> None:
+    """The specialist success path folds each unit's stamp into RunnerStats so the
+    run-level cost roll-up covers every dispatched specialist."""
+    def dispatch(unit: dict[str, Any], shared: dict[str, Any]) -> dict[str, Any]:
+        return {"id": unit["leaf_id"], "status": "completed", "findings": [],
+                "tokens_in": 3, "tokens_out": 20, "cost_usd": 0.05, "est_cost": 0.001}
+
+    units = [
+        {"leaf_id": "a", "sub_index": 1, "files": ["a.py"]},
+        {"leaf_id": "b", "sub_index": 1, "files": ["b.py"]},
+    ]
+    stats = RunnerStats()
+    _dispatch_units(units, {}, dispatch, max_workers=2, min_workers=1,
+                    max_retries=1, base_backoff=0.0, sleep=lambda _s: None, stats=stats)
+    assert stats.total_in_tokens == 6 and stats.total_out_tokens == 40
+    assert abs(stats.total_cost_usd - 0.10) < 1e-9
+    assert abs(stats.total_est_cost - 0.002) < 1e-9
+
+
+def test_overflow_split_carries_summed_cost_stamp_onto_merged_result() -> None:
+    """The context-overflow split path returns a merged result that ALSO carries the
+    summed per-call cost stamp from its sub-dispatches, so _per_specialist_timings
+    records a real est_cost for that leaf instead of null, consistent with the
+    run-level total_est_cost the sub-calls already folded in via _accumulate_cost."""
+    def dispatch(unit: dict[str, Any], shared: dict[str, Any]) -> dict[str, Any]:
+        # The multi-file unit overflows; each single-file sub-unit succeeds with a stamp.
+        if unit["leaf_id"] == "big" and len(unit.get("files", [])) > 1:
+            raise ContextOverflowError
+        return {"id": unit["leaf_id"], "status": "completed", "findings": [],
+                "wall_ms": 5, "tokens_in": 2, "tokens_out": 11,
+                "cost_usd": 0.03, "est_cost": 0.0007, "tier": "strong"}
+
+    units = [{"leaf_id": "big", "sub_index": 1, "files": ["a.py", "b.py"]}]
+    stats = RunnerStats()
+    res = _dispatch_units(units, {}, dispatch, max_workers=2, min_workers=1,
+                          max_retries=1, base_backoff=0.0, sleep=lambda _s: None, stats=stats)
+    merged = res[("big", 1)]
+    assert merged["status"] == "completed"
+    # 2 single-file sub-units, each stamped: the merged row sums them.
+    assert merged["tokens_in"] == 4 and merged["tokens_out"] == 22
+    assert abs(merged["est_cost"] - 0.0014) < 1e-12
+    assert abs(merged["cost_usd"] - 0.06) < 1e-12
+    assert merged["wall_ms"] == 10
+    assert merged["tier"] == "strong"
+    # The run-level rollup matches what the sub-calls accumulated (no double count,
+    # no loss): the per-specialist row is now consistent with the run total.
+    assert abs(stats.total_est_cost - 0.0014) < 1e-12
+
+
 def test_run_review_measures_stage_timings_and_writes_timings_json(tmp_path: Any) -> None:
     """run_review measures per-state wall time LIVE and persists a timings.json
     artifact next to manifest.json carrying whole_review_ms + stage_timings +
@@ -307,8 +400,48 @@ def test_run_review_measures_stage_timings_and_writes_timings_json(tmp_path: Any
     assert len(doc["stage_timings"]) > 0
     leaves = {s["leaf_id"]: s for s in doc["specialists"]}
     assert leaves  # at least one specialist row
-    # per-specialist measured wall_ms is carried; tokens stay null on the CLI path.
+    # per-specialist measured wall_ms is carried; this spec bypasses dispatch.py so
+    # it carries no cost stamp -> tokens/cost stay None (the no-stamp path).
     # Select the leaf by a deterministic key (sorted leaf_id), not iteration order.
     any_leaf = leaves[sorted(leaves)[0]]
     assert "wall_ms" in any_leaf
     assert any_leaf["tokens_in"] is None and any_leaf["tokens_out"] is None
+    # The run-level cost block is always present (zeros when no call stamped cost).
+    assert set(doc["cost"]) == {"total_in_tokens", "total_out_tokens",
+                                "total_cost_usd", "total_est_cost"}
+
+
+def test_run_review_rolls_up_cost_from_stamped_specialists(tmp_path: Any) -> None:
+    """When specialists carry a cost stamp (as dispatch.py produces), run_review
+    sums them into RunnerStats and the persisted timings.json cost block + the
+    per-specialist est_cost. Proxy roll-up, never billed spend."""
+    import json
+    from pathlib import Path
+
+    def spec(unit: dict[str, Any], shared: dict[str, Any]) -> dict[str, Any]:
+        return {"id": unit["leaf_id"], "status": "completed", "wall_ms": 3,
+                "tokens_in": 5, "tokens_out": 30, "cost_usd": 0.02, "est_cost": 0.001,
+                "tier": "cheap",
+                "findings": [{"severity": "minor", "file": (unit.get("files") or ["x.py"])[0],
+                              "line": 1, "title": f"f {unit['leaf_id']}", "confidence": 0.5}]}
+
+    storage = str(tmp_path / ".skill-code-review")
+    res = run_review({"project_root": str(tmp_path), "base": "B", "head": "H",
+                      "storage_root": storage},
+                     dispatch_worker=_worker, dispatch_specialist=spec,
+                     max_workers=4, base_backoff=0.0, sleep=lambda _s: None)
+    assert not res.faulted, res.fault
+    n = res.stats.dispatched
+    assert n >= 2
+    assert res.stats.total_in_tokens == 5 * n
+    assert res.stats.total_out_tokens == 30 * n
+    assert abs(res.stats.total_cost_usd - 0.02 * n) < 1e-9
+    assert abs(res.stats.total_est_cost - 0.001 * n) < 1e-9
+
+    tj_files = sorted(Path(storage).rglob("timings.json"), key=lambda p: (p.stat().st_mtime, str(p)))
+    doc = json.loads(tj_files[-1].read_text())
+    assert doc["cost"]["total_in_tokens"] == 5 * n
+    assert abs(doc["cost"]["total_est_cost"] - 0.001 * n) < 1e-9
+    any_leaf = {s["leaf_id"]: s for s in doc["specialists"]}[sorted(
+        {s["leaf_id"] for s in doc["specialists"]})[0]]
+    assert any_leaf["est_cost"] == 0.001 and any_leaf["tier"] == "cheap"

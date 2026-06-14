@@ -74,6 +74,85 @@ class RunnerStats:
     # run_review body.
     total_wall_ms: int = 0
     stage_timings: list[dict[str, Any]] = field(default_factory=list)
+    # Cost telemetry, summed across every dispatched LLM call (specialists AND
+    # worker calls: scanner / tree-descender / trim / ranker). dispatch.py stamps
+    # per-call tokens/cost next to wall_ms; these accumulate them so cli.py can
+    # surface a run-level total and benchmarks can compute cost_mean. Both
+    # total_cost_usd (CLI list-price imputation) and total_est_cost (the
+    # dependency-free PROXY) are tracked: est_cost is the GATE-5 comparison
+    # currency (one identical estimator for baseline + candidate, so bias cancels
+    # in the ratio); cost_usd is the live billed figure where a backend reports it.
+    total_in_tokens: int = 0
+    total_out_tokens: int = 0
+    total_cost_usd: float = 0.0
+    total_est_cost: float = 0.0
+
+
+# Serialises the read-modify-write on ALL shared RunnerStats counters mutated from
+# the specialist thread-pool workers (_dispatch_one): not only the cost totals but
+# also dispatched / failed / retries / rate_limit_events / overflow_splits. A plain
+# `+=` on an attribute is a non-atomic load-add-store that can lose an update under
+# GIL hand-off, which would make these counts nondeterministic and inconsistent with
+# the locked cost rollups. The lock makes every worker-thread tally exact, so the
+# persisted timing artifact and the cost_mean a benchmark reads are deterministic
+# across concurrent dispatch.
+_STATS_LOCK = threading.Lock()
+
+
+def _bump(stats: RunnerStats, field_name: str, by: int = 1) -> None:
+    """Thread-safe increment of one integer RunnerStats counter from a worker
+    thread. Mirrors the locking _accumulate_cost already applies to the cost totals,
+    so the count fields stay consistent with the rollups under concurrency."""
+    with _STATS_LOCK:
+        setattr(stats, field_name, getattr(stats, field_name) + by)
+
+
+def _accumulate_cost(stats: RunnerStats, out: dict[str, Any]) -> None:
+    """Fold one dispatch output's per-call cost stamp into the run totals. Reads
+    the same keys dispatch.py stamps (tokens_in/out, cost_usd, est_cost); a stamp
+    missing (e.g. a degraded worker fallback or a test spec that bypasses
+    dispatch.py) contributes 0. Thread-safe (worker threads call this); pure
+    accounting that never reads or changes findings."""
+    if not isinstance(out, dict):
+        return
+    ti, to = out.get("tokens_in"), out.get("tokens_out")
+    cu, ec = out.get("cost_usd"), out.get("est_cost")
+    with _STATS_LOCK:
+        if isinstance(ti, (int, float)) and not isinstance(ti, bool):
+            stats.total_in_tokens += int(ti)
+        if isinstance(to, (int, float)) and not isinstance(to, bool):
+            stats.total_out_tokens += int(to)
+        if isinstance(cu, (int, float)) and not isinstance(cu, bool):
+            stats.total_cost_usd += float(cu)
+        if isinstance(ec, (int, float)) and not isinstance(ec, bool):
+            stats.total_est_cost += float(ec)
+
+
+def _num(value: Any) -> float | None:
+    """Coerce a cost-stamp field to float, excluding bool (a subclass of int)."""
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _sum_cost_stamp(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Sum the per-call cost stamp (wall_ms + token/cost fields) across the
+    sub-dispatches of one overflow-split leaf, so the merged result carries a stamp
+    consistent with what _accumulate_cost already folded into the run totals.
+
+    A field is summed only over sub-results that actually carry it; if NO sub-result
+    carried a numeric value the field stays None (never a fabricated 0), matching the
+    fail-closed convention the ingest layer reads. tier is taken from the first
+    sub-result that has one (the split shares the routed tier)."""
+    keys = ("wall_ms", "tokens_in", "tokens_out", "cost_usd", "est_cost")
+    stamp: dict[str, Any] = {}
+    for key in keys:
+        vals = [n for r in results if (n := _num(r.get(key))) is not None]
+        if vals:
+            stamp[key] = int(sum(vals)) if key in ("wall_ms", "tokens_in", "tokens_out") else sum(vals)
+    for r in results:
+        if r.get("tier") is not None:
+            stamp["tier"] = r["tier"]
+            break
+    return stamp
 
 
 # Best-effort worker states: a transient outage degrades to a safe fallback
@@ -249,7 +328,7 @@ def _dispatch_one(
     leaf_id = unit.get("leaf_id", "")
 
     def failed(reason: str) -> dict[str, Any]:
-        stats.failed += 1
+        _bump(stats, "failed")
         return {"id": leaf_id, "status": "failed", "findings": [], "skip_reason": reason}
 
     attempt = 0
@@ -259,10 +338,10 @@ def _dispatch_one(
             out = dispatch_specialist(unit, shared)
         except RateLimitError:
             limiter.release()
-            stats.rate_limit_events += 1
+            _bump(stats, "rate_limit_events")
             limiter.penalize()
             attempt += 1
-            stats.retries += 1
+            _bump(stats, "retries")
             if attempt > max_retries:
                 return failed("rate-limited after retries")
             sleep(base_backoff * (2 ** (attempt - 1)))
@@ -272,17 +351,29 @@ def _dispatch_one(
             sub = _split_unit(unit)
             if sub is None:
                 return failed("context overflow; single file too large")
-            stats.overflow_splits += 1
+            _bump(stats, "overflow_splits")
             merged: list[Any] = []
+            sub_results: list[dict[str, Any]] = []
             for su in sub:
                 r = _dispatch_one(su, shared, dispatch_specialist, limiter, stats,
                                   max_retries=max_retries, base_backoff=base_backoff, sleep=sleep)
                 merged.extend(r.get("findings", []))
-            return {"id": leaf_id, "status": "completed", "findings": merged}
+                sub_results.append(r)
+            # Each sub-dispatch already folded its own cost into the run totals via
+            # _accumulate_cost, so the run-level rollup is correct. But the merged
+            # result must ALSO carry the summed cost stamp, else _per_specialist_timings
+            # records est_cost:null for this leaf while the rollup counts it, an
+            # inconsistency between the per-specialist row and the run total. Sum the
+            # stamps (NOT a re-accumulate; this only labels the merged row).
+            overflow_out: dict[str, Any] = {
+                "id": leaf_id, "status": "completed", "findings": merged,
+            }
+            overflow_out.update(_sum_cost_stamp(sub_results))
+            return overflow_out
         except Exception as exc:  # a bad unit must not kill the run
             limiter.release()
             attempt += 1
-            stats.retries += 1
+            _bump(stats, "retries")
             if attempt > max_retries:
                 return failed(f"error after retries: {type(exc).__name__}")
             sleep(base_backoff * (2 ** (attempt - 1)))
@@ -290,7 +381,8 @@ def _dispatch_one(
         else:
             limiter.release()
             limiter.reward()
-            stats.dispatched += 1
+            _bump(stats, "dispatched")
+            _accumulate_cost(stats, out)
             out.setdefault("id", leaf_id)
             out.setdefault("status", "completed")
             out.setdefault("findings", [])
@@ -352,9 +444,13 @@ def _record_stage(
 def _per_specialist_timings(
     unit_results: dict[tuple[str, int], dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Collect the per-specialist measured wall_ms (stamped by dispatch.py on each
-    specialist output) keyed by leaf_id. tokens stay null on the claude -p CLI
-    path (it reports no billed usage); they fill in on the API backend."""
+    """Collect the per-specialist measured wall_ms + cost stamp (both stamped by
+    dispatch.py on each specialist output) keyed by leaf_id. On the current
+    claude -p CLI the live usage block fills the token counts (cache_creation
+    dominates) and cost_usd carries the CLI list-price imputation; backends with
+    no usage block fall back to the char-estimate proxy, so est_cost is always
+    present while tokens_in/tokens_out reflect the estimate. A result that never
+    went through dispatch.py (e.g. a test spec) leaves these None/absent."""
     out: list[dict[str, Any]] = []
     for (leaf_id, _sub), result in sorted(unit_results.items()):
         out.append({
@@ -362,6 +458,9 @@ def _per_specialist_timings(
             "wall_ms": result.get("wall_ms"),
             "tokens_in": result.get("tokens_in"),
             "tokens_out": result.get("tokens_out"),
+            "cost_usd": result.get("cost_usd"),
+            "est_cost": result.get("est_cost"),
+            "tier": result.get("tier"),
         })
     return out
 
@@ -379,6 +478,15 @@ def _timings_artifact(
         "whole_review_ms": int((time.perf_counter() - run_t0) * 1000),
         "stage_timings": [dict(row) for row in stats.stage_timings],
         "specialists": _per_specialist_timings(unit_results),
+        # Run-level cost roll-up (specialists + worker calls). A PROXY for relative
+        # lever comparison, never billed spend: est_cost is the deterministic
+        # comparison currency, cost_usd the CLI list-price imputation where present.
+        "cost": {
+            "total_in_tokens": stats.total_in_tokens,
+            "total_out_tokens": stats.total_out_tokens,
+            "total_cost_usd": stats.total_cost_usd,
+            "total_est_cost": stats.total_est_cost,
+        },
     }
 
 
@@ -497,6 +605,12 @@ def run_review(
                     # whole review on a transient outage of a non-critical stage.
                     stats.degraded_workers += 1
                     outputs = fallback(env)
+                # Worker calls (scanner / tree-descender / trim / ranker) are real
+                # LLM calls with real cost; fold their stamp into the run totals so
+                # cost_mean covers worker AND specialist cost (the GATE-5 ratio
+                # stays apples-to-apples across baseline and candidate). A degraded
+                # fallback carries no stamp and contributes 0.
+                _accumulate_cost(stats, outputs)
                 outputs = _coverage_floor(state_id, inputs, outputs, env, stats)
                 _record_stage(stats, "worker", state_id, iteration_n, _t0)
 

@@ -8,10 +8,13 @@ from pathlib import Path
 
 import pytest
 
+from code_review import cost
 from code_review.dispatch import (
     _apply_rank_decisions,
+    _call_backend,
     _compact_inputs,
     _index_by_id,
+    _openai_usage_from_sdk,
     _parse_json,
     _rehydrate,
     _route_tier,
@@ -178,3 +181,136 @@ def test_dispatch_worker_ranker_stamps_wall_ms(tmp_path: Path) -> None:
         "args": {}})
     assert isinstance(out.get("wall_ms"), int)
     assert out["wall_ms"] >= 0
+
+
+# --------------------------------------------------------------------------- #
+# Cost capture is PURE INSTRUMENTATION: it must not change the prompt sent to
+# the model nor the findings produced. These tests pin both guarantees.
+# --------------------------------------------------------------------------- #
+_SPEC_JSON = json.dumps({"id": "lang-python", "status": "completed",
+                         "findings": [{"severity": "important", "file": "a.py", "title": "x"}]})
+
+
+def test_cost_capture_does_not_change_the_prompt_or_tier(tmp_path: Path) -> None:
+    """The cmd/prompt/tier handed to the backend are identical with cost capture
+    on: claude_run builds the SAME prompt; cost only READS extra envelope keys."""
+    calls: list[tuple[str, str, str]] = []
+
+    def capturing_backend(prompt: str, cwd: str, tier: str) -> str:
+        calls.append((prompt, cwd, tier))
+        return _SPEC_JSON
+
+    _worker, dispatch_specialist = make_dispatchers(
+        str(tmp_path), tmp_path, base="B", head="H", backend=capturing_backend)
+    dispatch_specialist(
+        {"leaf_id": "lang-python", "files": ["a.py"]},
+        {"picked_leaves": [{"id": "lang-python", "dimensions": ["correctness"]}]})
+
+    assert len(calls) == 1
+    prompt, _cwd, tier = calls[0]
+    # correctness leaf -> strong tier (the routing is unchanged by cost capture).
+    assert tier == "strong"
+    # The prompt carries the diff base..head and the leaf id, exactly as before;
+    # no cost flag, no --json-schema, no system-prompt mutation leaks in.
+    assert "git diff B..H" in prompt
+    assert "lang-python" in prompt
+    assert "cost" not in prompt.lower().split("review target")[0]
+
+
+def test_openai_usage_from_sdk_maps_token_fields() -> None:
+    """The OpenAI response.usage maps to the flat cost-stamp dict: prompt/completion
+    tokens -> in/out, cached_tokens -> cache_read, no cache-creation, cost_usd None.
+    Absent usage -> None so the caller degrades to the char estimate."""
+    from types import SimpleNamespace
+
+    assert _openai_usage_from_sdk(None) is None
+    usage = SimpleNamespace(
+        prompt_tokens=120, completion_tokens=40,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=80),
+    )
+    u = _openai_usage_from_sdk(usage)
+    assert u == {"in_tokens": 120, "out_tokens": 40, "cache_create": 0,
+                 "cache_read": 80, "cost_usd": None}
+    # Older response shape without prompt_tokens_details: cache_read degrades to 0,
+    # non-numeric fields degrade to 0 rather than raising.
+    bare = SimpleNamespace(prompt_tokens=5, completion_tokens="oops")
+    assert _openai_usage_from_sdk(bare) == {
+        "in_tokens": 5, "out_tokens": 0, "cache_create": 0, "cache_read": 0, "cost_usd": None}
+
+
+def test_call_backend_normalises_malformed_return_shapes() -> None:
+    """_call_backend must degrade gracefully on an unexpected backend return shape
+    rather than crash the review: a bare str -> (str, None); a proper 2-tuple ->
+    (text, usage); a (text, non-dict) -> usage coerced to None; a non-2-tuple ->
+    legacy str(out) path with usage None. So a misbehaving backend costs only its
+    cost telemetry, never a hard ValueError at unpack mid-dispatch."""
+    # Bare text (legacy / test fakes).
+    assert _call_backend(lambda p, c, t: "hello", "p", "/tmp", "cheap") == ("hello", None)
+    # Proper (text, usage dict).
+    u = {"in_tokens": 1}
+    assert _call_backend(lambda p, c, t: ("txt", u), "p", "/tmp", "cheap") == ("txt", u)
+    # (text, non-dict usage) -> usage coerced to None, text preserved.
+    assert _call_backend(lambda p, c, t: ("txt", "oops"), "p", "/tmp", "cheap") == ("txt", None)
+    assert _call_backend(lambda p, c, t: ("txt", 42), "p", "/tmp", "cheap") == ("txt", None)
+    # Non-2-tuple (1- or 3-tuple) -> legacy str(out) path, usage None, no unpack crash.
+    text1, usage1 = _call_backend(lambda p, c, t: ("only",), "p", "/tmp", "cheap")
+    assert usage1 is None and "only" in text1
+    _text3, usage3 = _call_backend(lambda p, c, t: ("a", {}, "extra"), "p", "/tmp", "cheap")
+    assert usage3 is None
+
+
+def test_text_only_backend_yields_identical_findings_to_tuple_backend(tmp_path: Path) -> None:
+    """A backend that returns bare text (legacy / usage=None) and one that returns
+    (text, usage) produce the SAME findings: cost rides as a side-field and never
+    alters the finding pipeline (the (text, None) golden-output equality)."""
+    def text_backend(prompt: str, cwd: str, tier: str) -> str:
+        return _SPEC_JSON
+
+    def tuple_backend(prompt: str, cwd: str, tier: str) -> tuple[str, dict]:
+        return _SPEC_JSON, {"in_tokens": 5, "out_tokens": 9, "cache_create": 100,
+                            "cache_read": 0, "cost_usd": 0.01}
+
+    unit = {"leaf_id": "lang-python", "files": ["a.py"]}
+    shared = {"picked_leaves": [{"id": "lang-python", "dimensions": ["correctness"]}]}
+
+    _w1, spec_text = make_dispatchers(str(tmp_path), tmp_path, base="B", head="H", backend=text_backend)
+    _w2, spec_tuple = make_dispatchers(str(tmp_path), tmp_path, base="B", head="H", backend=tuple_backend)
+    out_text = spec_text(unit, dict(shared))
+    out_tuple = spec_tuple(unit, dict(shared))
+
+    # Findings + id + status are byte-identical regardless of the usage channel.
+    assert out_text["findings"] == out_tuple["findings"]
+    assert out_text["id"] == out_tuple["id"] == "lang-python"
+    assert out_text["status"] == out_tuple["status"]
+
+
+def test_dispatch_specialist_stamps_cost_from_live_usage(tmp_path: Path) -> None:
+    """A backend returning (text, usage) stamps real tokens + cost_usd + est_cost
+    next to wall_ms; the strong tier (correctness leaf) prices via the Opus row."""
+    def tuple_backend(prompt: str, cwd: str, tier: str) -> tuple[str, dict]:
+        return _SPEC_JSON, {"in_tokens": 4, "out_tokens": 50, "cache_create": 18000,
+                            "cache_read": 0, "cost_usd": 0.2198}
+
+    _w, spec = make_dispatchers(str(tmp_path), tmp_path, base="B", head="H", backend=tuple_backend)
+    out = spec({"leaf_id": "lang-python", "files": ["a.py"]},
+               {"picked_leaves": [{"id": "lang-python", "dimensions": ["correctness"]}]})
+    assert out["tier"] == "strong"
+    assert out["tokens_in"] == 4 and out["tokens_out"] == 50
+    assert out["cache_create"] == 18000
+    assert out["cost_usd"] == 0.2198
+    assert out["est_cost"] == cost.est_cost("strong", 4, 50, 18000, 0)
+
+
+def test_dispatch_specialist_falls_back_to_char_estimate_when_usage_none(tmp_path: Path) -> None:
+    """A text-only backend (usage=None) still gets a cost stamp via the char
+    estimate; cost_usd is dropped (None -> absent after _strip_nulls)."""
+    def text_backend(prompt: str, cwd: str, tier: str) -> str:
+        return _SPEC_JSON
+
+    _w, spec = make_dispatchers(str(tmp_path), tmp_path, base="B", head="H", backend=text_backend)
+    out = spec({"leaf_id": "lang-python", "files": ["a.py"]},
+               {"picked_leaves": [{"id": "lang-python", "dimensions": ["correctness"]}]})
+    assert out["tier"] == "strong"
+    assert out["tokens_in"] > 0 and out["tokens_out"] > 0  # estimated from chars
+    assert "cost_usd" not in out  # None billed under the proxy -> dropped by _strip_nulls
+    assert out["est_cost"] > 0

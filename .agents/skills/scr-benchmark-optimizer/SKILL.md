@@ -218,6 +218,19 @@ cost blowups. Outcomes: all green -> PROMOTE; GATE-1/2/4/5 red -> REVERT (genuin
 returns `inconclusive` rather than `promote` (underpowered); that is expected at pr5 and is
 why the ramp exists.
 
+GATE-5 IS NOW LIVE-MEASURABLE. The product runner captures per-call cost (the claude -p
+`--output-format json` envelope carries a full usage block + a list-price `total_cost_usd`;
+codex/cursor fall back to a dependency-free `ceil(chars/4)` estimate) and rolls it up into
+`timings.json` (per-specialist `est_cost` + a run-level cost block). `scripts/ingest_timings.py`
+surfaces the per-review PROXY cost (`cost_mean_proxy`) to hand `experiments.py record --cost`,
+which flips GATE-5 from FAIL-CLOSED (`cost_baseline_missing` -> inconclusive) to a real
+comparison. `$/review` (`cost_mean`) is a PROXY for the RELATIVE ratio, NEVER billed spend:
+under the flat claude -p subscription nothing is billed per review; one identical estimator
+prices baseline and candidate, so bias cancels in the 1.25x ratio. Anchor GATE-5 on a FRESH
+instrumented baseline over the same N rounds; never mix a retroactive char-estimate baseline
+with live-usage candidates. The capture is PURE INSTRUMENTATION (no prompt change, no extra
+call); the tier-demote cost LEVER is the next round, separate from this measurement infra.
+
 For a SPEED change there is an extra CHEAP-FIRST check BEFORE the full N-round measurement:
 one instrumented review (telemetry on) confirming (a) the targeted stage's wall-time dropped
 roughly as predicted and (b) a leaf-set sanity check (the picked-leaf set did not lose any

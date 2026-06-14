@@ -10,7 +10,13 @@ adaptive pool can react.
 
 Backends (``--backend``): ``claude`` (claude -p), ``codex`` (codex exec),
 ``cursor`` (cursor-agent -p), ``anthropic`` / ``openai`` (HTTP API). A backend is
-just ``run(prompt, cwd, tier) -> final_text`` where tier is ``"strong"|"cheap"``.
+``run(prompt, cwd, tier) -> final_text`` OR ``-> (final_text, usage|None)`` where
+tier is ``"strong"|"cheap"``. The optional second element is the live per-call
+usage block (token counts + the CLI list-price ``cost_usd``); backends with no
+usage signal return the bare text (or a ``(text, None)`` tuple), and the
+dispatcher normalises both. The cost capture is PURE INSTRUMENTATION: it only
+READS extra keys off the already-parsed envelope and stamps them next to the
+existing ``wall_ms``, so the findings a review produces are unchanged.
 """
 from __future__ import annotations
 
@@ -25,9 +31,15 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
+from . import cost as _cost
 from .runner import ContextOverflowError, RateLimitError, SpecialistDispatch, WorkerDispatch
 
-AgentRun = Callable[[str, str, str], str]  # (prompt, cwd, tier) -> final text
+# A backend returns either the final assistant text, or a (text, usage|None)
+# tuple where usage is the live per-call usage dict (see cost.usage_from_envelope).
+# Keeping the bare-str form in the type means existing str-returning backends and
+# test fakes stay valid; _call_backend normalises both shapes.
+Usage = dict[str, Any]
+AgentRun = Callable[[str, str, str], "str | tuple[str, Usage | None]"]
 
 # Per-call wall-clock ceiling (seconds). A hung agent call surfaces as a
 # RateLimitError so the runner's resilient worker / specialist retry kicks in.
@@ -66,7 +78,9 @@ def _raise_for_signal(text: str) -> None:
 # --------------------------------------------------------------------------- #
 # backends: run(prompt, cwd, tier) -> final assistant text
 # --------------------------------------------------------------------------- #
-def claude_run(prompt: str, cwd: str, tier: str, timeout: int = _CALL_TIMEOUT) -> str:
+def claude_run(
+    prompt: str, cwd: str, tier: str, timeout: int = _CALL_TIMEOUT,
+) -> tuple[str, Usage | None]:
     model = {"strong": "opus", "cheap": "sonnet"}.get(tier, "sonnet")
     cmd = ["claude", "-p", prompt, "--output-format", "json",
            "--permission-mode", "bypassPermissions", "--model", model]
@@ -81,10 +95,18 @@ def claude_run(prompt: str, cwd: str, tier: str, timeout: int = _CALL_TIMEOUT) -
     if env.get("is_error") or env.get("api_error_status"):
         _raise_for_signal(str(env.get("api_error_status", "")) + str(env.get("subtype", "")))
         raise RuntimeError(f"claude error: {env.get('subtype')}")
-    return str(env.get("result", ""))
+    # The text fed to the parser is UNCHANGED (env["result"]); the usage block is
+    # read alongside off the SAME already-parsed envelope (no second call, no flag
+    # change), so the finding pipeline is byte-identical to the pre-capture path.
+    # usage_from_envelope tolerates missing keys -> None -> char-estimate fallback.
+    return str(env.get("result", "")), _cost.usage_from_envelope(env)
 
 
-def codex_run(prompt: str, cwd: str, tier: str, timeout: int = _CALL_TIMEOUT) -> str:
+def codex_run(
+    prompt: str, cwd: str, tier: str, timeout: int = _CALL_TIMEOUT,
+) -> tuple[str, Usage | None]:
+    # codex writes only the final text to -o last.txt; there is no usage block, so
+    # cost falls back to the dependency-free char estimate (usage is None).
     with tempfile.TemporaryDirectory() as td:
         last = Path(td) / "last.txt"
         cmd = ["codex", "exec", "-C", cwd, "-s", "read-only",
@@ -100,10 +122,14 @@ def codex_run(prompt: str, cwd: str, tier: str, timeout: int = _CALL_TIMEOUT) ->
         if proc.returncode != 0:
             _raise_for_signal(proc.stdout + proc.stderr)
             raise RuntimeError(f"codex exit {proc.returncode}: {(proc.stderr or proc.stdout)[-300:]}")
-        return last.read_text(encoding="utf-8") if last.exists() else proc.stdout
+        return (last.read_text(encoding="utf-8") if last.exists() else proc.stdout), None
 
 
-def cursor_run(prompt: str, cwd: str, tier: str, timeout: int = _CALL_TIMEOUT) -> str:
+def cursor_run(
+    prompt: str, cwd: str, tier: str, timeout: int = _CALL_TIMEOUT,
+) -> tuple[str, Usage | None]:
+    # cursor json carries result/response only (no usage block); cost falls back
+    # to the char estimate (usage is None).
     cmd = ["cursor-agent", "-p", prompt, "--output-format", "json"]
     model = os.environ.get(f"CTXR_CURSOR_MODEL_{tier.upper()}")
     if model:
@@ -117,12 +143,12 @@ def cursor_run(prompt: str, cwd: str, tier: str, timeout: int = _CALL_TIMEOUT) -
         raise RuntimeError(f"cursor-agent exit {proc.returncode}: {(proc.stderr or proc.stdout)[-300:]}")
     try:
         env = json.loads(proc.stdout)
-        return str(env.get("result", env.get("response", proc.stdout)))
+        return str(env.get("result", env.get("response", proc.stdout))), None
     except json.JSONDecodeError:
-        return proc.stdout
+        return proc.stdout, None
 
 
-def _api_run(provider: str, prompt: str, cwd: str, tier: str) -> str:
+def _api_run(provider: str, prompt: str, cwd: str, tier: str) -> tuple[str, Usage | None]:
     # cwd unused: API agents can't run tools; the prompt must be self-contained.
     if provider == "anthropic":
         import anthropic  # type: ignore[import-not-found]
@@ -131,7 +157,8 @@ def _api_run(provider: str, prompt: str, cwd: str, tier: str) -> str:
         try:
             msg = anthropic.Anthropic().messages.create(
                 model=model, max_tokens=4096, messages=[{"role": "user", "content": prompt}])
-            return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+            text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+            return text, _usage_from_sdk(getattr(msg, "usage", None))
         except Exception as exc:
             _raise_for_signal(str(exc))
             raise
@@ -141,10 +168,52 @@ def _api_run(provider: str, prompt: str, cwd: str, tier: str) -> str:
     try:
         r = openai.OpenAI().chat.completions.create(
             model=model, messages=[{"role": "user", "content": prompt}])
-        return r.choices[0].message.content or ""
+        return (r.choices[0].message.content or ""), _openai_usage_from_sdk(getattr(r, "usage", None))
     except Exception as exc:
         _raise_for_signal(str(exc))
         raise
+
+
+def _usage_from_sdk(usage: Any) -> Usage | None:
+    """Map an Anthropic SDK ``message.usage`` object to the flat usage dict the
+    cost stamp expects. Returns None when usage is absent so the caller degrades
+    to the char-estimate proxy. cost_usd stays None on the API path (the SDK does
+    not return a billed dollar figure); est_cost is computed from the tokens."""
+    if usage is None:
+        return None
+    def _g(name: str) -> int:
+        v = getattr(usage, name, 0)
+        return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+    return {
+        "in_tokens": _g("input_tokens"),
+        "out_tokens": _g("output_tokens"),
+        "cache_create": _g("cache_creation_input_tokens"),
+        "cache_read": _g("cache_read_input_tokens"),
+        "cost_usd": None,
+    }
+
+
+def _openai_usage_from_sdk(usage: Any) -> Usage | None:
+    """Map an OpenAI Chat Completions ``response.usage`` object to the flat usage
+    dict the cost stamp expects, so the OpenAI backend prices from real token counts
+    like the Anthropic API path instead of the chars/4 proxy. Returns None when usage
+    is absent (degrade to the char estimate). OpenAI names the fields
+    ``prompt_tokens`` / ``completion_tokens`` (vs Anthropic's input/output) and has
+    no cache-creation concept; ``prompt_tokens_details.cached_tokens`` carries the
+    cache-read count on newer models. cost_usd stays None (the SDK returns no billed
+    dollar figure); est_cost is computed from the tokens."""
+    if usage is None:
+        return None
+    def _g(obj: Any, name: str) -> int:
+        v = getattr(obj, name, 0)
+        return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+    return {
+        "in_tokens": _g(usage, "prompt_tokens"),
+        "out_tokens": _g(usage, "completion_tokens"),
+        "cache_create": 0,  # OpenAI has no cache-creation token concept
+        "cache_read": _g(getattr(usage, "prompt_tokens_details", None), "cached_tokens"),
+        "cost_usd": None,
+    }
 
 
 BACKENDS: dict[str, AgentRun] = {
@@ -154,6 +223,29 @@ BACKENDS: dict[str, AgentRun] = {
     "anthropic": lambda p, c, t: _api_run("anthropic", p, c, t),
     "openai": lambda p, c, t: _api_run("openai", p, c, t),
 }
+
+
+def _call_backend(
+    run: AgentRun, prompt: str, cwd: str, tier: str,
+) -> tuple[str, Usage | None]:
+    """Invoke a backend and normalise its return to ``(text, usage|None)``.
+
+    A backend may return the bare final text (legacy str-returning backends and
+    test fakes) or a ``(text, usage)`` tuple. Normalising here means the cost
+    capture is additive: a str-returning backend yields ``usage=None`` and the
+    findings are identical to the pre-capture path (the (text, None) golden
+    equality the test asserts).
+
+    Defensive on shape: only a 2-tuple is destructured as ``(text, usage)``, and a
+    non-dict usage is coerced to ``None`` rather than flowed into cost stamping.
+    Any other return (a 1- or 3-tuple, or a bare value) degrades to the legacy
+    ``str(out)`` path with ``usage=None``, so a backend that returns an unexpected
+    shape costs only its cost telemetry, never a hard unpack crash mid-review."""
+    out = run(prompt, cwd, tier)
+    if isinstance(out, tuple) and len(out) == 2:
+        text, usage = out
+        return str(text), usage if isinstance(usage, dict) else None
+    return str(out), None
 
 
 def _parse_json(text: str) -> dict[str, Any]:
@@ -287,6 +379,27 @@ def _strip_nulls(obj: Any) -> Any:
     return obj
 
 
+def _stamp_cost(
+    out: dict[str, Any], tier: str, usage: Usage | None, prompt: str, response_text: str,
+) -> None:
+    """Stamp the per-call cost telemetry onto a dispatch output IN PLACE, next to
+    the existing ``wall_ms``. Pure side-channel: reads token counts only, never
+    alters findings/ordering/routing. The output schema is unconstrained
+    (additionalProperties not false on the specialist / worker schemas), and
+    wall_ms already rides these same outputs, so the extra keys cannot trip
+    validation or change the FSM advance. ``tokens_in``/``tokens_out`` reuse the
+    names the runner + ingest already read; cache_*/cost_usd/est_cost/tier are
+    additive."""
+    fields = _cost.call_cost_fields(tier, usage, prompt, response_text)
+    out["tier"] = fields["tier"]
+    out["tokens_in"] = fields["tokens_in"]
+    out["tokens_out"] = fields["tokens_out"]
+    out["cache_create"] = fields["cache_create"]
+    out["cache_read"] = fields["cache_read"]
+    out["cost_usd"] = fields["cost_usd"]
+    out["est_cost"] = fields["est_cost"]
+
+
 def _route_tier(leaf_id: str, dimensions: list[str] | None) -> str:
     dims = dimensions or []
     if "security" in dims or "correctness" in dims:
@@ -325,19 +438,23 @@ def make_dispatchers(
                        + '\n```\n\n## OUTPUT CONTRACT\nReturn ONLY {"decisions":[...]} as '
                        + "described above — no prose, no markdown fences, no file writes.\n")
             _t0 = perf_counter()
-            parsed = _parse_json(run(rprompt, repo, "cheap"))
+            _text, _usage = _call_backend(run, rprompt, repo, "cheap")
+            parsed = _parse_json(_text)
             ranked = _apply_rank_decisions(
                 findings, parsed.get("decisions") if isinstance(parsed, dict) else None,
                 inputs.get("args") or {})
             ranked["wall_ms"] = int((perf_counter() - _t0) * 1000)
+            _stamp_cost(ranked, "cheap", _usage, rprompt, _text)
             return ranked
         compact = _compact_inputs(inputs)
         prompt = (_load_prompt(_ROLE_BY_STATE[state_id])
                   + f"\n\n## RUN INPUTS (review base {base}..head {head} in this repo)\n"
                   + "```json\n" + json.dumps(compact, default=str)[:_WORKER_INPUT_CAP] + "\n```" + _OUTPUT_RULE)
         _t0 = perf_counter()
-        out = _parse_json(run(prompt, repo, "cheap"))
+        _text, _usage = _call_backend(run, prompt, repo, "cheap")
+        out = _parse_json(_text)
         out["wall_ms"] = int((perf_counter() - _t0) * 1000)
+        _stamp_cost(out, "cheap", _usage, prompt, _text)
         # Rehydrate the heavy leaf fields we stripped for the prompt, keyed by id
         # off the deterministic source set, so downstream sees complete leaves.
         if state_id == "tree_descend" and isinstance(out.get("stage_a_candidates"), list):
@@ -363,12 +480,18 @@ def make_dispatchers(
                   + "## PROJECT\n```json\n" + json.dumps(shared.get("project_profile") or {}, default=str)[:4000]
                   + "\n```" + _OUTPUT_RULE
                   + f'Return {{"id":"{leaf_id}","status":"completed","findings":[...]}}.')
+        tier = _route_tier(leaf_id, leaf.get("dimensions"))
         _t0 = perf_counter()
-        out = _parse_json(run(prompt, repo, _route_tier(leaf_id, leaf.get("dimensions"))))
+        _text, _usage = _call_backend(run, prompt, repo, tier)
+        out = _parse_json(_text)
         # Real measured wall_ms supersedes the LLM-self-reported (hallucinated)
-        # runtime_ms in the specialist JSON. tokens stay null on the claude -p CLI
-        # path (no billed usage); they fill in on the API backend.
+        # runtime_ms in the specialist JSON. Cost rides alongside as a SIDE-FIELD
+        # (tier/tokens/cost), read off the same envelope; it never gates or alters
+        # the finding pipeline. On the claude -p CLI the live usage block fills the
+        # token counts (cache_creation dominates); backends without usage fall back
+        # to the dependency-free char estimate.
         out["wall_ms"] = int((perf_counter() - _t0) * 1000)
+        _stamp_cost(out, tier, _usage, prompt, _text)
         out.setdefault("id", leaf_id)
         cleaned = _strip_nulls(out)
         return cleaned if isinstance(cleaned, dict) else out

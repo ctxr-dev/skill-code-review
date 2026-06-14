@@ -362,6 +362,117 @@ def test_timings_table_and_slowest_round_trip(
     db_conn.close()
 
 
+def test_timings_cost_column_round_trips(
+    tracker: ModuleType, db_conn: sqlite3.Connection
+) -> None:
+    """The cost column is part of TIMING_COLUMNS and persists the per-call /
+    per-review PROXY cost."""
+    assert "cost" in tracker.TIMING_COLUMNS
+    tracker.upsert_timing(db_conn, {
+        "run_id": "r1", "pr_id": "pr-a", "scope": "process", "name": "whole_review",
+        "wall_ms": 2000, "cost": 0.0026, "source": "runner"})
+    row = db_conn.execute(
+        "SELECT cost FROM timings WHERE name = 'whole_review' AND pr_id = 'pr-a'"
+    ).fetchone()
+    assert row["cost"] == 0.0026
+    db_conn.close()
+
+
+def test_init_db_adds_cost_column_to_preexisting_timings_table(
+    tracker: ModuleType, tmp_path: Path
+) -> None:
+    """init_db migrates a live (pre-cost) DB: CREATE TABLE IF NOT EXISTS is a no-op
+    once the table exists, so the guarded ALTER must add the column. A row with a
+    cost value is then insertable (upsert_timing projects TIMING_COLUMNS, which now
+    includes cost)."""
+    db_path = tmp_path / "legacy.db"
+    conn = tracker.connect(db_path)
+    # Simulate the OLD timings table (no cost column), as the live gitignored DB
+    # was created before this change.
+    conn.execute(
+        "CREATE TABLE timings (run_id TEXT NOT NULL, pr_id TEXT NOT NULL, "
+        "scope TEXT, name TEXT, wall_ms INTEGER, tokens_in INTEGER, "
+        "tokens_out INTEGER, started_at TEXT, ended_at TEXT, n_calls INTEGER DEFAULT 1, "
+        "status TEXT DEFAULT 'measured', source TEXT, "
+        "PRIMARY KEY (run_id, pr_id, scope, name))"
+    )
+    conn.commit()
+    cols_before = {r[1] for r in conn.execute("PRAGMA table_info(timings)")}
+    assert "cost" not in cols_before
+
+    tracker.init_db(conn)  # idempotent migration adds the column
+    cols_after = {r[1] for r in conn.execute("PRAGMA table_info(timings)")}
+    assert "cost" in cols_after
+
+    # Re-running init_db is safe (the ALTER is guarded), and a cost row inserts.
+    tracker.init_db(conn)
+    tracker.upsert_timing(conn, {
+        "run_id": "r1", "pr_id": "pr-a", "scope": "process", "name": "whole_review",
+        "wall_ms": 1, "cost": 0.0026, "source": "runner"})
+    (got,) = conn.execute(
+        "SELECT cost FROM timings WHERE name = 'whole_review'").fetchone()
+    assert got == 0.0026
+    conn.close()
+
+
+def test_gate5_binds_once_cost_mean_is_populated(tracker: ModuleType) -> None:
+    """GATE-5 (cost <= 1.25x baseline) fails CLOSED while baseline cost_mean is
+    None (routed to inconclusive via cost_baseline_missing). Once a real baseline
+    cost is recorded it binds: an in-budget candidate passes, an over-budget one
+    fails, WITHOUT any change to the finding gates."""
+    base_no_cost = {"recall_mean": 0.5, "fp_per_pr_mean": 1.8, "f1_mean": 0.55,
+                    "f1_ci_lo": 0.49, "f1_ci_hi": 0.60, "f1_stdev": 0.03,
+                    "cost_mean": None}
+    # A candidate that clears the other hard gates and the progress CI.
+    cand = {"recall_mean": 0.5, "fp_per_pr_mean": 1.8, "f1_mean": 0.70,
+            "f1_ci_lo": 0.65, "f1_ci_hi": 0.75, "f1_stdev": 0.03,
+            "pr_set_id": "pr20", "cost_mean": 0.0026}
+
+    # Baseline cost missing -> GATE-5 red, cost_baseline_missing, inconclusive.
+    r0 = tracker.summary_stat_gate(base_no_cost, cand)
+    assert r0["gates"]["gate_5_cost"] is False
+    assert "cost_baseline_missing" in r0["detail"]["notes"]
+    assert r0["verdict"] == tracker.VERDICT_INCONCLUSIVE
+
+    # Populate baseline cost -> GATE-5 binds against a real ratio.
+    base = {**base_no_cost, "cost_mean": 0.0026}
+    r_in = tracker.summary_stat_gate(base, {**cand, "cost_mean": 0.0026})  # ratio 1.0
+    assert r_in["gates"]["gate_5_cost"] is True
+    assert "cost_baseline_missing" not in r_in["detail"]["notes"]
+    assert r_in["verdict"] == tracker.VERDICT_PROMOTE
+
+    # Over the 1.25x budget -> GATE-5 red, a genuine cost regression -> revert.
+    r_over = tracker.summary_stat_gate(base, {**cand, "cost_mean": 0.0026 * 1.5})
+    assert r_over["gates"]["gate_5_cost"] is False
+    assert r_over["verdict"] == tracker.VERDICT_REVERT
+
+    # SYMMETRY: a missing CANDIDATE cost must also fail GATE-5 CLOSED (not default
+    # to 0.0 and pass trivially), routed to inconclusive like the baseline case.
+    cand_no_cost = {k: v for k, v in cand.items() if k != "cost_mean"}
+    r_cand = tracker.summary_stat_gate(base, cand_no_cost)
+    assert r_cand["gates"]["gate_5_cost"] is False
+    assert "cost_candidate_missing" in r_cand["detail"]["notes"]
+    assert r_cand["detail"]["cost_ratio"] is None
+    assert r_cand["verdict"] == tracker.VERDICT_INCONCLUSIVE
+
+    # A non-positive candidate cost is invalid telemetry, not a real 0-cost review:
+    # it must fail GATE-5 CLOSED too, symmetric with the baseline <= 0 guard, so a
+    # 0.0 does NOT pass 0.0 <= 1.25*baseline trivially.
+    r_zero = tracker.summary_stat_gate(base, {**cand, "cost_mean": 0.0})
+    assert r_zero["gates"]["gate_5_cost"] is False
+    assert "cost_candidate_missing" in r_zero["detail"]["notes"]
+    assert r_zero["verdict"] == tracker.VERDICT_INCONCLUSIVE
+    # The displayed cost_ratio follows the SAME positive-cost-only rule as the gate:
+    # a non-positive candidate shows None, not a misleading 0.0 next to a failing gate.
+    assert r_zero["detail"]["cost_ratio"] is None
+
+    # bool is a subclass of int: a malformed cost_mean: True must NOT coerce to 1.0
+    # and bind GATE-5 on garbage; it reads as missing and fails closed on both sides.
+    r_bool = tracker.summary_stat_gate({**base, "cost_mean": True}, cand)
+    assert r_bool["gates"]["gate_5_cost"] is False
+    assert "cost_baseline_missing" in r_bool["detail"]["notes"]
+
+
 def test_check_warns_on_known_dead_end(
     tracker: ModuleType, db_conn: sqlite3.Connection
 ) -> None:

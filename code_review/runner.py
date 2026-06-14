@@ -88,12 +88,23 @@ class RunnerStats:
     total_est_cost: float = 0.0
 
 
-# Serialises the read-modify-write on the shared RunnerStats cost totals.
-# _accumulate_cost runs from the specialist thread-pool workers (_dispatch_one),
-# so the plain `+=` on a float/int attribute is a non-atomic load-add-store that
-# could lose an update under GIL hand-off. The lock makes the roll-up exact, so
-# the cost_mean a benchmark reads is deterministic across concurrent dispatch.
-_COST_LOCK = threading.Lock()
+# Serialises the read-modify-write on ALL shared RunnerStats counters mutated from
+# the specialist thread-pool workers (_dispatch_one): not only the cost totals but
+# also dispatched / failed / retries / rate_limit_events / overflow_splits. A plain
+# `+=` on an attribute is a non-atomic load-add-store that can lose an update under
+# GIL hand-off, which would make these counts nondeterministic and inconsistent with
+# the locked cost rollups. The lock makes every worker-thread tally exact, so the
+# persisted timing artifact and the cost_mean a benchmark reads are deterministic
+# across concurrent dispatch.
+_STATS_LOCK = threading.Lock()
+
+
+def _bump(stats: RunnerStats, field_name: str, by: int = 1) -> None:
+    """Thread-safe increment of one integer RunnerStats counter from a worker
+    thread. Mirrors the locking _accumulate_cost already applies to the cost totals,
+    so the count fields stay consistent with the rollups under concurrency."""
+    with _STATS_LOCK:
+        setattr(stats, field_name, getattr(stats, field_name) + by)
 
 
 def _accumulate_cost(stats: RunnerStats, out: dict[str, Any]) -> None:
@@ -106,7 +117,7 @@ def _accumulate_cost(stats: RunnerStats, out: dict[str, Any]) -> None:
         return
     ti, to = out.get("tokens_in"), out.get("tokens_out")
     cu, ec = out.get("cost_usd"), out.get("est_cost")
-    with _COST_LOCK:
+    with _STATS_LOCK:
         if isinstance(ti, (int, float)) and not isinstance(ti, bool):
             stats.total_in_tokens += int(ti)
         if isinstance(to, (int, float)) and not isinstance(to, bool):
@@ -317,7 +328,7 @@ def _dispatch_one(
     leaf_id = unit.get("leaf_id", "")
 
     def failed(reason: str) -> dict[str, Any]:
-        stats.failed += 1
+        _bump(stats, "failed")
         return {"id": leaf_id, "status": "failed", "findings": [], "skip_reason": reason}
 
     attempt = 0
@@ -327,10 +338,10 @@ def _dispatch_one(
             out = dispatch_specialist(unit, shared)
         except RateLimitError:
             limiter.release()
-            stats.rate_limit_events += 1
+            _bump(stats, "rate_limit_events")
             limiter.penalize()
             attempt += 1
-            stats.retries += 1
+            _bump(stats, "retries")
             if attempt > max_retries:
                 return failed("rate-limited after retries")
             sleep(base_backoff * (2 ** (attempt - 1)))
@@ -340,7 +351,7 @@ def _dispatch_one(
             sub = _split_unit(unit)
             if sub is None:
                 return failed("context overflow; single file too large")
-            stats.overflow_splits += 1
+            _bump(stats, "overflow_splits")
             merged: list[Any] = []
             sub_results: list[dict[str, Any]] = []
             for su in sub:
@@ -362,7 +373,7 @@ def _dispatch_one(
         except Exception as exc:  # a bad unit must not kill the run
             limiter.release()
             attempt += 1
-            stats.retries += 1
+            _bump(stats, "retries")
             if attempt > max_retries:
                 return failed(f"error after retries: {type(exc).__name__}")
             sleep(base_backoff * (2 ** (attempt - 1)))
@@ -370,7 +381,7 @@ def _dispatch_one(
         else:
             limiter.release()
             limiter.reward()
-            stats.dispatched += 1
+            _bump(stats, "dispatched")
             _accumulate_cost(stats, out)
             out.setdefault("id", leaf_id)
             out.setdefault("status", "completed")

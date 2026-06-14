@@ -183,6 +183,28 @@ def test_pool_bounded_concurrency_and_total_coverage_under_chaos() -> None:
     assert res[("leaf-13", 1)]["status"] == "failed"
 
 
+def test_dispatched_count_is_exact_under_high_concurrency() -> None:
+    """The worker-thread counters (dispatched / failed) are incremented under the
+    stats lock, so they stay EXACT under heavy concurrency: a plain += could lose an
+    increment to a read-modify-write race and report fewer dispatches than results.
+    Every unit succeeds, so dispatched must equal the unit count with no loss."""
+    def dispatch(unit: dict[str, Any], shared: dict[str, Any]) -> dict[str, Any]:
+        return {"id": unit["leaf_id"], "status": "completed", "findings": [],
+                "tokens_in": 1, "tokens_out": 1, "est_cost": 0.001}
+
+    n = 300
+    units = [{"leaf_id": f"leaf-{i}", "sub_index": 1, "files": [f"f{i}.py"]} for i in range(n)]
+    stats = RunnerStats()
+    res = _dispatch_units(units, {}, dispatch, max_workers=16, min_workers=1,
+                          max_retries=1, base_backoff=0.0, sleep=lambda _s: None, stats=stats)
+    assert len(res) == n
+    assert stats.dispatched == n  # no lost increment under the race
+    assert stats.failed == 0
+    # The locked cost rollup is consistent with the (now also locked) dispatched count.
+    assert stats.total_in_tokens == n
+    assert stats.total_est_cost == pytest.approx(0.001 * n)
+
+
 def test_overflow_recursion_no_deadlock_at_min_concurrency() -> None:
     """Overflow recursion releases its permit before recursing — must not deadlock
     even with max_workers=1."""

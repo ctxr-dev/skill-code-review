@@ -3,9 +3,11 @@
 
 # Benchmark HISTORY
 
-Generated: 2026-06-09T20:42:57+00:00
+Generated: 2026-06-14T16:28:20+00:00
 
 | ts | run_id | pr_set | lever | verdict | F1 | F1 CI | recall | fp/PR | $/rev | sha |
 |---|---|---|---|---|---|---|---|---|---|---|
 | 2026-06-09T16:09:51+00:00 | smoke | pr1 | A1-smoke-validation | n/a | 0.800 | [0.800, 0.800] | 1.000 | 1.00 | n/a | c4e1e09 |
-| 2026-06-09T20:37:54+00:00 | base-pr5 | pr5 | baseline | ramp | 0.593 | [0.537, 0.652] | 0.727 | 1.60 | n/a | c4e1e09 |
+| 2026-06-09T20:37:54+00:00 | base-pr5 | pr5 | baseline | ramp | 0.593 | [0.537, 0.652] | 0.727 | 1.60 | 9.7715 | c4e1e09 |
+| 2026-06-13T19:01:48+00:00 | lever3-pr5 | pr5 | L3-trim-cheaper-output | inconclusive | 0.571 | [0.472, 0.667] | 0.727 | 1.80 | n/a | 8e28022 |
+| 2026-06-14T16:26:24+00:00 | costdemote-pr5 | pr5 | C1-tier-demote-low-risk-leaves | inconclusive | 0.548 | [0.493, 0.590] | 0.697 | 1.87 | 8.5825 | 19be551 |

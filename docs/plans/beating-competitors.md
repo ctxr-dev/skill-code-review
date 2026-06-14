@@ -784,6 +784,70 @@ benchmark was not touched.
   hard-reasoning); fix the stage where it is actually lost, proven by an empirical run of the lever
   HEAD on the target PR, not by the stage a tidy baseline artifact suggests.
 
+### 5A.2g C1: tier-demote the low-risk leaves to the cheap model [DEAD-END, PROVEN at pr5]
+
+**NB: C1 is the FIRST COST lever (the 5A.2e META-FINDING named COST as a productive axis once the
+cost-capture infra landed). The cost-capture instrumentation shipped at c1a7b5f (per-review proxy
+cost in `timings.json`), then C1 demoted leaves to the cheap model on top of it. The KEEP RULE for
+this autonomous round was: keep iff ANY cost reduction AND zero quality degradation (recall at least
+0.727 with delta-recall CI lower at least -0.03, F1 at least 0.593, fp/PR at most 1.60).**
+
+**OUTCOME: PROVEN DEAD-END at pr5, COST WIN BUT QUALITY REGRESSION (REVERT class). The cost axis
+moved as designed (per-review proxy cost 9.7715 to 8.5825, ratio 0.8783, about 12 percent cheaper,
+GATE-5 green) but quality regressed on every quality axis, so the KEEP RULE fails.** Measured over
+the 5 pilot PRs x 3 rounds, headline tool `skill-prod-primary`, Opus 4.8 judge, Martian rule
+(candidate sha `19be551` on `feat/cost-tier-demote`, recorded as experiment row `costdemote-pr5`).
+
+**The lever:** route the 24 lowest-risk leaves (a leaf whose entire dimension set is the low-risk
+correctness / readability / maintainability set and that is NOT in a keep-strong family) to the
+cheap sonnet model instead of the strong opus model. A keep-strong family floor pins every security,
+footgun, concurrency, reliability, crypto, data, migration, and domain leaf to the strong model, and
+a security dimension always pins strong. The model map and the `dispatch_specialist` call site were
+unchanged; only the per-leaf tier selection moved (`code_review/dispatch.py`, 2 files changed, 36
+insertions, 7 deletions).
+
+**The numbers (authoritative N=3 paired bootstrap, the exact 5-gate engine):**
+
+| metric | baseline (base-pr5) | candidate (costdemote-pr5) | delta | gate |
+|---|---|---|---|---|
+| recall | 0.7273 | 0.6970 | -0.0303 (delta CI lo -0.10) | GATE-1 RED |
+| fp/PR | 1.60 | 1.8667 | +0.2667 | GATE-2 RED |
+| paired delta-F1 CI | n/a | [-0.0883, -0.0077] | strictly below 0 | GATE-3 RED |
+| F1 stdev | 0.030 | 0.0542 | +0.0242 | GATE-4 RED |
+| $/review (proxy) | 9.7715 | 8.5825 | ratio 0.8783 | GATE-5 GREEN |
+
+Only GATE-5 (cost) passes. F1 fell 0.5926 to 0.5476.
+
+**Why it is a dead-end (the empirical argument):** the recall loss is real and attributable. In
+`costdemote-r1` the `cal.com-14943` review dropped golden-0 (the non-atomic `retryCount` stale-read
+/ lost-update under concurrency) from the primary set; that golden was caught in every baseline round
+and in `costdemote-r2`/`r3`, so the miss is the cheap model failing to surface a real concurrency
+defect that the owning low-risk-correctness leaf was demoted on. The keep-strong floor correctly held
+the security / footgun / concurrency / crypto / migration / domain leaves on the strong model, but
+the demoted `lang-*-general-correctness` class STILL owns real goldens, so demoting it is NOT
+recall-safe. The cheap model also raised the false-positive rate (fp/PR 1.60 to 1.87) and the
+round-to-round F1 variance (stdev 0.03 to 0.054). A 12 percent cost saving that costs a golden and
+widens the noise band is a net loss under the KEEP RULE (zero quality degradation), so the change is
+reverted.
+
+`retry_at_pr_set = NULL`: this is a genuine quality regression (REVERT class, not a GATE-3-only
+straddle), and it is not a power artifact (the missed golden is a concrete, reproducible cheap-model
+miss, not bootstrap noise), so a larger PR set does not rescue it. Recorded as a `dead_ends` row
+(lever `C1-tier-demote-low-risk-leaves`, `pr_set_id = pr5`, `retry_at_pr_set = NULL`) and as
+experiment row `costdemote-pr5` in `experiments.db`. Branch `feat/cost-tier-demote` deleted, nothing
+pushed; the cost-capture instrumentation at c1a7b5f is independent and stays.
+
+- **Methodology data point:** a cost lever is held to the SAME quality no-regression gate as a speed
+  lever, never traded for cheapness. Model-tier demotion is only recall-safe for a leaf class that
+  owns NO goldens; "low-risk dimensions" (correctness/readability/maintainability) is NOT a safe
+  proxy for "owns no real bug", because general-correctness leaves routinely catch concrete goldens.
+  Before demoting a leaf class to a cheaper model, prove on the scored set that the class catches no
+  golden the strong model would lose; absent that proof, the keep-strong floor must extend to the
+  general-correctness class too, which would leave too few leaves to demote for a meaningful saving.
+  The open cost path is therefore NOT blanket tier-demotion; it is either (a) a narrower demotion
+  restricted to leaves empirically proven golden-free on a powered set, or (b) a non-tier cost lever
+  (fewer/cheaper calls in routing or trim) that does not touch specialist model quality.
+
 ### 5A.3 S3 (DEFERRED contingency): sqlite-vec / embedding ROUTING pre-filter
 
 DEFERRED, and now LOWER PRIORITY. The premise that S1 + S2 would land and bank a speed win did NOT

@@ -1980,25 +1980,30 @@ def write_run_artefacts(
         json.dumps(manifest, indent=2) + "\n",
     )
 
-    # Structured timing telemetry, persisted next to manifest.json. The product
-    # runner drives the FSM in-process and never writes a journal, so the runner
-    # hands its live timing snapshot through env["timings"] (whole_review_ms +
+    # Structured timing + cost telemetry, persisted next to manifest.json. The
+    # product runner drives the FSM in-process and never writes a journal, so the
+    # runner hands its live snapshot through env["timings"] (whole_review_ms +
     # per-state stage_timings + per-specialist {leaf_id, wall_ms, tokens_in,
-    # tokens_out}). When the runner did not supply timings (e.g. an ad-hoc
-    # materialisation outside run_review), we skip the file rather than write an
-    # empty shell. tokens stay null on the claude -p CLI path (no billed usage);
-    # they fill in on the API backend. Downstream ingest (scripts/ingest_timings.py)
-    # reads this file, NEVER the untimestamped run.log.
+    # tokens_out, cost_usd, est_cost, tier} + a run-level cost roll-up). When the
+    # runner did not supply timings (e.g. an ad-hoc materialisation outside
+    # run_review), we skip the file rather than write an empty shell. On the
+    # current claude -p CLI the live usage block fills the token counts and the
+    # CLI list-price cost_usd; backends with no usage block fall back to the
+    # char-estimate proxy. cost is a PROXY for relative lever comparison, NEVER
+    # billed spend. Downstream ingest (scripts/ingest_timings.py) reads this file,
+    # NEVER the untimestamped run.log.
     timings = env.get("timings")
     if isinstance(timings, dict):
         stage_timings = timings.get("stage_timings")
         specialists = timings.get("specialists")
+        cost_block = timings.get("cost")
         timings_doc = {
             "run_id": legacy_run_id,
             "fsm_run_id": run_uuid_str,
             "whole_review_ms": timings.get("whole_review_ms"),
             "stage_timings": stage_timings if isinstance(stage_timings, list) else [],
             "specialists": specialists if isinstance(specialists, list) else [],
+            "cost": cost_block if isinstance(cost_block, dict) else {},
         }
         _atomic_write_text(
             run_dir / "timings.json",

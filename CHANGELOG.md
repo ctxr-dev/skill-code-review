@@ -38,6 +38,21 @@ upgrade to v2.4.x without any code changes.
 
 ### Added
 
+- Per-call cost capture in the dispatch layer (pure instrumentation,
+  no change to which findings are produced or how leaves are routed).
+  The `claude -p --output-format json` envelope already parsed in the
+  runner carries a full usage block plus a list-price `total_cost_usd`;
+  backends now return `(text, usage|None)` and the dispatchers stamp
+  tier, tokens, cache counts, `cost_usd`, and `est_cost` next to the
+  existing `wall_ms`. codex/cursor have no usage block and fall back to
+  a dependency-free `ceil(chars/4)` estimate priced by a dated table in
+  the new `code_review/cost.py`. `RunnerStats` sums per-call cost across
+  specialists and worker calls; the roll-up is persisted in
+  `timings.json` and the manifest stats block, ingested into the tracker
+  `timings` table (new guarded `cost` column), and surfaced as the
+  per-review `cost_mean` that the benchmark GATE-5 (cost at most 1.25x
+  baseline) binds against. `cost_mean` is a PROXY for relative lever
+  comparison, never billed spend.
 - Three generalized correctness reviewers that close common coverage
   gaps found via the benchmark: `footgun-null-and-missing-state`
   (null/None/undefined dereference and unguarded missing state,

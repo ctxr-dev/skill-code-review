@@ -66,6 +66,7 @@ these only set up data and measure results. All paths come from `scripts/paths.p
 | `build_judge_input_prod.py` | Extract a review's candidates (skill-prod / -primary / -scoped) + the committed competitor sets into a judge input for one (pr, run-id). | `uv run python scripts/build_judge_input_prod.py <pr-id> <run-id>` |
 | `score.py` | Aggregate per-(PR,tool) judge verdicts for a run-id into a leaderboard (`results/<run-id>/`). | `uv run python scripts/score.py <run-id>` |
 | `rerank.py` | FAST ranker-only loop: re-run the product's `rank_findings` worker on an existing review's findings to test a `finding-ranker.md` change WITHOUT re-rolling specialists (~1 call/PR; average ≥3 — the ranker is stochastic). | `uv run python scripts/rerank.py <pr-id> <src-run-id> <out-run-id>` |
+| `ingest_timings.py` | Load each run's `timings.json` (per-state + per-specialist wall_ms, tokens, and per-call/per-review PROXY cost) into the tracker `timings` table; the dry-run summary prints `cost_mean_proxy` (mean per-review `total_est_cost`), the value to hand `experiments.py record --cost`. cost is a PROXY for the GATE-5 ratio, NEVER billed spend. | `uv run python scripts/ingest_timings.py <run-id> [--apply]` |
 
 ## Cookbooks (proper sequences)
 
@@ -129,6 +130,20 @@ uv run python scripts/rerank.py <pr-id> <src-run-id> <new-run-id>   # per PR, �
 [`scr-reviewers-wiki-authoring`](../scr-reviewers-wiki-authoring/SKILL.md): edit
 `reviewers.src/<id>.md` → `validate_layout.py` → cookbook 1 (regenerate) → cookbook 5
 (benchmark gate, frontier-or-better) → human-gated commit.
+
+**8. Capture per-review cost for GATE-5** (after a benchmark iteration, cookbook 5):
+```
+# the product runner writes timings.json with a per-call + run-level cost block.
+uv run python scripts/ingest_timings.py <run-id>           # dry-run: prints cost_mean_proxy
+uv run python scripts/ingest_timings.py <run-id> --apply   # also writes timing+cost rows
+# record the PR-set mean cost as cost_mean (a PROXY, never billed spend); over the
+# SAME N rounds the candidate is evaluated on, so the GATE-5 ratio stays valid:
+uv run python benchmarks/experiments.py record <run-id> --cost <cost_mean_proxy> ... --apply
+```
+Cost is the CLI list-price imputation (claude backend) or the dependency-free
+`ceil(chars/4)` estimate (codex/cursor), priced by `code_review/cost.py`'s dated
+table. One identical estimator prices baseline and candidate, so bias cancels in the
+ratio. NEVER anchor GATE-5 on a retroactive estimate mixed with live-usage candidates.
 
 ## Before any commit
 `uv run ruff check code_review/ tests/` · `uv run mypy code_review/` · `uv run pytest`.

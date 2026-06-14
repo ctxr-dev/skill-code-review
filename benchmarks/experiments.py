@@ -87,6 +87,23 @@ DO_NOT_EDIT = (
     "{state|history|leaderboard} --apply -->\n"
 )
 
+# Honesty clause for the $/review row (rendered into STATE.md, mirrored in
+# code_review/cost.py). Under the flat claude -p subscription NO per-review dollar
+# is actually billed: cost_mean is a PROXY (sum of per-call est_cost over the PR
+# set, char-estimate or live-usage tokens priced by a fixed list-price table),
+# used ONLY for the RELATIVE GATE-5 ratio (candidate <= 1.25x baseline). Because
+# one identical estimator prices baseline and candidate, systematic bias cancels
+# in the ratio. Never present $/review as real spend.
+COST_PROXY_NOTE = (
+    "> $/review is a PROXY for relative lever comparison (GATE-5: candidate cost "
+    "<= 1.25x baseline), NEVER billed spend. Under the flat claude -p subscription "
+    "no per-review dollar is billed; the figure is a list-price imputation from one "
+    "identical estimator. Systematic estimator bias cancels in the ratio ONLY when "
+    "baseline and candidate share the same telemetry path (both live-usage, or both "
+    "char-estimate): never mix a retroactive char-estimate baseline with live-usage "
+    "candidates. See code_review/cost.py."
+)
+
 # The product reviewer's tools are named "skill-<variant>" (e.g. "skill-prod").
 # This is the SINGLE source of truth for that prefix so the leaderboard annotation
 # (experiments.py), the leaderboard star (score.py), and the verdict-ingest filter
@@ -211,6 +228,7 @@ SCHEMA: tuple[str, ...] = (
         wall_ms    INTEGER,
         tokens_in  INTEGER,
         tokens_out INTEGER,
+        cost       REAL,
         started_at TEXT,
         ended_at   TEXT,
         n_calls    INTEGER DEFAULT 1,
@@ -270,10 +288,41 @@ def connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
     return conn
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+    """Idempotently add a column to an EXISTING table. CREATE TABLE IF NOT EXISTS
+    is a no-op once the table exists, so a column added to the CREATE statement
+    after the table was first created never lands on the live (append-only,
+    gitignored) DB. The PRAGMA table_info check is check-then-act, so the ALTER is
+    additionally wrapped in try/except: two processes re-init-ing concurrently can
+    both see the column missing, and the loser's ALTER raises 'duplicate column
+    name', which is the benign already-present case, swallowed after re-verifying."""
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column in cols:
+        return
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+    except sqlite3.OperationalError as exc:
+        # Only the benign 'duplicate column name' race is swallowed (a concurrent
+        # re-init won the ALTER). A lock / disk-I/O / no-such-table OperationalError
+        # is a real fault and must propagate, so re-raise anything else, and re-raise
+        # even the duplicate case if the column is somehow still absent.
+        if "duplicate column name" not in str(exc).lower():  # benign race only
+            raise
+        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            raise
+
+
 def init_db(conn: sqlite3.Connection) -> None:
-    """Create the five tables if they do not exist. Idempotent."""
+    """Create the five tables if they do not exist, then apply idempotent column
+    migrations for columns added after a table's first creation. Idempotent."""
     for stmt in SCHEMA:
         conn.execute(stmt)
+    # Migration: timings.cost was added after the table shipped without it. On a
+    # fresh DB the CREATE above already includes it; on the live DB this ALTER adds
+    # it. upsert_timing projects TIMING_COLUMNS, so the column must exist before a
+    # cost-bearing row is inserted.
+    _ensure_column(conn, "timings", "cost", "REAL")
     conn.commit()
 
 
@@ -375,6 +424,7 @@ TIMING_COLUMNS: tuple[str, ...] = (
     "wall_ms",
     "tokens_in",
     "tokens_out",
+    "cost",
     "started_at",
     "ended_at",
     "n_calls",
@@ -520,11 +570,15 @@ def summary_stat_gate(
     f1lo_c = f(candidate, "f1_ci_lo")
     std_b = f(baseline, "f1_stdev")
     std_c = f(candidate, "f1_stdev")
-    # cost_mean is kept as Optional so a missing baseline cost fails GATE-5 CLOSED
-    # (we cannot bound the cost ratio, so we must not silently pass the guard).
+    # cost_mean is kept Optional on BOTH sides so a missing cost fails GATE-5
+    # CLOSED (we cannot bound the ratio, so we must not silently pass the guard).
+    # Symmetry matters: defaulting a missing CANDIDATE cost to 0.0 would make
+    # 0.0 <= 1.25*cost_b trivially true and pass GATE-5 on no data, the same
+    # fail-open hole the baseline branch avoids.
     cost_b_raw = baseline.get("cost_mean")
     cost_b = float(cost_b_raw) if cost_b_raw is not None else None
-    cost_c = f(candidate, "cost_mean")
+    cost_c_raw = candidate.get("cost_mean")
+    cost_c = float(cost_c_raw) if cost_c_raw is not None else None
     # The PR rung is the sample-size floor input. Distinguish "unknown" (None)
     # from a real zero so a missing/unparseable pr_set_id never collapses to a
     # falsy 0 that bypasses the underpower guard.
@@ -547,11 +601,18 @@ def summary_stat_gate(
     gate3 = (f1_c > f1_b) and f1_ci_separated
     # GATE-4 stability.
     gate4 = std_c <= (std_b + GATE4_STDEV_SLACK)
-    # GATE-5 cost guard. A missing/zero baseline cost cannot bound the candidate's
-    # ratio, so we FAIL CLOSED: GATE-5 is red and the run is held INCONCLUSIVE
-    # pending a real baseline cost rather than waved through.
+    # GATE-5 cost guard. A missing/zero baseline cost cannot bound the ratio, and a
+    # missing candidate cost has no value to bound, so EITHER side missing FAILS
+    # CLOSED: GATE-5 is red and the run is held INCONCLUSIVE pending a real cost
+    # rather than waved through. (Defaulting a missing candidate cost to 0.0 would
+    # make 0.0 <= 1.25*cost_b trivially true and pass GATE-5 on no data.)
     cost_baseline_missing = cost_b is None or cost_b <= 0
-    gate5 = (not cost_baseline_missing) and cost_c <= GATE5_COST_MULTIPLIER * cost_b  # type: ignore[operator]
+    cost_candidate_missing = cost_c is None
+    cost_missing = cost_baseline_missing or cost_candidate_missing
+    # The trailing ignore[operator] is needed because mypy cannot narrow cost_b /
+    # cost_c (float | None) through the `not cost_missing` guard; but cost_missing is
+    # True whenever either is None, so the comparison only runs when both are floats.
+    gate5 = (not cost_missing) and cost_c <= GATE5_COST_MULTIPLIER * cost_b  # type: ignore[operator]
 
     gates = {
         "gate_1_recall": gate1,
@@ -571,7 +632,7 @@ def summary_stat_gate(
         "stdev_delta": round(std_c - std_b, 4),
         "cost_ratio": (
             round(cost_c / cost_b, 4)
-            if cost_b is not None and cost_b > 0
+            if cost_b is not None and cost_b > 0 and cost_c is not None
             else None
         ),
         "n_prs": n_prs,
@@ -581,6 +642,8 @@ def summary_stat_gate(
     }
     if cost_baseline_missing:
         detail["notes"].append("cost_baseline_missing")
+    if cost_candidate_missing:
+        detail["notes"].append("cost_candidate_missing")
 
     # Outcome rules (plan 6.3): all green -> promote; only GATE-3 straddles 0 ->
     # inconclusive (retry at next rung); any of GATE-1/2/4/5 red -> revert. A
@@ -588,10 +651,10 @@ def summary_stat_gate(
     # routes to inconclusive rather than revert.
     hard_gates_ok = gate1 and gate2 and gate4 and gate5
     # Two distinct not-yet-provable cases route to inconclusive (vs a genuine
-    # regression -> revert): (a) the only failing gate is GATE-5 because the
-    # baseline cost is missing (the other hard gates pass), or (b) the only
-    # failing gate is GATE-3 (the progress CI straddles zero).
-    cost_blocked = cost_baseline_missing and gate1 and gate2 and gate4
+    # regression -> revert): (a) the only failing gate is GATE-5 because a cost
+    # (baseline OR candidate) is missing (the other hard gates pass), or (b) the
+    # only failing gate is GATE-3 (the progress CI straddles zero).
+    cost_blocked = cost_missing and gate1 and gate2 and gate4
     progress_only_red = hard_gates_ok and not gate3
     if underpowered:
         verdict = VERDICT_INCONCLUSIVE
@@ -715,6 +778,8 @@ def render_state(conn: sqlite3.Connection) -> str:
         lines.append(f"| $/review | {_fmt(proven.get('cost_mean'), 4)} | n/a |")
         lines.append(f"| F1 stdev | {_fmt(proven.get('f1_stdev'))} | (over "
                      f"{proven.get('n_rounds') or 'n/a'} rounds) |")
+        lines.append("")
+        lines.append(COST_PROXY_NOTE)
         lines.append("")
         lines.append(f"Last proven win: {proven.get('lever') or 'n/a'} "
                      f"({proven.get('verdict')}, {proven.get('ts')})")

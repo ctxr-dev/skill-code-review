@@ -74,6 +74,47 @@ class RunnerStats:
     # run_review body.
     total_wall_ms: int = 0
     stage_timings: list[dict[str, Any]] = field(default_factory=list)
+    # Cost telemetry, summed across every dispatched LLM call (specialists AND
+    # worker calls: scanner / tree-descender / trim / ranker). dispatch.py stamps
+    # per-call tokens/cost next to wall_ms; these accumulate them so cli.py can
+    # surface a run-level total and benchmarks can compute cost_mean. Both
+    # total_cost_usd (CLI list-price imputation) and total_est_cost (the
+    # dependency-free PROXY) are tracked: est_cost is the GATE-5 comparison
+    # currency (one identical estimator for baseline + candidate, so bias cancels
+    # in the ratio); cost_usd is the live billed figure where a backend reports it.
+    total_in_tokens: int = 0
+    total_out_tokens: int = 0
+    total_cost_usd: float = 0.0
+    total_est_cost: float = 0.0
+
+
+# Serialises the read-modify-write on the shared RunnerStats cost totals.
+# _accumulate_cost runs from the specialist thread-pool workers (_dispatch_one),
+# so the plain `+=` on a float/int attribute is a non-atomic load-add-store that
+# could lose an update under GIL hand-off. The lock makes the roll-up exact, so
+# the cost_mean a benchmark reads is deterministic across concurrent dispatch.
+_COST_LOCK = threading.Lock()
+
+
+def _accumulate_cost(stats: RunnerStats, out: dict[str, Any]) -> None:
+    """Fold one dispatch output's per-call cost stamp into the run totals. Reads
+    the same keys dispatch.py stamps (tokens_in/out, cost_usd, est_cost); a stamp
+    missing (e.g. a degraded worker fallback or a test spec that bypasses
+    dispatch.py) contributes 0. Thread-safe (worker threads call this); pure
+    accounting that never reads or changes findings."""
+    if not isinstance(out, dict):
+        return
+    ti, to = out.get("tokens_in"), out.get("tokens_out")
+    cu, ec = out.get("cost_usd"), out.get("est_cost")
+    with _COST_LOCK:
+        if isinstance(ti, (int, float)) and not isinstance(ti, bool):
+            stats.total_in_tokens += int(ti)
+        if isinstance(to, (int, float)) and not isinstance(to, bool):
+            stats.total_out_tokens += int(to)
+        if isinstance(cu, (int, float)) and not isinstance(cu, bool):
+            stats.total_cost_usd += float(cu)
+        if isinstance(ec, (int, float)) and not isinstance(ec, bool):
+            stats.total_est_cost += float(ec)
 
 
 # Best-effort worker states: a transient outage degrades to a safe fallback
@@ -291,6 +332,7 @@ def _dispatch_one(
             limiter.release()
             limiter.reward()
             stats.dispatched += 1
+            _accumulate_cost(stats, out)
             out.setdefault("id", leaf_id)
             out.setdefault("status", "completed")
             out.setdefault("findings", [])
@@ -352,9 +394,13 @@ def _record_stage(
 def _per_specialist_timings(
     unit_results: dict[tuple[str, int], dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Collect the per-specialist measured wall_ms (stamped by dispatch.py on each
-    specialist output) keyed by leaf_id. tokens stay null on the claude -p CLI
-    path (it reports no billed usage); they fill in on the API backend."""
+    """Collect the per-specialist measured wall_ms + cost stamp (both stamped by
+    dispatch.py on each specialist output) keyed by leaf_id. On the current
+    claude -p CLI the live usage block fills the token counts (cache_creation
+    dominates) and cost_usd carries the CLI list-price imputation; backends with
+    no usage block fall back to the char-estimate proxy, so est_cost is always
+    present while tokens_in/tokens_out reflect the estimate. A result that never
+    went through dispatch.py (e.g. a test spec) leaves these None/absent."""
     out: list[dict[str, Any]] = []
     for (leaf_id, _sub), result in sorted(unit_results.items()):
         out.append({
@@ -362,6 +408,9 @@ def _per_specialist_timings(
             "wall_ms": result.get("wall_ms"),
             "tokens_in": result.get("tokens_in"),
             "tokens_out": result.get("tokens_out"),
+            "cost_usd": result.get("cost_usd"),
+            "est_cost": result.get("est_cost"),
+            "tier": result.get("tier"),
         })
     return out
 
@@ -379,6 +428,15 @@ def _timings_artifact(
         "whole_review_ms": int((time.perf_counter() - run_t0) * 1000),
         "stage_timings": [dict(row) for row in stats.stage_timings],
         "specialists": _per_specialist_timings(unit_results),
+        # Run-level cost roll-up (specialists + worker calls). A PROXY for relative
+        # lever comparison, never billed spend: est_cost is the deterministic
+        # comparison currency, cost_usd the CLI list-price imputation where present.
+        "cost": {
+            "total_in_tokens": stats.total_in_tokens,
+            "total_out_tokens": stats.total_out_tokens,
+            "total_cost_usd": stats.total_cost_usd,
+            "total_est_cost": stats.total_est_cost,
+        },
     }
 
 
@@ -497,6 +555,12 @@ def run_review(
                     # whole review on a transient outage of a non-critical stage.
                     stats.degraded_workers += 1
                     outputs = fallback(env)
+                # Worker calls (scanner / tree-descender / trim / ranker) are real
+                # LLM calls with real cost; fold their stamp into the run totals so
+                # cost_mean covers worker AND specialist cost (the GATE-5 ratio
+                # stays apples-to-apples across baseline and candidate). A degraded
+                # fallback carries no stamp and contributes 0.
+                _accumulate_cost(stats, outputs)
                 outputs = _coverage_floor(state_id, inputs, outputs, env, stats)
                 _record_stage(stats, "worker", state_id, iteration_n, _t0)
 

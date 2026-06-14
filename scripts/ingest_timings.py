@@ -12,12 +12,23 @@ backfill from) and persists it as a ``timings.json`` artifact next to each run's
 Each ``timings.json`` yields rows at three scopes (the tracker's CHECK vocabulary
 is ``process | fsm_state | agent | stage``):
 
-  * ``process`` / ``whole_review`` : one row, wall_ms = whole_review_ms.
+  * ``process`` / ``whole_review`` : one row, wall_ms = whole_review_ms, and (when
+                                      the runner recorded a run-level cost block)
+                                      cost = total_est_cost, the per-review PROXY
+                                      cost that feeds cost_mean.
   * ``fsm_state`` / <state_id>      : the per-state stage_timings rows, aggregated
                                       by name (summed wall_ms, n_calls = row count).
-  * ``agent`` / <leaf_id>           : per-specialist measured wall_ms (tokens stay
-                                      null on the claude -p CLI path; they fill in
-                                      on the API backend, which is expected).
+  * ``agent`` / <leaf_id>           : per-specialist measured wall_ms + tokens +
+                                      per-call est_cost. On the current claude -p
+                                      CLI the live usage block fills tokens (cache
+                                      creation dominates) and est_cost; backends
+                                      with no usage block fall back to the
+                                      char-estimate proxy.
+
+cost is a PROXY for relative lever comparison (GATE-5), NEVER billed spend; the
+per-review value computed here is what ``experiments.py record --cost`` should
+receive as cost_mean (mean of per-review est_cost across the PR set, over the
+SAME N rounds the candidate is evaluated on).
 
 Backfill of the historical base-r* rounds is NOT possible as measured data (those
 runs predate this artifact and the FSM journal does not exist). The only thing
@@ -84,12 +95,26 @@ def _measured_rows(
     """
     rows: list[dict[str, Any]] = []
 
+    # Run-level cost roll-up (specialists + worker calls). total_est_cost is the
+    # per-review PROXY cost; it rides the process row so a single query yields the
+    # per-review cost for cost_mean. A run that predates the cost block (or whose
+    # runner did not record one) leaves cost None, never a fabricated 0.
+    cost_block = doc.get("cost")
+    review_cost = cost_block.get("total_est_cost") if isinstance(cost_block, dict) else None
+    # Exclude bool (a subclass of int) so a malformed total_est_cost: true/false is
+    # NOT silently coerced to 1.0/0.0 (the same guard per_review_cost applies).
+    review_cost = (
+        float(review_cost)
+        if isinstance(review_cost, int | float) and not isinstance(review_cost, bool)
+        else None
+    )
+
     whole = doc.get("whole_review_ms")
     if isinstance(whole, int | float):
         rows.append({
             "run_id": run_id, "pr_id": pr_id, "scope": "process",
-            "name": "whole_review", "wall_ms": int(whole), "n_calls": 1,
-            "status": "measured", "source": "runner",
+            "name": "whole_review", "wall_ms": int(whole), "cost": review_cost,
+            "n_calls": 1, "status": "measured", "source": "runner",
         })
 
     agg: dict[str, dict[str, int]] = {}
@@ -119,15 +144,55 @@ def _measured_rows(
             continue
         tin = sp.get("tokens_in")
         tout = sp.get("tokens_out")
+        est = sp.get("est_cost")
         rows.append({
             "run_id": run_id, "pr_id": pr_id, "scope": "agent", "name": leaf_id,
             "wall_ms": int(wall),
-            "tokens_in": int(tin) if isinstance(tin, int | float) else None,
-            "tokens_out": int(tout) if isinstance(tout, int | float) else None,
+            "tokens_in": int(tin) if isinstance(tin, int | float) and not isinstance(tin, bool) else None,
+            "tokens_out": int(tout) if isinstance(tout, int | float) and not isinstance(tout, bool) else None,
+            "cost": float(est) if isinstance(est, int | float) and not isinstance(est, bool) else None,
             "n_calls": 1, "status": "measured", "source": "runner",
         })
 
     return rows
+
+
+def per_review_cost(run_ids: list[str]) -> tuple[float | None, int, int]:
+    """Mean per-review PROXY cost across every PR under the given run_id(s).
+
+    Reads each timings.json's run-level total_est_cost (the same value the process
+    row carries) and averages over the PRs that recorded one. This is the cost_mean
+    to hand to ``experiments.py record --cost``: a PROXY for the GATE-5 ratio,
+    never billed spend, and only valid when computed identically for baseline and
+    candidate over the SAME N rounds. Returns (mean_or_None, n_priced, n_skipped):
+    mean is None when no PR recorded a cost (so the caller never records a
+    fabricated 0), and n_skipped surfaces unreadable/invalid files so a partial
+    read that lost N PRs is not reported as a complete cost_mean (which would bias
+    the figure toward whatever PRs happened to parse).
+    """
+    costs: list[float] = []
+    skipped = 0
+    for run_id in run_ids:
+        for _pr_id, tj in _find_timings_files(run_id):
+            try:
+                doc = json.loads(tj.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                # Never silently drop a file: a swallowed unreadable PR would bias
+                # cost_mean toward whatever the readable PRs happen to be.
+                skipped += 1
+                logger.warning("skipping unreadable/invalid timings.json %s: %s", tj, exc)
+                continue
+            if not isinstance(doc, dict):
+                skipped += 1
+                logger.warning("skipping timings.json %s: top-level JSON is not an object", tj)
+                continue
+            block = doc.get("cost")
+            val = block.get("total_est_cost") if isinstance(block, dict) else None
+            if isinstance(val, int | float) and not isinstance(val, bool):
+                costs.append(float(val))
+    if not costs:
+        return None, 0, skipped
+    return sum(costs) / len(costs), len(costs), skipped
 
 
 def _self_reported_rows(
@@ -227,11 +292,20 @@ def main() -> int:
     for r in rows:
         sc = str(r.get("scope"))
         by_scope[sc] = by_scope.get(sc, 0) + 1
+    cost_mean, n_priced, cost_skipped = per_review_cost(run_ids)
     summary = {
         "run_ids": run_ids,
         "n_rows": len(rows),
         "rows_by_scope": by_scope,
         "skipped_files": skipped,
+        # PROXY per-review cost (mean total_est_cost across priced PRs). Hand this
+        # to `experiments.py record --cost` as cost_mean; it is the GATE-5 ratio
+        # currency, never billed spend. None when no PR recorded a cost block.
+        # cost_files_skipped > 0 means the mean is over a PARTIAL set: do not trust
+        # it as a complete cost_mean until the skipped files are fixed.
+        "cost_mean_proxy": round(cost_mean, 6) if cost_mean is not None else None,
+        "prs_priced": n_priced,
+        "cost_files_skipped": cost_skipped,
         "db": str(experiments.DB_PATH),
         "applied": apply,
     }

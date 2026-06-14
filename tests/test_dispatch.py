@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from code_review import cost
 from code_review.dispatch import (
     _apply_rank_decisions,
     _compact_inputs,
@@ -178,3 +179,94 @@ def test_dispatch_worker_ranker_stamps_wall_ms(tmp_path: Path) -> None:
         "args": {}})
     assert isinstance(out.get("wall_ms"), int)
     assert out["wall_ms"] >= 0
+
+
+# --------------------------------------------------------------------------- #
+# Cost capture is PURE INSTRUMENTATION: it must not change the prompt sent to
+# the model nor the findings produced. These tests pin both guarantees.
+# --------------------------------------------------------------------------- #
+_SPEC_JSON = json.dumps({"id": "lang-python", "status": "completed",
+                         "findings": [{"severity": "important", "file": "a.py", "title": "x"}]})
+
+
+def test_cost_capture_does_not_change_the_prompt_or_tier(tmp_path: Path) -> None:
+    """The cmd/prompt/tier handed to the backend are identical with cost capture
+    on: claude_run builds the SAME prompt; cost only READS extra envelope keys."""
+    calls: list[tuple[str, str, str]] = []
+
+    def capturing_backend(prompt: str, cwd: str, tier: str) -> str:
+        calls.append((prompt, cwd, tier))
+        return _SPEC_JSON
+
+    _worker, dispatch_specialist = make_dispatchers(
+        str(tmp_path), tmp_path, base="B", head="H", backend=capturing_backend)
+    dispatch_specialist(
+        {"leaf_id": "lang-python", "files": ["a.py"]},
+        {"picked_leaves": [{"id": "lang-python", "dimensions": ["correctness"]}]})
+
+    assert len(calls) == 1
+    prompt, _cwd, tier = calls[0]
+    # correctness leaf -> strong tier (the routing is unchanged by cost capture).
+    assert tier == "strong"
+    # The prompt carries the diff base..head and the leaf id, exactly as before;
+    # no cost flag, no --json-schema, no system-prompt mutation leaks in.
+    assert "git diff B..H" in prompt
+    assert "lang-python" in prompt
+    assert "cost" not in prompt.lower().split("review target")[0]
+
+
+def test_text_only_backend_yields_identical_findings_to_tuple_backend(tmp_path: Path) -> None:
+    """A backend that returns bare text (legacy / usage=None) and one that returns
+    (text, usage) produce the SAME findings: cost rides as a side-field and never
+    alters the finding pipeline (the (text, None) golden-output equality)."""
+    def text_backend(prompt: str, cwd: str, tier: str) -> str:
+        return _SPEC_JSON
+
+    def tuple_backend(prompt: str, cwd: str, tier: str) -> tuple[str, dict]:
+        return _SPEC_JSON, {"in_tokens": 5, "out_tokens": 9, "cache_create": 100,
+                            "cache_read": 0, "cost_usd": 0.01}
+
+    unit = {"leaf_id": "lang-python", "files": ["a.py"]}
+    shared = {"picked_leaves": [{"id": "lang-python", "dimensions": ["correctness"]}]}
+
+    _w1, spec_text = make_dispatchers(str(tmp_path), tmp_path, base="B", head="H", backend=text_backend)
+    _w2, spec_tuple = make_dispatchers(str(tmp_path), tmp_path, base="B", head="H", backend=tuple_backend)
+    out_text = spec_text(unit, dict(shared))
+    out_tuple = spec_tuple(unit, dict(shared))
+
+    # Findings + id + status are byte-identical regardless of the usage channel.
+    assert out_text["findings"] == out_tuple["findings"]
+    assert out_text["id"] == out_tuple["id"] == "lang-python"
+    assert out_text["status"] == out_tuple["status"]
+
+
+def test_dispatch_specialist_stamps_cost_from_live_usage(tmp_path: Path) -> None:
+    """A backend returning (text, usage) stamps real tokens + cost_usd + est_cost
+    next to wall_ms; the strong tier (correctness leaf) prices via the Opus row."""
+    def tuple_backend(prompt: str, cwd: str, tier: str) -> tuple[str, dict]:
+        return _SPEC_JSON, {"in_tokens": 4, "out_tokens": 50, "cache_create": 18000,
+                            "cache_read": 0, "cost_usd": 0.2198}
+
+    _w, spec = make_dispatchers(str(tmp_path), tmp_path, base="B", head="H", backend=tuple_backend)
+    out = spec({"leaf_id": "lang-python", "files": ["a.py"]},
+               {"picked_leaves": [{"id": "lang-python", "dimensions": ["correctness"]}]})
+    assert out["tier"] == "strong"
+    assert out["tokens_in"] == 4 and out["tokens_out"] == 50
+    assert out["cache_create"] == 18000
+    assert out["cost_usd"] == 0.2198
+    assert out["est_cost"] == cost.est_cost("strong", 4, 50, 18000, 0)
+
+
+def test_dispatch_specialist_falls_back_to_char_estimate_when_usage_none(tmp_path: Path) -> None:
+    """A text-only backend (usage=None) still gets a cost stamp via the char
+    estimate; cost_usd is dropped (None -> absent after _strip_nulls)."""
+    def text_backend(prompt: str, cwd: str, tier: str) -> str:
+        return _SPEC_JSON
+
+    _w, spec = make_dispatchers(str(tmp_path), tmp_path, base="B", head="H", backend=text_backend)
+    out = spec({"leaf_id": "lang-python", "files": ["a.py"]},
+               {"picked_leaves": [{"id": "lang-python", "dimensions": ["correctness"]}]})
+    assert out["tier"] == "strong"
+    assert out["tokens_in"] > 0 and out["tokens_out"] > 0  # estimated from chars
+    assert "cost_usd" not in out  # None billed under the proxy -> dropped by _strip_nulls
+    assert out["est_cost"] > 0

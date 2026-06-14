@@ -729,6 +729,61 @@ Recorded as a `dead_ends` row (lever `V1-adversarial-finding-verification`, `pr_
   close it; the honest move is to fix the labels (better ground truth) or change axis (cost), not to
   teach the skill to suppress real bugs.
 
+### 5A.2f M1: prefer a defect-shaped framing as the semantic-merge representative [DEAD-END, PROVEN at pr5]
+
+**NB: M1 is the FIRST RECALL lever (the precision axis is blocked at pr5, see the 5A.2e
+META-FINDING, so the only open F1 path is recall: catch the ~27% of golds currently MISSED). M1
+targeted ONE missed gold, discourse-1 golden-1 (hardcoded `maxSizeKB = 10*1024` at
+`app/assets/javascripts/discourse/lib/utilities.js:182`, Low). It is recorded here alongside the
+other proven dead-ends for one ledger.**
+
+**OUTCOME: PROVEN DEAD-END at pr5, ROOT-CAUSE MISMATCH. The lever is internally CORRECT (unit tests
+green: `tests/test_handlers/test_semantic_merge_defect_framing.py` + `tests/test_dispatch.py`, 21
+passed; severity stays the primary representative key so it is recall-safe and never demotes; zero
+new findings by construction) but EMPIRICALLY INEFFECTIVE against the target gold. Caught by the
+cheap-first STAGE-1 predicate `missed_gold_now_caught=false` at the FIRST pilot, before any N=3
+spend.** Reverted (branch `feat/merge-rep-defect-framing`, commit `ebf3319`, deleted; no
+`reviewers.wiki` rebuild was involved).
+
+**The lever:** within a multi-member same-location cluster at EQUAL severity, `semantic_merge`
+prefers the defect-shaped (footgun/bug) member as the cluster representative over a
+maintainability/magic-number member, so the ranker sees the defect framing rather than a "magic
+number / no named constant" framing. Severity remains the primary representative key (the tiebreak
+only reorders WITHIN an already-severity-tied cluster), which is what makes it recall-safe.
+
+**Why it is a no-op against golden-1 (the empirical run):** product run of the lever HEAD on
+discourse-1 (base `3f71fa15` = merge-base, head `ffbaf8c5`; run-dir
+`tmp/runs/lever-merge-rep-r1/bb/discourse-1`). In THIS run only 8 specialists were picked at
+`tree_descend`/`llm_trim`. The defect-framing specialists that would populate the `:182` cluster
+(`principle-least-astonishment` conf 0.90, `antipattern-magic-numbers-strings` conf 0.90,
+`qa-maintainability` conf 0.92) were TRIMMED before running, and `lang-javascript` produced 0
+findings. So NO multi-member cluster forms at `utilities.js:182` and the merge tiebreak never fires.
+The only surviving `:182` finding is a SINGLE-member cluster
+(`qa-sustainability-green-software`, minor, conf 0.8) which stays non-primary, so golden-1 remains
+FN/minor-non-primary. The 4+ member cluster the lever targets only existed in `base-r2` (30
+specialists picked); `base-r3` had no `:182` cluster at all (also FN). The lever fixes a
+`base-r2`-shaped routing artifact that does not exist in the dominant pipeline configuration.
+
+**Why it is a dead-end (the structural argument):** golden-1 is missed at the ACTIVATION/ROUTING
+stage (the defect-detecting specialists are dropped at `tree_descend`/`llm_trim` before they run, or
+report nothing), NOT at the merge/ranking stage the lever targets. A merge-representative tiebreak
+cannot promote a gold that NO defect-shaped member describes in the configuration that actually runs.
+`retry_at_pr_set = NULL`: this is STRUCTURAL (the targeted cluster does not form in the dominant
+pipeline config), not a power/variance issue, so a larger PR set does not rescue it. Caught golds
+held with no recall regression (golden-0 `optimized_image.rb:149` and golden-2
+`optimized_image.rb:120` both stay primary). Recorded as a `dead_ends` row (lever
+`M1-merge-rep-defect-framing`, `pr_set_id = pr5`, `retry_at_pr_set = NULL`); nothing pushed, the
+benchmark was not touched.
+
+- **Methodology data point (generalizes the precision-audit lesson to recall):** before authoring a
+  RANK/MERGE-stage recall lever, first confirm the missed gold actually REACHES that stage in the
+  DOMINANT pipeline configuration (a defect-shaped finding exists at the gold location), not just in
+  one high-specialist-count baseline round. The open recall path for golden-1 is UPSTREAM
+  (activation/routing coverage of the defect-framing specialists at `utilities.js:182`), not the
+  merge representative. A gold can be missed at ANY stage (activation / routing / specialist /
+  hard-reasoning); fix the stage where it is actually lost, proven by an empirical run of the lever
+  HEAD on the target PR, not by the stage a tidy baseline artifact suggests.
+
 ### 5A.3 S3 (DEFERRED contingency): sqlite-vec / embedding ROUTING pre-filter
 
 DEFERRED, and now LOWER PRIORITY. The premise that S1 + S2 would land and bank a speed win did NOT

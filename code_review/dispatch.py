@@ -168,7 +168,7 @@ def _api_run(provider: str, prompt: str, cwd: str, tier: str) -> tuple[str, Usag
     try:
         r = openai.OpenAI().chat.completions.create(
             model=model, messages=[{"role": "user", "content": prompt}])
-        return (r.choices[0].message.content or ""), None
+        return (r.choices[0].message.content or ""), _openai_usage_from_sdk(getattr(r, "usage", None))
     except Exception as exc:
         _raise_for_signal(str(exc))
         raise
@@ -189,6 +189,29 @@ def _usage_from_sdk(usage: Any) -> Usage | None:
         "out_tokens": _g("output_tokens"),
         "cache_create": _g("cache_creation_input_tokens"),
         "cache_read": _g("cache_read_input_tokens"),
+        "cost_usd": None,
+    }
+
+
+def _openai_usage_from_sdk(usage: Any) -> Usage | None:
+    """Map an OpenAI Chat Completions ``response.usage`` object to the flat usage
+    dict the cost stamp expects, so the OpenAI backend prices from real token counts
+    like the Anthropic API path instead of the chars/4 proxy. Returns None when usage
+    is absent (degrade to the char estimate). OpenAI names the fields
+    ``prompt_tokens`` / ``completion_tokens`` (vs Anthropic's input/output) and has
+    no cache-creation concept; ``prompt_tokens_details.cached_tokens`` carries the
+    cache-read count on newer models. cost_usd stays None (the SDK returns no billed
+    dollar figure); est_cost is computed from the tokens."""
+    if usage is None:
+        return None
+    def _g(obj: Any, name: str) -> int:
+        v = getattr(obj, name, 0)
+        return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+    return {
+        "in_tokens": _g(usage, "prompt_tokens"),
+        "out_tokens": _g(usage, "completion_tokens"),
+        "cache_create": 0,  # OpenAI has no cache-creation token concept
+        "cache_read": _g(getattr(usage, "prompt_tokens_details", None), "cached_tokens"),
         "cost_usd": None,
     }
 

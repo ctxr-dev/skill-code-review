@@ -14,6 +14,7 @@ from code_review.dispatch import (
     _call_backend,
     _compact_inputs,
     _index_by_id,
+    _openai_usage_from_sdk,
     _parse_json,
     _rehydrate,
     _route_tier,
@@ -214,6 +215,27 @@ def test_cost_capture_does_not_change_the_prompt_or_tier(tmp_path: Path) -> None
     assert "git diff B..H" in prompt
     assert "lang-python" in prompt
     assert "cost" not in prompt.lower().split("review target")[0]
+
+
+def test_openai_usage_from_sdk_maps_token_fields() -> None:
+    """The OpenAI response.usage maps to the flat cost-stamp dict: prompt/completion
+    tokens -> in/out, cached_tokens -> cache_read, no cache-creation, cost_usd None.
+    Absent usage -> None so the caller degrades to the char estimate."""
+    from types import SimpleNamespace
+
+    assert _openai_usage_from_sdk(None) is None
+    usage = SimpleNamespace(
+        prompt_tokens=120, completion_tokens=40,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=80),
+    )
+    u = _openai_usage_from_sdk(usage)
+    assert u == {"in_tokens": 120, "out_tokens": 40, "cache_create": 0,
+                 "cache_read": 80, "cost_usd": None}
+    # Older response shape without prompt_tokens_details: cache_read degrades to 0,
+    # non-numeric fields degrade to 0 rather than raising.
+    bare = SimpleNamespace(prompt_tokens=5, completion_tokens="oops")
+    assert _openai_usage_from_sdk(bare) == {
+        "in_tokens": 5, "out_tokens": 0, "cache_create": 0, "cache_read": 0, "cost_usd": None}
 
 
 def test_call_backend_normalises_malformed_return_shapes() -> None:

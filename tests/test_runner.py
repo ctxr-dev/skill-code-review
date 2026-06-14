@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from code_review.runner import (
     ContextOverflowError,
     RateLimitError,
@@ -285,8 +287,9 @@ def test_accumulate_cost_sums_stamped_fields() -> None:
     _accumulate_cost(s, {"tokens_in": 6, "tokens_out": 10, "cost_usd": 0.07, "est_cost": 0.0009})
     _accumulate_cost(s, {"findings": []})  # no stamp -> contributes 0
     assert s.total_in_tokens == 10 and s.total_out_tokens == 60
-    assert s.total_cost_usd == 0.28
-    assert abs(s.total_est_cost - 0.0026) < 1e-9
+    # Tolerance, not exact equality: 0.21 + 0.07 is not an exact binary float.
+    assert s.total_cost_usd == pytest.approx(0.28)
+    assert s.total_est_cost == pytest.approx(0.0026)
 
 
 def test_dispatch_units_accumulates_specialist_cost() -> None:
